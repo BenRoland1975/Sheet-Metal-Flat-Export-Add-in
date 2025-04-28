@@ -1,0 +1,191 @@
+Option Explicit
+
+'—— Module-level declarations ——
+Dim swApp             As SldWorks.SldWorks
+Dim swAsm             As SldWorks.AssemblyDoc
+Dim outDir            As String
+Dim logPath           As String
+Dim logFileNum        As Integer
+Dim arrThicknessFails As Collection
+
+'—————————————————————————————————————
+Sub Main()
+    Dim swModel As SldWorks.ModelDoc2
+    Dim errs    As Long
+    
+    ' Connect to SW and verify assembly
+    Set swApp = Application.SldWorks
+    Set swModel = swApp.ActiveDoc
+    If swModel Is Nothing Or swModel.GetType <> swDocASSEMBLY Then
+        MsgBox "Please open an assembly first.", vbCritical
+        Exit Sub
+    End If
+    Set swAsm = swModel
+    
+    ' Load output directory from settings
+    outDir = GetSetting("DXFMacro", "Settings", "OutputDir", "Q:\DXFs from PDM\")
+    logPath = GetSetting("DXFMacro", "Settings", "LogFilePath", "C:\DXF_Output_Log\DXF_Export_Log.txt")
+
+    ' Ensure paths end with "\"
+    If Right(outDir, 1) <> "\" Then outDir = outDir & "\"
+    
+    ' Prepare folders
+    On Error Resume Next
+        MkDir outDir
+        MkDir Left(logPath, InStrRev(logPath, "\"))
+    On Error GoTo 0
+    
+    ' Open log
+    logFileNum = FreeFile
+    Open logPath For Append As #logFileNum
+    Print #logFileNum, "[" & Now & "] Starting flat-pattern DXF export"
+    
+    ' Init failures list
+    Set arrThicknessFails = New Collection
+    
+    ' Loop components
+    Dim comps As Variant, comp As SldWorks.Component2
+    comps = swAsm.GetComponents(False)
+    Dim i As Long
+    For i = LBound(comps) To UBound(comps)
+        Set comp = comps(i)
+        If comp.GetPathName <> "" Then ExportViaDrawing comp
+    Next i
+    
+    ' Finish log
+    Print #logFileNum, "[" & Now & "] Completed flat-pattern DXF export"
+    Close #logFileNum
+    
+    ' Report missing-thickness parts
+    If arrThicknessFails.Count > 0 Then
+        Dim msg As String, item As Variant
+        msg = "Missing Sheet Metal Thickness on:" & vbCrLf
+        For Each item In arrThicknessFails
+            msg = msg & "- " & item & vbCrLf
+        Next
+        MsgBox msg, vbExclamation, "Thickness Failures"
+    Else
+        MsgBox "All DXFs exported successfully.", vbInformation, "DXF Export"
+    End If
+End Sub
+
+'—— Find the FlatPattern config (fallback to active if none) ——
+Private Function FindFlatConfig(cfgNames As Variant, activeCfg As String) As String
+    Dim cfg As Variant
+    For Each cfg In cfgNames
+        If InStr(1, UCase(cfg), "FLAT") > 0 Then
+            FindFlatConfig = cfg
+            Exit Function
+        End If
+    Next
+    FindFlatConfig = activeCfg
+End Function
+
+'—— Export one part via a temporary drawing ——
+Private Sub ExportViaDrawing(comp As SldWorks.Component2)
+    Dim partDoc As SldWorks.ModelDoc2, swPart As SldWorks.partDoc, feat As SldWorks.Feature
+    Dim errs As Long, cfgNames As Variant, cfgMgr As SldWorks.ConfigurationManager
+    Dim defCfg As String, flatCfg As String, baseName As String, sThick As String
+    
+    Set partDoc = swApp.OpenDoc6(comp.GetPathName, swDocPART, 0, "", errs, errs)
+    If partDoc Is Nothing Then Exit Sub
+    Set swPart = partDoc
+    
+    cfgNames = partDoc.GetConfigurationNames
+    Set cfgMgr = partDoc.ConfigurationManager
+    defCfg = cfgMgr.ActiveConfiguration.Name
+    flatCfg = FindFlatConfig(cfgNames, defCfg)
+    partDoc.ShowConfiguration2 flatCfg
+    
+    Set feat = partDoc.FirstFeature
+    Do While Not feat Is Nothing
+        If feat.GetTypeName2 = "FlatPattern" Then
+            feat.SetSuppression2 swUnSuppressFeature, swThisConfiguration, ""
+            Exit Do
+        End If
+        Set feat = feat.GetNextFeature
+    Loop
+    
+    baseName = Replace(partDoc.GetTitle, ".sldprt", "")
+    
+    Dim cfgPropMgr As SldWorks.CustomPropertyManager
+    Set cfgPropMgr = partDoc.Extension.CustomPropertyManager(defCfg)
+    
+    Dim val As String, resVal As String, wasRes As Boolean, wasLinked As Boolean, ret As Long
+    ret = cfgPropMgr.Get6("Sheet Metal Thickness", True, val, resVal, wasRes, wasLinked)
+    
+    If ret < 2 Or InStr(resVal, "Thickness@") > 0 Then
+        Dim swSMFeat As SldWorks.Feature, swSMData As SldWorks.SheetMetalFeatureData
+        Set swSMFeat = partDoc.FirstFeature
+        Do While Not swSMFeat Is Nothing
+            If swSMFeat.GetTypeName2 = "SheetMetal" Then
+                Set swSMData = swSMFeat.GetDefinition
+                sThick = Format(Round(swSMData.Thickness * 39.3701, 4), "0.0000")
+                Exit Do
+            End If
+            Set swSMFeat = swSMFeat.GetNextFeature
+        Loop
+        
+        If sThick <> "" Then
+            cfgPropMgr.Add3 "Sheet Metal Thickness", swCustomInfoText, sThick, swCustomPropertyReplaceValue
+        Else
+            Print #logFileNum, "[" & Now & "] ERROR: " & baseName & " has no valid Sheet Metal thickness ?"
+            arrThicknessFails.Add baseName
+            swApp.CloseDoc partDoc.GetTitle
+            Exit Sub
+        End If
+    Else
+        sThick = resVal
+    End If
+    
+    Dim sPartNum As String, sDesc As String, sRev As String, sMat As String, sRoute As String
+    
+    cfgPropMgr.Get6 "Part Number", True, val, resVal, wasRes, wasLinked: sPartNum = IIf(wasRes, resVal, val)
+    cfgPropMgr.Get6 "Description", True, val, resVal, wasRes, wasLinked: sDesc = IIf(wasRes, resVal, val)
+    cfgPropMgr.Get6 "Revision", True, val, resVal, wasRes, wasLinked: sRev = IIf(wasRes, resVal, val)
+    cfgPropMgr.Get6 "Material", True, val, resVal, wasRes, wasLinked: sMat = IIf(wasRes, resVal, val)
+    cfgPropMgr.Get6 "Shop Route", True, val, resVal, wasRes, wasLinked: sRoute = IIf(wasRes, resVal, val)
+    
+    Dim drwTemplate As String, drwDoc As SldWorks.DrawingDoc
+    drwTemplate = swApp.GetUserPreferenceStringValue(swDefaultTemplateDrawing)
+    Set drwDoc = swApp.NewDocument(drwTemplate, swDocDRAWING, 0, 0)
+    
+    drwDoc.CreateFlatPatternViewFromModelView3 comp.GetPathName, flatCfg, 0.05, 0.05, 0, False, False
+    
+    Dim lyrMgr As SldWorks.LayerMgr
+    Set lyrMgr = drwDoc.GetLayerManager
+    If lyrMgr.GetLayer("Notes") Is Nothing Then
+        drwDoc.CreateLayer2 "Notes", "Property Notes", RGB(0, 0, 0), swLineCONTINUOUS, swLW_NORMAL, True, True
+    End If
+    
+    Dim notes As Variant, txt As Variant, swNote As SldWorks.Note, ann As SldWorks.Annotation, y0 As Double
+
+    ' Use DataGridView mappings to create notes
+    Dim mappingDict As Object
+    Set mappingDict = CreateObject("Scripting.Dictionary")
+
+    ' Populate dictionary with mappings
+    ' Example: mappingDict("Part Number") = sPartNum
+    ' Add similar lines for other properties
+
+    notes = Array()
+    For Each key In mappingDict.Keys
+        notes = Application.Union(notes, Array(key & ": " & mappingDict(key)))
+    Next
+
+    y0 = 0.02
+    For Each txt In notes
+        Set swNote = drwDoc.InsertNote(txt)
+        Set ann = swNote.GetAnnotation
+        ann.Layer = "Notes": ann.SetPosition2 0.02, y0, 0#: y0 = y0 + 0.006
+    Next
+    
+    Dim saveName As String
+    saveName = outDir & baseName & ".dxf"
+    Dim boolstatus As Boolean
+    boolstatus = drwDoc.Extension.SaveAs(saveName, swSaveAsCurrentVersion, swSaveAsOptions_Silent, Nothing, errs, errs)
+    Print #logFileNum, "[" & Now & "] DXF " & IIf(boolstatus, "Saved ?: ", "ERROR ?: ") & saveName
+    
+    swApp.CloseDoc drwDoc.GetTitle: swApp.CloseDoc partDoc.GetTitle
+End Sub
+
