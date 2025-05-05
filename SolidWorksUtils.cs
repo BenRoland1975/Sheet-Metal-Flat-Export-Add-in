@@ -32,6 +32,15 @@ namespace RoesleinAddIn
     }
 
     /// <summary>
+    /// SolidWorks user preference string values for backward compatibility
+    /// </summary>
+    public enum swUserPreferenceStringValue_e
+    {
+        swDefaultTemplateDrawing = 1,
+        swDxfMappingFile = 92
+    }
+
+    /// <summary>
     /// Utility class for working with SolidWorks documents and files
     /// </summary>
     public static class SolidWorksUtils
@@ -149,7 +158,7 @@ namespace RoesleinAddIn
                 }
                 
                 // If custom property not found, try using feature information
-                Feature feat = swModel.FirstFeature();
+                Feature feat = (Feature)swModel.FirstFeature();
                 
                 while (feat != null)
                 {
@@ -180,11 +189,11 @@ namespace RoesleinAddIn
                             Logger.Info($"Looking for thickness in feature: {feat.Name}");
                             
                             // Simpler alternative approach - iterate through all features & look at DisplayDimension
-                            Feature tempFeat = swModel.FirstFeature();
+                            Feature tempFeat = (Feature)swModel.FirstFeature();
                             while (tempFeat != null)
                             {
                                 // Check if the feature has dimensions
-                                DisplayDimension dispDim = tempFeat.GetFirstDisplayDimension();
+                                DisplayDimension dispDim = (DisplayDimension)tempFeat.GetFirstDisplayDimension();
                                 while (dispDim != null)
                                 {
                                     // Get the dimension from display dimension
@@ -194,7 +203,7 @@ namespace RoesleinAddIn
                                         if (dimName.ToLower().Contains("thick"))
                                         {
                                             // Get the actual dimension value
-                                            Dimension dim = dispDim.GetDimension();
+                                            Dimension dim = (Dimension)dispDim.GetDimension();
                                             if (dim != null)
                                             {
                                                 thickness = Convert.ToDouble(dim.Value);
@@ -204,10 +213,10 @@ namespace RoesleinAddIn
                                     }
                                     
                                     // Get next display dimension
-                                    dispDim = tempFeat.GetNextDisplayDimension(dispDim);
+                                    dispDim = (DisplayDimension)tempFeat.GetNextDisplayDimension(dispDim);
                                 }
                                 
-                                tempFeat = tempFeat.GetNextFeature();
+                                tempFeat = (Feature)tempFeat.GetNextFeature();
                             }
                         }
                         catch (Exception ex)
@@ -216,7 +225,7 @@ namespace RoesleinAddIn
                         }
                     }
                     
-                    feat = feat.GetNextFeature();
+                    feat = (Feature)feat.GetNextFeature();
                 }
             }
             catch (Exception ex)

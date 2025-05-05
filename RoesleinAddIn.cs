@@ -11,6 +11,7 @@ using System.Reflection;
 using System.Collections.Generic;
 using System.Linq;
 using System.Drawing;
+using RoesleinAddIn;
 
 namespace RoesleinAddIn
 {
@@ -38,7 +39,7 @@ namespace RoesleinAddIn
         // Main objects
         private ICommandGroup cmdGroup;
         private SheetMetalProcessor processor;
-        private SettingsForm settingsForm;
+        private SettingsFormV2 settingsForm;
         #endregion
 
         #region COM Registration
@@ -155,30 +156,55 @@ namespace RoesleinAddIn
 
                     if (settings != null)
                     {
-                         Logger.Instance.SetSettingsEnabled(settings.LoggingEnabled);
-                         if (!string.IsNullOrWhiteSpace(settings.LogFilePath))
-                         {
-                              Logger.Instance.SetLogFilePath(settings.LogFilePath);
-                              WriteToLog($"Logger configured: Enabled={settings.LoggingEnabled}, Path={settings.LogFilePath}");
-                         }
-                         else
-                         {
-                             Logger.Instance.SetSettingsEnabled(false); // Disable if path is invalid
-                             WriteToLog("Logger disabled due to empty/invalid log file path in settings.");
-                         }
+                        // Configure main logging
+                        Logger.Instance.SetSettingsEnabled(settings.LoggingEnabled);
+                        
+                        // Configure debug logging
+                        Logger.Instance.SetDebugEnabled(settings.DebugLoggingEnabled);
+                        
+                        if (!string.IsNullOrWhiteSpace(settings.LogFilePath))
+                        {
+                            // Set log file path for main logger
+                            Logger.Instance.SetLogFilePath(settings.LogFilePath);
+                            
+                            // Set debug log path from settings or use default if not specified
+                            string debugLogPath = settings.DebugLogFilePath;
+                            if (string.IsNullOrWhiteSpace(debugLogPath))
+                            {
+                                // Use Documents folder for debug log
+                                debugLogPath = Path.Combine(
+                                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments),
+                                    "RoesleinAddIn_Debug.log"
+                                );
+                            }
+                            
+                            // Set debug log path
+                            Logger.Instance.SetDebugLogPath(debugLogPath);
+                            
+                            WriteToLog($"Logger configured: Enabled={settings.LoggingEnabled}, DebugEnabled={settings.DebugLoggingEnabled}, Path={settings.LogFilePath}, DebugPath={debugLogPath}");
+                        }
+                        else
+                        {
+                            Logger.Instance.SetSettingsEnabled(false); // Disable if path is invalid
+                            Logger.Instance.SetDebugEnabled(false);    // Also disable debug logging
+                            WriteToLog("Logger disabled due to empty/invalid log file path in settings.");
+                        }
                     }
                     else
                     {
-                         WriteToLog("Could not load settings to configure logger. Using defaults or previous state.");
-                         // Optional: Disable logger if settings are crucial
-                         // Logger.Instance.SetSettingsEnabled(false);
+                        WriteToLog("Could not load settings to configure logger. Using defaults or previous state.");
+                        // Optional: Disable logger if settings are crucial
+                        // Logger.Instance.SetSettingsEnabled(false);
                     }
                 }
                 catch (Exception ex)
                 {
                     WriteToLog($"ERROR configuring logger: {ex.Message}");
                     // Attempt to disable logger if configuration failed
-                    try { Logger.Instance.SetSettingsEnabled(false); } catch { }
+                    try { 
+                        Logger.Instance.SetSettingsEnabled(false);
+                        Logger.Instance.SetDebugEnabled(false);
+                    } catch { }
                 }
                 // -----------------------------------------------------
 
@@ -614,7 +640,21 @@ namespace RoesleinAddIn
             {
                 if (settingsForm == null || settingsForm.IsDisposed)
                 {
-                    settingsForm = new SettingsForm();
+                    settingsForm = new SettingsFormV2();
+                    
+                    // Set version number if control exists
+                    if (settingsForm.Controls.Find("lblVersionNumber", true).Length > 0)
+                    {
+                        Label lblVersionNumber = (Label)settingsForm.Controls.Find("lblVersionNumber", true)[0];
+                        lblVersionNumber.Text = "Version: " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
+                    }
+                    
+                    // Set copyright information if control exists
+                    if (settingsForm.Controls.Find("lblCopyright", true).Length > 0)
+                    {
+                        Label lblCopyright = (Label)settingsForm.Controls.Find("lblCopyright", true)[0];
+                        lblCopyright.Text = "Copyright © " + DateTime.Now.Year + " Roeslein & Associates, Inc.";
+                    }
                 }
 
                 settingsForm.Show();
@@ -656,7 +696,7 @@ namespace RoesleinAddIn
             try
             {
                 Debug.WriteLine("[DEBUG] Process_Part: Checking processor instance..."); // DEBUG
-                                                                                         // Processor should have been created in ConnectToSW
+                // Processor should have been created in ConnectToSW
                 if (processor == null)
                 {
                     Debug.WriteLine("[DEBUG] Process_Part: ERROR - Processor instance is null!"); // DEBUG
@@ -693,47 +733,27 @@ namespace RoesleinAddIn
         }
         #endregion
 
-        #region Helpers
-        /// <summary>
-        /// Write to log file for debugging
-        /// </summary>
+        #region Logging
         private void WriteToLog(string message)
         {
             try
             {
-                string logDir = @"C:\Temp";
-                string logFilePath = Path.Combine(logDir, "RoesleinAddIn_Debug.log");
-
-                // Create directory if it doesn't exist
-                if (!Directory.Exists(logDir))
+                // First try to output to debugger console (Visual Studio)
+                Debug.WriteLine($"[DEBUG] {message}");
+                
+                // Use the Logger class for all logging
+                if (Logger.Instance != null)
                 {
-                    Directory.CreateDirectory(logDir);
+                    // Only log if debug logging is enabled in settings
+                    if (Logger.Instance.IsDebugEnabled())
+                    {
+                        Logger.DebugLog(message);
+                    }
                 }
-
-                // Write to log with timestamp
-                using (StreamWriter writer = new StreamWriter(logFilePath, true))
-                {
-                    writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: {message}");
-                }
-                Debug.WriteLine(message);  // Also write to Debug output
             }
-            catch (Exception ex)
+            catch
             {
-                Debug.WriteLine($"Error writing to log: {ex.Message}");
-                try
-                {
-                    // Attempt to write error to desktop as fallback
-                    string fallbackPath = Path.Combine(
-                        System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop),
-                        "RoesleinAddIn_Error.log");
-                    File.AppendAllText(fallbackPath,
-                        $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: Error writing to main log: {ex.Message}\n");
-                }
-                catch
-                {
-                    // If even the fallback fails, we can only write to debug
-                    Debug.WriteLine("Failed to write to both main and fallback logs");
-                }
+                // Silent fail - we don't want logging errors to cause crashes
             }
         }
         #endregion

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Windows.Forms;
@@ -6,9 +6,11 @@ using System.Drawing;
 using Microsoft.Win32;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
+using SwView = SolidWorks.Interop.sldworks.View;
+using AppSettings = RoesleinAddIn.Settings;
+using SysEnv = System.Environment;
 using System.Linq;
 using System.Diagnostics;
-using AppSettings = RoesleinAddIn.Settings;
 
 namespace RoesleinAddIn
 {
@@ -24,6 +26,10 @@ namespace RoesleinAddIn
         private bool loggingEnabled;
         private List<string> thicknessFailures = new List<string>();
         private List<string> exportErrors = new List<string>();
+        private Dictionary<string, List<string>> unmappedMaterialParts = new Dictionary<string, List<string>>();
+        private List<string> ignoredParts = new List<string>();
+        private Dictionary<string, int> materialThicknessCounts = new Dictionary<string, int>();
+        private HashSet<string> _processedPartPaths;
         #endregion
 
         #region Constructor
@@ -49,706 +55,7 @@ namespace RoesleinAddIn
             }
             Debug.WriteLine("[DEBUG] SheetMetalProcessor Constructor END"); 
         }
-        #endregion
 
-        #region Public Methods
-        /// <summary>
-        /// Inserts notes into the drawing by creating a Notes layer and adding text in sequence
-        /// </summary>
-        /// <param name="drawingDoc">The drawing document</param>
-        /// <param name="notes">List of notes to be inserted</param>
-        /// <returns>True if successful</returns>
-        public bool InsertNotesIntoDrawing(DrawingDoc drawingDoc, List<string> notes)
-        {
-            try
-            {
-                if (drawingDoc == null)
-                {
-                    Logger.Error("Drawing document is null, cannot insert notes.");
-                    return false;
-                }
-
-                if (notes == null || notes.Count == 0)
-                {
-                    Logger.Warning("No notes to insert into drawing.");
-                    return true; // Not an error, just nothing to do
-                }
-
-                Logger.Info($"Inserting {notes.Count} notes into drawing...");
-                ModelDoc2 swModel = drawingDoc as ModelDoc2;
-                
-                // Create Notes layer if it doesn't exist
-                string layerName = "Notes";
-                
-                // Create the layer directly using DrawingDoc
-                int magentaColor = ColorTranslator.ToWin32(Color.Magenta);
-                
-                // Just try to create the layer - if it already exists, this will have no effect
-                Logger.Info($"Creating or ensuring {layerName} layer exists...");
-                bool result = drawingDoc.CreateLayer2(
-                    layerName,
-                    "Notes Layer",
-                    magentaColor,
-                    0, // Continuous line
-                    0, // Normal line weight
-                    true, // Visible
-                    true  // Printable
-                );
-                
-                // Even if it fails, we'll continue - it might fail because the layer already exists
-                if (!result)
-                {
-                    Logger.Warning($"Could not create {layerName} layer, may already exist.");
-                }
-                
-                // Use the exact positioning from the backup code
-                double noteX = 0.02;  // Fixed X position (absolute)
-                double noteY = 0.02;  // Starting Y position (absolute)
-                double yIncrement = 0.006; // Tiny increment for tight grouping
-                
-                Logger.Info($"Starting note position: ({noteX:F3}, {noteY:F3})");
-                
-                // Insert notes in REVERSE order to match the screenshot
-                int notesInserted = 0;
-                
-                // Reverse the notes list to match the desired order
-                var reversedNotes = new List<string>(notes);
-                reversedNotes.Reverse();
-                
-                foreach (var note in reversedNotes)
-                {
-                    if (InsertNote(swModel, note, noteX, noteY, layerName))
-                    {
-                        notesInserted++;
-                        noteY += yIncrement; // Tiny increment between notes
-                    }
-                }
-                
-                Logger.Info($"Successfully inserted {notesInserted} out of {notes.Count} notes.");
-                return notesInserted > 0;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error in InsertNotesIntoDrawing: {ex.Message}");
-                return false;
-            }
-        }
-
-        public void ProcessAssemblySheetMetal()
-        {
-            Debug.WriteLine("[DEBUG] ProcessAssemblySheetMetal START"); // DEBUG
-            Debug.WriteLine("[DEBUG] Attempting Logger.Info: Starting assembly processing"); // DEBUG
-            Logger.Info("Starting assembly processing"); 
-            ModelDoc2 swModel = _swApp.ActiveDoc as ModelDoc2;
-            
-            if (swModel == null)
-            {
-                MessageBox.Show("No active document.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-            
-            if (swModel.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY)
-            {
-                MessageBox.Show("Active document is not an assembly.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            LoadSettings();
-
-            if (string.IsNullOrEmpty(settings.LastExportFolder) || !Directory.Exists(settings.LastExportFolder))
-            {
-                 MessageBox.Show("Output folder is not set or does not exist. Please configure it in the settings.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                 Logger.Error("Output folder not configured or invalid.");
-                 return;
-            }
-            string outputFolder = settings.LastExportFolder;
-            if (!outputFolder.EndsWith("\\")) outputFolder += "\\";
-
-            AssemblyDoc swAssy = swModel as AssemblyDoc;
-            object[] components = swAssy.GetComponents(true) as object[];
-            
-            if (components == null || components.Length == 0)
-            {
-                MessageBox.Show("No components found in the assembly.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                Logger.Warning("No components found in assembly.");
-                return;
-            }
-
-            int totalProcessed = 0;
-            int sheetMetalPartsFound = 0;
-            thicknessFailures.Clear();
-            exportErrors.Clear();
-            List<string> processedFiles = new List<string>();
-
-            Logger.Info($"Processing {components.Length} components in assembly {swModel.GetPathName()}");
-            Logger.Info($"Output Directory: {outputFolder}");
-
-            foreach (Component2 comp in components)
-            {
-                if (comp.IsSuppressed()) continue;
-
-                ModelDoc2 compDoc = null;
-                PartDoc swPart = null;
-                string compPath = "";
-                try
-                {
-                    compPath = comp.GetPathName();
-                    if (string.IsNullOrEmpty(compPath)) continue;
-
-                    compDoc = comp.GetModelDoc2();
-
-                    if (compDoc == null)
-                    {
-                         int errors = 0;
-                         int warnings = 0;
-                         compDoc = _swApp.OpenDoc6(compPath, (int)swDocumentTypes_e.swDocPART,
-                                                  (int)swOpenDocOptions_e.swOpenDocOptions_Silent,
-                                                  "", ref errors, ref warnings);
-
-                         if (compDoc == null)
-                         {
-                              Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Could not open or access component document: {compPath}"); // DEBUG
-                              Logger.Warning($"Could not open or access component document: {compPath}");
-                              continue;
-                         }
-                    }
-
-                    if (compDoc != null && compDoc.GetType() == (int)swDocumentTypes_e.swDocPART)
-                    {
-                        swPart = compDoc as PartDoc;
-
-                        if (IsSheetMetalPart(swPart))
-                        {
-                            sheetMetalPartsFound++;
-                            Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Processing sheet metal part: {compPath}"); // DEBUG
-                            Logger.Info($"Processing sheet metal part: {compPath}");
-                            string dxfPath = ProcessSheetMetalPart(swPart, outputFolder);
-
-                            if (!string.IsNullOrEmpty(dxfPath))
-                            {
-                                processedFiles.Add(dxfPath);
-                                totalProcessed++;
-                            }
-                            else
-                            {
-                                Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Failed to process or export DXF for: {compPath}"); // DEBUG
-                                Logger.Warning($"Failed to process or export DXF for: {compPath}");
-                            }
-                        }
-                        else
-                        {
-                             Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Skipping non-sheet metal part: {compPath}"); // DEBUG
-                             Logger.Info($"Skipping non-sheet metal part: {compPath}");
-                        }
-
-                        if (comp.GetModelDoc2() == null && compDoc != null)
-                        {
-                            _swApp.CloseDoc(compDoc.GetTitle());
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[DEBUG] Attempting Logger.Error: Error processing component '{compPath}': {ex.Message}"); // DEBUG
-                    Logger.Error($"Error processing component '{compPath}': {ex.Message}", ex);
-                    exportErrors.Add($"Error processing component '{comp.Name2}': {ex.Message}");
-                    if (comp.GetModelDoc2() == null && compDoc != null) { _swApp.CloseDoc(compDoc.GetTitle()); }
-                }
-            }
-
-            // Use StringBuilder for robust string construction
-            var summaryBuilder = new System.Text.StringBuilder();
-
-            if (totalProcessed > 0)
-            {
-                summaryBuilder.AppendLine($"Successfully processed {totalProcessed} out of {sheetMetalPartsFound} sheet metal parts found.");
-                summaryBuilder.AppendLine();
-                summaryBuilder.AppendLine($"Files saved to: {outputFolder}");
-                Debug.WriteLine("[DEBUG] Attempting Logger.Info: Successfully processed {totalProcessed} sheet metal parts."); // DEBUG
-                Logger.Info($"Successfully processed {totalProcessed} sheet metal parts.");
-            }
-            else if (sheetMetalPartsFound > 0)
-            {
-                 summaryBuilder.AppendLine($"Found {sheetMetalPartsFound} sheet metal parts, but none were processed successfully.");
-                 summaryBuilder.AppendLine($"Check log file for details: {settings.LogFilePath}");
-                 Debug.WriteLine("[DEBUG] Attempting Logger.Warning: Found {sheetMetalPartsFound} sheet metal parts, but none were processed."); // DEBUG
-                 Logger.Warning($"Found {sheetMetalPartsFound} sheet metal parts, but none were processed.");
-            }
-            else
-            {
-                summaryBuilder.AppendLine("No sheet metal parts found or processed in the assembly.");
-                Debug.WriteLine("[DEBUG] Attempting Logger.Info: No sheet metal parts found or processed."); // DEBUG
-                Logger.Info("No sheet metal parts found or processed.");
-            }
-
-             if (thicknessFailures.Count > 0)
-            {
-                summaryBuilder.AppendLine();
-                summaryBuilder.AppendLine($"WARNING: Could not determine sheet metal thickness for {thicknessFailures.Count} parts:");
-                foreach (string failure in thicknessFailures)
-                {
-                    summaryBuilder.AppendLine($"- {failure}");
-                }
-                Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Thickness failures: {string.Join(", ", thicknessFailures)}"); // DEBUG
-                Logger.Warning($"Thickness failures: {string.Join(", ", thicknessFailures)}");
-            }
-
-             if (exportErrors.Count > 0)
-            {
-                 summaryBuilder.AppendLine();
-                 summaryBuilder.AppendLine($"ERROR: Encountered {exportErrors.Count} errors during processing:");
-                 foreach(string error in exportErrors)
-                 {
-                     summaryBuilder.AppendLine($"- {error}");
-                 }
-                 Debug.WriteLine($"[DEBUG] Attempting Logger.Error: Processing errors encountered: {exportErrors.Count}"); // DEBUG
-                 Logger.Error($"Processing errors encountered: {exportErrors.Count}");
-            }
-
-            string summaryMessage = summaryBuilder.ToString(); // Get the final string
-            MessageBox.Show(summaryMessage, "Roeslein Add-in - Processing Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-            Debug.WriteLine("[DEBUG] Attempting Logger.Info: Completed assembly processing. Total processed: {totalProcessed}, Found SM: {sheetMetalPartsFound}"); // DEBUG
-            Logger.Info($"Completed assembly processing. Total processed: {totalProcessed}, Found SM: {sheetMetalPartsFound}");
-            Debug.WriteLine("[DEBUG] ProcessAssemblySheetMetal END"); // DEBUG
-        }
-
-        public void ProcessSinglePartSheetMetal()
-        {
-             Debug.WriteLine("[DEBUG] ProcessSinglePartSheetMetal START"); // DEBUG
-             ModelDoc2 swModel = _swApp.ActiveDoc as ModelDoc2;
-
-             if (swModel == null)
-             {
-                 MessageBox.Show("No active document.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                 return;
-             }
-
-             if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
-             {
-                 MessageBox.Show("Active document is not a part.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                 return;
-             }
-
-             PartDoc swPart = swModel as PartDoc;
-
-             if (!IsSheetMetalPart(swPart))
-             {
-                  Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Single part processing skipped: {swModel.GetPathName()} is not a sheet metal part."); // DEBUG
-                  Logger.Info($"Single part processing skipped: {swModel.GetPathName()} is not a sheet metal part.");
-                  return;
-             }
-
-             Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Starting single part processing for: {swModel.GetPathName()}"); // DEBUG
-             Logger.Info($"Starting single part processing for: {swModel.GetPathName()}");
-             LoadSettings();
-
-             SaveFileDialog saveDialog = new SaveFileDialog();
-             saveDialog.Filter = "DXF Files (*.dxf)|*.dxf";
-             saveDialog.Title = "Save DXF File";
-             saveDialog.DefaultExt = "dxf";
-             string fileName = Path.GetFileNameWithoutExtension(swModel.GetPathName());
-             saveDialog.FileName = fileName + ".dxf";
-
-             if (!string.IsNullOrEmpty(settings.LastExportFolder) && Directory.Exists(settings.LastExportFolder))
-             {
-                 saveDialog.InitialDirectory = settings.LastExportFolder;
-             }
-             else if (!string.IsNullOrEmpty(swModel.GetPathName()))
-             {
-                  saveDialog.InitialDirectory = Path.GetDirectoryName(swModel.GetPathName());
-             }
-
-             if (saveDialog.ShowDialog() == DialogResult.OK)
-             {
-                 string outputPath = saveDialog.FileName;
-                 string outputDir = Path.GetDirectoryName(outputPath);
-                 string baseFileName = Path.GetFileNameWithoutExtension(outputPath);
-                 settings.LastExportFolder = outputDir;
-                 settings.SaveSettings();
-
-                 string resultPath = ProcessSheetMetalPart(swPart, outputDir, baseFileName);
-
-                 if (!string.IsNullOrEmpty(resultPath))
-                 {
-                      Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Single part DXF exported successfully to: {resultPath}"); // DEBUG
-                      Logger.Info($"Single part DXF exported successfully to: {resultPath}");
-                      // Add Success MessageBox (Corrected Syntax)
-                      MessageBox.Show($"DXF file exported successfully to:\n{resultPath}",
-                                      "Roeslein Add-in - Export Complete",
-                                      MessageBoxButtons.OK,
-                                      MessageBoxIcon.Information);
-                 }
-                 else
-                 {
-                      Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Single part DXF export failed for: {swModel.GetPathName()}"); // DEBUG
-                      Logger.Warning($"Single part DXF export failed for: {swModel.GetPathName()}");
-                      // Add Failure MessageBox (Corrected Syntax)
-                      MessageBox.Show($"Failed to export DXF file for {fileName}.\nCheck the log file for details: {settings.LogFilePath}",
-                                      "Roeslein Add-in - Export Failed",
-                                      MessageBoxButtons.OK,
-                                      MessageBoxIcon.Error);
-                 }
-             }
-             else
-             {
-                  Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Single part processing cancelled by user."); // DEBUG
-                  Logger.Info("Single part processing cancelled by user.");
-             }
-
-             Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Completed single part processing"); // DEBUG
-             Logger.Info("Completed single part processing");
-             Debug.WriteLine("[DEBUG] ProcessSinglePartSheetMetal END"); // DEBUG
-        }
-        
-        /// <summary>
-        /// Process sheet metal part and export to DXF
-        /// </summary>
-        public string ProcessSheetMetalPart(PartDoc swPart, string outputFolder, string baseFileName = null)
-        {
-            if (swPart == null) return null;
-                
-            // Load mappings
-            var mappings = Settings.LoadPropertyMappings() ?? new List<PropertyMapping>(); // Ensure mappings is not null
-
-            // Filter mappings to ensure DxfPropertyName is valid before creating dictionary
-            var validMappings = mappings.Where(m => !string.IsNullOrWhiteSpace(m.DxfPropertyName))
-                                        .OrderBy(m => m.RowNumber) // Sort by row number
-                                        .ToList();
-            if (validMappings.Count < mappings.Count)
-            {
-                 Logger.Warning("One or more property mappings were ignored due to missing DXF Property Name.");
-            }
-
-            // Create dictionary only from valid mappings
-            var mappingDict = validMappings.ToDictionary(m => m.DxfPropertyName, m => m.SwCustomProperty);
-
-            // Declare variables outside try block for accessibility
-            string partTitle = "Unknown"; 
-            string fileName = "Unknown";
-            ModelDoc2 swModel = swPart as ModelDoc2;
-            string originalConfig = "";
-            string dxfOutputPath = ""; // Initialize here
-            DrawingDoc swDrawingDoc = null;
-            bool drawingCreated = false; // Flag to ensure cleanup
-
-            try // Outer try for overall part processing setup
-            {
-                // --- Initial Part Setup ---
-                string partPath = swModel.GetPathName();
-                partTitle = swModel.GetTitle();
-                fileName = baseFileName ?? Path.GetFileNameWithoutExtension(partTitle);
-                dxfOutputPath = Path.Combine(outputFolder, fileName + ".dxf"); // Assign here
-
-                Logger.Info($"Processing part: {partTitle} for DXF export to {dxfOutputPath}");
-
-                originalConfig = swModel.ConfigurationManager.ActiveConfiguration.Name;
-                string flatConfig = FindFlatPatternConfig(swModel);
-
-                if (string.IsNullOrEmpty(flatConfig))
-                {
-                    Logger.Error($"No Flat-Pattern configuration found for {partTitle}. Cannot export DXF.");
-                    exportErrors.Add($"No Flat-Pattern configuration found for {fileName}");
-                    return null;
-                }
-
-                Logger.Info($"Using configuration: {flatConfig}");
-                swModel.ShowConfiguration2(flatConfig);
-                Logger.Info($"[PROCESS_TRACE] Successfully switched configuration to {flatConfig}.");
-
-                Feature flatPatternFeature = FindFeatureByType(swPart, "FlatPattern");
-                if (flatPatternFeature == null)
-                {
-                    Logger.Error($"No 'FlatPattern' feature found in configuration '{flatConfig}' for {partTitle}.");
-                    exportErrors.Add($"No 'FlatPattern' feature found for {fileName}");
-                    swModel.ShowConfiguration2(originalConfig); // Switch back before returning
-                    return null;
-                }
-                flatPatternFeature.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null);
-                Logger.Info("[PROCESS_TRACE] Flat pattern feature unsuppressed.");
-
-                // --- Get Thickness and Notes ---
-                Logger.Info("Attempting to get sheet metal thickness.");
-                string thickness = GetSheetMetalThickness(swPart, originalConfig); // Get thickness from original config
-
-                if (string.IsNullOrEmpty(thickness))
-                {
-                     Logger.Warning($"Could not determine sheet metal thickness for {partTitle}. Skipping DXF export.");
-                     thicknessFailures.Add(fileName);
-                     swModel.ShowConfiguration2(originalConfig); // Switch back before returning
-                     return null;
-                }
-                Logger.Info($"Determined thickness: {thickness}");
-
-                var notes = new List<string>();
-                Logger.Info($"Attempting to gather notes using {validMappings.Count} valid mappings.");
-                
-                foreach (var mapping in validMappings)
-                {
-                    if (string.IsNullOrWhiteSpace(mapping.SwCustomProperty))
-                    {
-                        Logger.Warning($"Skipping mapping with DXF Property '{mapping.DxfPropertyName}' because SW Custom Property is empty.");
-                        continue;
-                    }
-                    // Get properties from the ORIGINAL configuration
-                    string value = GetCustomPropertyValue(swModel.Extension.CustomPropertyManager[originalConfig], mapping.SwCustomProperty);
-                    string noteText = $"{mapping.DxfPropertyName}: {value}";
-                    
-                    // Add note to the list - already in order because validMappings is sorted by RowNumber
-                    notes.Add(noteText);
-                    Logger.Info($"Added note: {mapping.DxfPropertyName} = {value} (Row: {mapping.RowNumber})");
-                }
-
-                // --- Drawing Creation and DXF Export ---
-                int errors = 0;
-                int warnings = 0;
-                bool success = false;
-
-                try // Inner try for drawing operations
-                {
-                    // Get drawing template path
-                    string drwTemplatePath = _swApp.GetUserPreferenceStringValue((int)swUserPreferenceStringValue_e.swDefaultTemplateDrawing);
-                    if (string.IsNullOrEmpty(drwTemplatePath) || !File.Exists(drwTemplatePath))
-                    {
-                       Logger.Warning($"Default drawing template not found or invalid ('{drwTemplatePath}'). Using blank template.");
-                       drwTemplatePath = ""; // Use blank
-                    }
-                    Logger.Info($"Using drawing template: {(string.IsNullOrEmpty(drwTemplatePath) ? "[Blank]" : drwTemplatePath)}");
-
-                    // Create new drawing document
-                    Logger.Info("Creating new temporary drawing document.");
-                    int paperSize = string.IsNullOrEmpty(drwTemplatePath) ? (int)swDwgPaperSizes_e.swDwgPaperAsize : (int)swDwgPaperSizes_e.swDwgPapersUserDefined;
-                    swDrawingDoc = _swApp.NewDocument(drwTemplatePath, paperSize, 0, 0) as DrawingDoc;
-                    if (swDrawingDoc == null) throw new Exception("Failed to create new drawing document from template.");
-                    drawingCreated = true; // Mark for cleanup
-                    ModelDoc2 swDrawModel = swDrawingDoc as ModelDoc2; // Cast for methods
-                    
-                    // Set drawing to use 1:1 scale explicitly
-                    try
-                    {
-                        Logger.Info("Setting drawing to 1:1 scale");
-                        
-                        // Get the active sheet
-                        Sheet activeSheet = swDrawingDoc.GetCurrentSheet();
-                        if (activeSheet != null)
-                        {
-                            // Fix: Call SetScale with correct parameters
-                            activeSheet.SetScale(1, 1, false, false);
-                            
-                            Logger.Info("Drawing scale set to 1:1 directly on sheet");
-                            
-                            // Also set the sheet template size appropriately (with correct parameter types)
-                            if (paperSize == (int)swDwgPaperSizes_e.swDwgPaperAsize)
-                            {
-                                // For A-size sheet, set a larger size if needed for visibility
-                                // Fix: Use correct parameter types for SetProperties
-                                activeSheet.SetProperties(
-                                    (int)swDwgPaperSizes_e.swDwgPaperDsize, 
-                                    1,    // Width type (1 = standard) - not bool
-                                    1,    // Height type (1 = standard) - not bool
-                                    1,    // First angle projection
-                                    true, // Use custom scale - not string
-                                    0.0,  // Width (ignored when standard)
-                                    0.0   // Height (ignored when standard)
-                                );
-                                Logger.Info("Sheet size updated for better visibility");
-                            }
-                        }
-                        else
-                        {
-                            Logger.Warning("Could not get active sheet to set scale");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Warning($"Error setting drawing scale: {ex.Message}");
-                    }
-
-                    // Insert flat pattern view
-                    Logger.Info("Creating flat pattern view");
-                    
-                    // Get user's preference for bend lines
-                    bool userWantsBendLines = settings?.ShowBendLines ?? false;
-                    Logger.Info($"User wants bend lines: {userWantsBendLines}");
-                    
-                    SolidWorks.Interop.sldworks.View swView;
-                    
-                    if (userWantsBendLines)
-                    {
-                        // WHEN USER WANTS BEND LINES: Create with the parameter set to FALSE (reverse of what you'd expect)
-                        Logger.Info("Creating view WITH bend lines (user requested them)");
-                        swView = swDrawingDoc.CreateFlatPatternViewFromModelView3(
-                            partPath,     // ModelName
-                            flatConfig,   // ConfigurationName
-                            0.05,         // x position
-                            0.05,         // y position
-                            0,            // Angle
-                            false,        // Strangely, FALSE shows bend lines
-                            false         // Don't include annotations
-                        );
-                    }
-                    else
-                    {
-                        // WHEN USER DOESN'T WANT BEND LINES: Create with the parameter set to TRUE (reverse of what you'd expect)
-                        Logger.Info("Creating view WITHOUT bend lines (user preference)");
-                        swView = swDrawingDoc.CreateFlatPatternViewFromModelView3(
-                            partPath,     // ModelName
-                            flatConfig,   // ConfigurationName
-                            0.05,         // x position
-                            0.05,         // y position
-                            0,            // Angle
-                            true,         // Strangely, TRUE hides bend lines
-                            false         // Don't include annotations
-                        );
-                    }
-                    
-                    if (swView == null) throw new Exception("Failed to create flat pattern view.");
-                    
-                    // Activate the view and zoom to fit
-                    swDrawingDoc.ActivateView(swView.Name);
-                    swDrawModel.ViewZoomtofit2();
-                    Logger.Info("Activated view and zoomed to fit");
-
-                    // Simple layer management - only create Notes layer as needed
-                    string notesLayerName = !string.IsNullOrEmpty(settings?.TextLayerName) ? settings.TextLayerName : "Notes";
-                    LayerMgr layerMgr = swDrawModel.GetLayerManager();
-                    
-                    // Create the notes layer if needed
-                    if (layerMgr != null && layerMgr.GetLayer(notesLayerName) == null)
-                    {
-                        Logger.Info($"Creating '{notesLayerName}' layer for text");
-                        int blackColor = ColorTranslator.ToWin32(Color.Black);
-                        swDrawingDoc.CreateLayer2(
-                            notesLayerName,
-                            "Property Notes",
-                            blackColor,
-                            (int)swLineStyles_e.swLineCONTINUOUS,
-                            (int)swLineWeights_e.swLW_NORMAL,
-                            true,  // Visible
-                            true   // Printable
-                        );
-                    }
-                    else
-                    {
-                        Logger.Info($"Using existing '{notesLayerName}' layer for text");
-                    }
-
-                    // Insert notes into drawing
-                    Logger.Info("Inserting notes into drawing.");
-                    InsertNotesIntoDrawing(swDrawingDoc, notes);
-                    Logger.Info("Finished inserting notes.");
-
-                    // Simply create the view - don't try to modify bend lines at this point
-                    // The DXF export will still work correctly
-                    
-                    // Zoom to fit
-                    swDrawModel.ViewZoomtofit2();
-                    Logger.Info("Zoomed to fit temporary drawing.");
-
-                    // Save the drawing as DXF - EXACTLY like the macro (simple call with no options)
-                    Logger.Info($"Saving DXF to: {dxfOutputPath} (exact same approach as macro)");
-                    
-                    success = swDrawModel.Extension.SaveAs(
-                        dxfOutputPath, 
-                        (int)swSaveAsVersion_e.swSaveAsCurrentVersion, 
-                        (int)swSaveAsOptions_e.swSaveAsOptions_Silent, 
-                        null,  // No export options - EXACT same as macro
-                        ref errors, 
-                        ref warnings
-                    );
-
-                }
-                catch (Exception ex)
-                {
-                     Logger.Error($"Exception during Drawing creation/save for {partTitle}: {ex.Message}", ex);
-                     exportErrors.Add($"Exception creating/saving drawing DXF for {fileName}: {ex.Message}");
-                     success = false; // Ensure flag is false on exception
-                }
-
-                // --- Post-Save Check ---
-                     if (!success)
-                     {
-                    Logger.Error($"Failed to save drawing DXF for {partTitle}. Errors: {errors}, Warnings: {warnings}");
-                    exportErrors.Add($"Failed to save drawing DXF for {fileName} (Error code: {errors})");
-                }
-                else
-                {
-                    Logger.Info($"Drawing DXF successfully saved to: {dxfOutputPath}");
-                }
-
-                 // Return the path ONLY if successful
-                return success ? dxfOutputPath : null;
-            }
-            catch (Exception ex) // Catch exceptions from initial part setup phase
-            {
-                Logger.Error($"Error during initial processing of part '{partTitle}': {ex.Message}", ex);
-                exportErrors.Add($"Error during initial processing of part '{fileName}': {ex.Message}");
-                // Attempt to switch back config even if initial setup failed
-                if (swModel != null && !string.IsNullOrEmpty(originalConfig) && swModel.ConfigurationManager.ActiveConfiguration.Name != originalConfig)
-                {
-                    try { swModel.ShowConfiguration2(originalConfig); } catch { /* Ignore errors during cleanup */ }
-                }
-                return null;
-            }
-            finally
-            {
-                Logger.Info("Executing finally block...");
-                // Ensure drawing is closed without saving changes
-                if (drawingCreated && swDrawingDoc != null)
-                {
-                    ModelDoc2 swDrawModelToClose = swDrawingDoc as ModelDoc2;
-                    if (swDrawModelToClose != null)
-                    {
-                         Logger.Info($"Closing temporary drawing: {swDrawModelToClose.GetTitle()}");
-                         _swApp.CloseDoc(swDrawModelToClose.GetTitle());
-                    }
-                }
-                // Ensure original part configuration is restored
-                if (swModel != null && !string.IsNullOrEmpty(originalConfig))
-                {
-                     // Check if config is already restored before trying again
-                     if(swModel.ConfigurationManager.ActiveConfiguration.Name != originalConfig)
-                     {
-                        Logger.Info($"Restoring original part configuration: {originalConfig}");
-                        try { swModel.ShowConfiguration2(originalConfig); } catch (Exception ex) { Logger.Warning($"Failed to restore original config '{originalConfig}': {ex.Message}");}
-                     } else {
-                        Logger.Info("Original configuration already active.");
-                     }
-                }
-                Logger.Info("Finished finally block.");
-            }
-        }
-        
-        /// <summary>
-        /// Checks if a part is a sheet metal part by looking for the "SheetMetal" feature.
-        /// </summary>
-        public static bool IsSheetMetalPart(PartDoc part)
-        {
-            if (part == null) return false;
-
-            ModelDoc2 model = part as ModelDoc2;
-            Feature feat = model.FirstFeature() as Feature;
-
-            while (feat != null)
-            {
-                string typeName = feat.GetTypeName2();
-                if (typeName == "SheetMetal" || typeName == "FlatPattern")
-                {
-                     Debug.WriteLine($"[DEBUG] Part {model.GetTitle()} identified as sheet metal (Feature: {typeName})"); // DEBUG
-                     Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Part {model.GetTitle()} identified as sheet metal (Feature: {typeName})"); // DEBUG
-                     Logger.Info($"Part {model.GetTitle()} identified as sheet metal (Feature: {typeName})");
-                    return true;
-                }
-                feat = feat.GetNextFeature() as Feature;
-            }
-             Debug.WriteLine($"[DEBUG] Part {model.GetTitle()} NOT identified as sheet metal."); // DEBUG
-             Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Part {model.GetTitle()} NOT identified as sheet metal."); // DEBUG
-             Logger.Info($"Part {model.GetTitle()} NOT identified as sheet metal.");
-            return false;
-        }
-        #endregion
-
-        #region Private Methods
         private void LoadSettings()
         {
             settings = AppSettings.LoadSettings();
@@ -821,7 +128,586 @@ namespace RoesleinAddIn
                 }
             }
         }
+
+        private string MapMaterial(string swMaterial, string partTitle = null)
+        {
+            if (string.IsNullOrWhiteSpace(swMaterial)) return null;
+            string normalized = swMaterial.Trim();
+            var mappings = Settings.LoadMaterialMappings();
+            var match = mappings.FirstOrDefault(m => string.Equals(m.SwMaterial.Trim(), normalized, StringComparison.OrdinalIgnoreCase));
+            if (match != null && !string.IsNullOrWhiteSpace(match.DxfMaterial))
+            {
+                return match.DxfMaterial.Trim();
+            }
+            
+            // Track unmapped material
+            if (!unmappedMaterialParts.ContainsKey(normalized))
+                unmappedMaterialParts[normalized] = new List<string>();
+            
+            // Add part title if provided and not already in the list
+            if (!string.IsNullOrEmpty(partTitle) && 
+                !unmappedMaterialParts[normalized].Contains(partTitle))
+            {
+                unmappedMaterialParts[normalized].Add(partTitle);
+                Logger.Info($"Added part '{partTitle}' to unmapped material '{normalized}'");
+            }
         
+            return null;
+        }
+
+        private void AddNotesToDrawing(DrawingDoc swDrawingDoc, ModelDoc2 swPartModel, string configName, string thickness, string flatViewName)
+        {
+            ModelDoc2 swDraw = (ModelDoc2)swDrawingDoc;
+            if (swDraw == null)
+            {
+                Logger.Error("ERROR: Could not get ModelDoc2 from DrawingDoc in AddNotesToDrawing");
+                return;
+            }
+
+            try
+            {
+                // --- 1 Create / activate Notes layer --------------------------------
+                LayerMgr lyrMgr = (LayerMgr)swDraw.GetLayerManager();
+                if (lyrMgr == null)
+                {
+                    Logger.Error("ERROR: Could not get Layer Manager");
+                    return;
+                }
+
+                string layerName = string.IsNullOrWhiteSpace(settings.TextLayerName)
+                                  ? "Notes" : settings.TextLayerName;
+                Logger.Info($"Using text layer: '{layerName}' from settings");
+
+                Layer notesLayer = (Layer)lyrMgr.GetLayer(layerName);
+                if (notesLayer == null)
+                {
+                    bool result = swDrawingDoc.CreateLayer2(
+                        layerName, "Property Notes", ColorTranslator.ToWin32(Color.Magenta),
+                        (int)swLineStyles_e.swLineCONTINUOUS,
+                        (int)swLineWeights_e.swLW_NORMAL, true, true);
+                    
+                    if (!result)
+                    {
+                        Logger.Error($"ERROR: Failed to create '{layerName}' layer");
+                        return;
+                    }
+                    notesLayer = (Layer)lyrMgr.GetLayer(layerName);
+                }
+                
+                notesLayer.Color = ColorTranslator.ToWin32(Color.Magenta);
+                notesLayer.Visible = true;
+                notesLayer.Printable = true;
+                lyrMgr.SetCurrentLayer(layerName);
+
+                // --- 2 Collect custom property values -----------------------------------
+                CustomPropertyManager propMgr = swPartModel.Extension.CustomPropertyManager[configName];
+                if (propMgr == null)
+                {
+                    Logger.Error("ERROR: Could not get CustomPropertyManager");
+                    return;
+                }
+
+                // Load property mappings in correct order
+                string[] notes;
+                var propertyMappings = Settings.LoadPropertyMappings()?.OrderBy(m => m.RowNumber).ToList();
+                if (propertyMappings == null || propertyMappings.Count == 0)
+                {
+                    Logger.Warning("WARNING: No property mappings found, using default order");
+                    notes = new string[]
+                    {
+                        $"Shop Route: {GetCustomPropertyValue(propMgr, "Shop Route")}",
+                        $"Thickness: {thickness}",
+                        $"Material: {MapMaterial(GetCustomPropertyValue(propMgr, "Material"))}",
+                        $"Revision: {GetCustomPropertyValue(propMgr, "Revision")}",
+                        $"Description: {GetCustomPropertyValue(propMgr, "Description")}",
+                        $"Part Number: {GetCustomPropertyValue(propMgr, "Part Number")}"
+                    };
+                }
+                else
+                {
+                    // Create notes array based on property mapping order
+                    var orderedNotes = new List<string>();
+                    foreach (var mapping in propertyMappings)
+                    {
+                        string value = mapping.SwCustomProperty == "Sheet Metal Thickness" ? 
+                                     thickness : 
+                                     GetCustomPropertyValue(propMgr, mapping.SwCustomProperty);
+                        
+                        if (mapping.SwCustomProperty == "Material")
+                        {
+                            string partTitle = swPartModel.GetTitle();
+                            value = MapMaterial(value, partTitle) ?? value;
+                        }
+                            
+                        orderedNotes.Add($"{mapping.DxfPropertyName}: {value}");
+                    }
+                    notes = orderedNotes.ToArray();
+                }
+
+                Logger.Info("Adding notes to drawing with values:");
+                foreach (string note in notes)
+                {
+                    Logger.Info($"  - {note}");
+                }
+
+                // --- 3 Insert each note – anchor to SHEET not VIEW -------------------
+                // Clear DXF mapping file before creating notes
+                _swApp.SetUserPreferenceStringValue((int)swUserPreferenceStringValue_e.swDxfMappingFile, "");
+                
+                // Get the flat pattern view bounds
+                SwView flatView = (SwView)swDrawingDoc.GetFirstView();
+                while (flatView != null && flatView.GetName2() != flatViewName)
+                {
+                    flatView = (SwView)flatView.GetNextView();
+                }
+
+                if (flatView == null)
+                {
+                    Logger.Error($"ERROR: Could not find view '{flatViewName}' for text placement");
+                    return;
+                }
+
+                // Get view outline - returns array of 4 doubles: [xmin, ymin, xmax, ymax]
+                object outlineObj = flatView.GetOutline();
+                if (outlineObj == null)
+                {
+                    Logger.Error("ERROR: Failed to get view outline");
+                    return;
+                }
+                
+                double[] viewBounds = (double[])outlineObj;
+                
+                // Calculate center coordinates and adjust for text block placement
+                double centerX = (viewBounds[0] + viewBounds[2]) / 2.0;
+                double spacing = 0.0075; // Reduced spacing between lines
+                
+                // Calculate total height of text block
+                int numNotes = notes.Count(t => !string.IsNullOrWhiteSpace(t));
+                double textBlockHeight = numNotes * spacing;
+                
+                // Position text block just above the part's center
+                double startY = viewBounds[1] + ((viewBounds[3] - viewBounds[1]) / 2.0) + (textBlockHeight / 2.0);
+                
+                Logger.Info($"View bounds: Left={viewBounds[0]}, Bottom={viewBounds[1]}, Right={viewBounds[2]}, Top={viewBounds[3]}");
+                Logger.Info($"Center point: X={centerX}, Y={startY}");
+                
+                // Select the sheet for note anchoring
+                swDraw.Extension.SelectByID2("", "SHEET", 0, 0, 0, false, 0, null, 0);
+
+                int noteIndex = 0;
+                foreach (string noteText in notes.Where(t => !string.IsNullOrWhiteSpace(t)))
+                {
+                    Note swNote = (Note)swDraw.InsertNote(noteText);
+                    if (swNote == null)
+                    {
+                        Logger.Error($"ERROR: Failed to insert note: {noteText}");
+                        continue;
+                    }
+
+                    Annotation ann = (Annotation)swNote.GetAnnotation();
+                    if (ann != null)
+                    {
+                        ann.Layer = layerName;
+                        // Place notes starting from top, working down
+                        double y = startY - (noteIndex * spacing);
+                        ann.SetPosition2(centerX, y, 0);
+                        notesLayer.Color = ColorTranslator.ToWin32(Color.Magenta);
+                        Logger.Info($"Placed note at X={centerX}, Y={y}: {noteText}");
+                        noteIndex++;
+                    }
+                    else
+                    {
+                        Logger.Error($"ERROR: Failed to get annotation for note: {noteText}");
+                    }
+                }
+
+                swDraw.ForceRebuild3(true);
+                swDraw.GraphicsRedraw2();
+                Logger.Info("Successfully added all notes to drawing");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"ERROR in AddNotesToDrawing: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+        #endregion
+
+        #region Public Methods
+        public void ProcessAssemblySheetMetal()
+        {
+            Debug.WriteLine("[DEBUG] ProcessAssemblySheetMetal START"); // DEBUG
+            Debug.WriteLine("[DEBUG] Attempting Logger.Info: Starting assembly processing"); // DEBUG
+            Logger.Info("Starting assembly processing");
+            ModelDoc2 swModel = _swApp.ActiveDoc as ModelDoc2;
+            
+            // Clear processed part paths to allow re-processing in new runs
+            _processedPartPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            
+            if (swModel == null)
+            {
+                MessageBox.Show("No active document.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            
+            if (swModel.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY)
+            {
+                MessageBox.Show("Active document is not an assembly.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            LoadSettings();
+
+            if (string.IsNullOrEmpty(settings.LastExportFolder) || !Directory.Exists(settings.LastExportFolder))
+            {
+                 MessageBox.Show("Output folder is not set or does not exist. Please configure it in the settings.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                 Logger.Error("Output folder not configured or invalid.");
+                 return;
+            }
+            string outputFolder = settings.LastExportFolder;
+            if (!outputFolder.EndsWith("\\")) outputFolder += "\\";
+
+            // Get the assembly name for later use with export
+            string assemblyName = Path.GetFileNameWithoutExtension(swModel.GetTitle());
+
+            AssemblyDoc swAssy = swModel as AssemblyDoc;
+            object[] components = swAssy.GetComponents(true) as object[];
+            
+            if (components == null || components.Length == 0)
+            {
+                MessageBox.Show("No components found in the assembly.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Logger.Warning("No components found in assembly.");
+                return;
+            }
+
+            int totalProcessed = 0;
+            int sheetMetalPartsFound = 0;
+            thicknessFailures.Clear();
+            exportErrors.Clear();
+            ignoredParts.Clear();
+            unmappedMaterialParts.Clear();
+            materialThicknessCounts.Clear();
+            List<string> processedFiles = new List<string>();
+
+            Logger.Info($"Processing {components.Length} components in assembly {swModel.GetPathName()}");
+            Logger.Info($"Output Directory: {outputFolder}");
+
+            // Use the root component for recursion
+            ConfigurationManager swConfMgr = swModel.ConfigurationManager;
+            Configuration swConf = swConfMgr.ActiveConfiguration;
+            Component2 swRootComp = swConf.GetRootComponent3(true);
+            if (swRootComp == null)
+            {
+                MessageBox.Show("Failed to get root component.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Logger.Warning("Failed to get root component.");
+                return;
+            }
+            ProcessAssemblyComponentsRecursively(swRootComp, outputFolder, ref sheetMetalPartsFound, ref totalProcessed, processedFiles);
+
+            // Use StringBuilder for robust string construction
+            var summaryBuilder = new System.Text.StringBuilder();
+
+            if (totalProcessed > 0)
+            {
+                summaryBuilder.AppendLine($"Successfully processed {totalProcessed} out of {sheetMetalPartsFound} sheet metal parts found.");
+                summaryBuilder.AppendLine();
+                summaryBuilder.AppendLine($"Files saved to: {outputFolder}");
+                Debug.WriteLine("[DEBUG] Attempting Logger.Info: Successfully processed {totalProcessed} sheet metal parts."); // DEBUG
+                Logger.Info($"Successfully processed {totalProcessed} sheet metal parts.");
+
+                // Add material-thickness breakdown section
+                if (materialThicknessCounts.Count > 0)
+                {
+                    summaryBuilder.AppendLine();
+                    summaryBuilder.AppendLine("DXFs created by Material and Thickness:");
+                    foreach (var entry in materialThicknessCounts.OrderByDescending(e => e.Value))
+                    {
+                        summaryBuilder.AppendLine($"- {entry.Value} DXFs: {entry.Key}");
+                    }
+                }
+            }
+            else if (sheetMetalPartsFound > 0)
+            {
+                 summaryBuilder.AppendLine($"Found {sheetMetalPartsFound} sheet metal parts, but none were processed successfully.");
+                 summaryBuilder.AppendLine($"Check log file for details: {settings.LogFilePath}");
+                 Debug.WriteLine("[DEBUG] Attempting Logger.Warning: Found {sheetMetalPartsFound} sheet metal parts, but none were processed."); // DEBUG
+                 Logger.Warning($"Found {sheetMetalPartsFound} sheet metal parts, but none were processed.");
+            }
+            else
+            {
+                summaryBuilder.AppendLine("No sheet metal parts found or processed in the assembly.");
+                Debug.WriteLine("[DEBUG] Attempting Logger.Info: No sheet metal parts found or processed."); // DEBUG
+                Logger.Info("No sheet metal parts found or processed.");
+            }
+
+             if (thicknessFailures.Count > 0)
+            {
+                summaryBuilder.AppendLine();
+                summaryBuilder.AppendLine($"WARNING: Could not determine sheet metal thickness for {thicknessFailures.Count} parts:");
+                foreach (string failure in thicknessFailures)
+                {
+                    summaryBuilder.AppendLine($"- {failure}");
+                }
+                Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Thickness failures: {string.Join(", ", thicknessFailures)}"); // DEBUG
+                Logger.Warning($"Thickness failures: {string.Join(", ", thicknessFailures)}");
+            }
+
+             if (exportErrors.Count > 0)
+            {
+                 summaryBuilder.AppendLine();
+                 summaryBuilder.AppendLine($"ERROR: Encountered {exportErrors.Count} errors during processing:");
+                 foreach(string error in exportErrors)
+                 {
+                     summaryBuilder.AppendLine($"- {error}");
+                 }
+                 Debug.WriteLine($"[DEBUG] Attempting Logger.Error: Processing errors encountered: {exportErrors.Count}"); // DEBUG
+                 Logger.Error($"Processing errors encountered: {exportErrors.Count}");
+            }
+
+            if (unmappedMaterialParts.Count > 0)
+            {
+                summaryBuilder.AppendLine();
+                summaryBuilder.AppendLine("The following materials were not found in the Material Mapping settings:");
+                
+                foreach (var materialEntry in unmappedMaterialParts.OrderBy(m => m.Key))
+                {
+                    string material = materialEntry.Key;
+                    List<string> parts = materialEntry.Value;
+                    
+                    summaryBuilder.AppendLine($"- {material}");
+                    
+                    // List part numbers that use this unmapped material (up to 5)
+                    if (parts.Count > 0)
+                    {
+                        int displayCount = Math.Min(parts.Count, 5); // Display up to 5 parts per material
+                        string partsList = string.Join(", ", parts.Take(displayCount));
+                        
+                        if (parts.Count > displayCount)
+                        {
+                            summaryBuilder.AppendLine($"   Used in: {partsList}, and {parts.Count - displayCount} more part(s)");
+                        }
+                        else
+                        {
+                            summaryBuilder.AppendLine($"   Used in: {partsList}");
+                        }
+                    }
+                }
+                
+                summaryBuilder.AppendLine("\nPlease add these materials to the Material Mapping tab in Settings and run the process again.");
+            }
+
+            // Consolidate ignored parts list by counting occurrences of each part
+            if (ignoredParts.Count > 0)
+            {
+                summaryBuilder.AppendLine();
+                summaryBuilder.AppendLine($"Parts ignored (not marked for laser cutting): {ignoredParts.Count}");
+                
+                // Group parts by name and count occurrences
+                var consolidatedParts = ignoredParts
+                    .GroupBy(part => part)
+                    .Select(group => new { Name = group.Key, Count = group.Count() })
+                    .OrderBy(item => item.Name);
+                
+                foreach (var item in consolidatedParts)
+                {
+                    if (item.Count > 1)
+                        summaryBuilder.AppendLine($"- {item.Name} (not processed {item.Count} times)");
+                    else
+                        summaryBuilder.AppendLine($"- {item.Name}");
+                }
+            }
+
+            string summaryMessage = summaryBuilder.ToString(); // Get the final string
+            
+            // Show custom dialog with scrollable text and export button, passing assembly name
+            ShowResultDialog("Roeslein Add-in - Processing Complete", summaryMessage, outputFolder, assemblyName);
+
+            Debug.WriteLine("[DEBUG] Attempting Logger.Info: Completed assembly processing. Total processed: {totalProcessed}, Found SM: {sheetMetalPartsFound}"); // DEBUG
+            Logger.Info($"Completed assembly processing. Total processed: {totalProcessed}, Found SM: {sheetMetalPartsFound}");
+            Debug.WriteLine("[DEBUG] ProcessAssemblySheetMetal END"); // DEBUG
+        }
+
+        // Create a custom dialog with scrollable text area and export button
+        private void ShowResultDialog(string title, string message, string defaultExportFolder, string assemblyName = "")
+        {
+            try
+            {
+                using (var resultForm = new Form())
+                {
+                    resultForm.Text = title;
+                    resultForm.Width = 600;
+                    resultForm.Height = 500;
+                    resultForm.StartPosition = FormStartPosition.CenterScreen;
+                    resultForm.MinimizeBox = false;
+                    resultForm.MaximizeBox = false;
+                    resultForm.FormBorderStyle = FormBorderStyle.FixedDialog;
+                    
+                    // Create a scrollable text box to display the summary
+                    TextBox summaryTextBox = new TextBox();
+                    summaryTextBox.Multiline = true;
+                    summaryTextBox.ReadOnly = true;
+                    summaryTextBox.ScrollBars = ScrollBars.Vertical;
+                    summaryTextBox.Font = new Font("Consolas", 9F);
+                    summaryTextBox.Dock = DockStyle.Fill;
+                    summaryTextBox.Text = message;
+                    
+                    // Create a panel for buttons at the bottom
+                    Panel buttonPanel = new Panel();
+                    buttonPanel.Dock = DockStyle.Bottom;
+                    buttonPanel.Height = 50;
+                    
+                    // Create OK button
+                    Button okButton = new Button();
+                    okButton.Text = "OK";
+                    okButton.DialogResult = DialogResult.OK;
+                    okButton.Location = new Point(490, 15);
+                    okButton.Size = new Size(80, 25);
+                    buttonPanel.Controls.Add(okButton);
+                    
+                    // Create Export button
+                    Button exportButton = new Button();
+                    exportButton.Text = "Export Report";
+                    exportButton.Location = new Point(370, 15);
+                    exportButton.Size = new Size(100, 25);
+                    exportButton.Click += (sender, e) => 
+                    {
+                        try 
+                        {
+                            // Show save file dialog
+                            using (SaveFileDialog saveDialog = new SaveFileDialog())
+                            {
+                                saveDialog.Filter = "Text Files (*.txt)|*.txt|CSV Files (*.csv)|*.csv|All Files (*.*)|*.*";
+                                saveDialog.Title = "Export Processing Results";
+                                saveDialog.InitialDirectory = defaultExportFolder;
+                                
+                                // Create default filename with assembly name and date/time
+                                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                                string defaultFilename = string.IsNullOrEmpty(assemblyName) 
+                                    ? $"Roeslein_Processing_Results_{timestamp}.txt"
+                                    : $"{assemblyName}_Processing_Results_{timestamp}.txt";
+                                    
+                                saveDialog.FileName = defaultFilename;
+                                
+                                if (saveDialog.ShowDialog() == DialogResult.OK)
+                                {
+                                    File.WriteAllText(saveDialog.FileName, message);
+                                    MessageBox.Show($"Results exported to {saveDialog.FileName}", "Export Complete", 
+                                                   MessageBoxButtons.OK, MessageBoxIcon.Information);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Error($"Error exporting results: {ex.Message}");
+                            MessageBox.Show($"Failed to export results: {ex.Message}", "Export Error", 
+                                           MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
+                    };
+                    buttonPanel.Controls.Add(exportButton);
+                    
+                    // Add controls to form
+                    resultForm.Controls.Add(summaryTextBox);
+                    resultForm.Controls.Add(buttonPanel);
+                    
+                    // Show dialog
+                    resultForm.ShowDialog();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error showing result dialog: {ex.Message}");
+                MessageBox.Show(message, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        public void ProcessSinglePartSheetMetal()
+        {
+             Debug.WriteLine("[DEBUG] ProcessSinglePartSheetMetal START"); // DEBUG
+             ModelDoc2 swModel = _swApp.ActiveDoc as ModelDoc2;
+
+             if (swModel == null)
+             {
+                 MessageBox.Show("No active document.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                 return;
+             }
+
+             if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
+             {
+                 MessageBox.Show("Active document is not a part.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                 return;
+             }
+
+             PartDoc swPart = swModel as PartDoc;
+
+             if (!IsSheetMetalPart(swPart))
+             {
+                  Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Single part processing skipped: {swModel.GetPathName()} is not a sheet metal part."); // DEBUG
+                  Logger.Info($"Single part processing skipped: {swModel.GetPathName()} is not a sheet metal part.");
+                  return;
+             }
+
+             // Add laser cutting check for single parts
+             if (!IsLaserCuttingPart(swModel))
+             {
+                 Logger.Warning($"Single part {swModel.GetTitle()} skipped - not marked for laser cutting");
+                 MessageBox.Show($"Part {swModel.GetTitle()} is not marked for laser cutting in its Shop Route property.", 
+                              "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                 return;
+             }
+
+             Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Starting single part processing for: {swModel.GetPathName()}"); // DEBUG
+             Logger.Info($"Starting single part processing for: {swModel.GetPathName()}");
+             LoadSettings();
+
+             // Determine output folder
+             string defaultSinglePartFolder = @"\\roeslein.com\locations$\RoesleinFabrication\Connex-Metamation Hot Folder\DXFs From PDM";
+             string outputFolder = null;
+             if (!string.IsNullOrEmpty(settings.LastSinglePartExportFolder) && Directory.Exists(settings.LastSinglePartExportFolder))
+             {
+                 outputFolder = settings.LastSinglePartExportFolder;
+             }
+             else if (Directory.Exists(defaultSinglePartFolder))
+             {
+                 outputFolder = defaultSinglePartFolder;
+             }
+             else if (!string.IsNullOrEmpty(swModel.GetPathName()))
+             {
+                 outputFolder = Path.GetDirectoryName(swModel.GetPathName());
+             }
+             else
+             {
+                 outputFolder = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments);
+             }
+
+             // Compose output file path
+             string fileName = Path.GetFileNameWithoutExtension(swModel.GetPathName()) + ".dxf";
+             string outputPath = Path.Combine(outputFolder, fileName);
+
+             // Save the folder as the new default
+             settings.LastSinglePartExportFolder = outputFolder;
+             settings.SaveSettings();
+
+             string result = ProcessSheetMetalPart(swPart, outputFolder, Path.GetFileNameWithoutExtension(swModel.GetPathName()));
+
+             if (!string.IsNullOrEmpty(result))
+             {
+                  Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Single part DXF exported successfully to: {result}"); // DEBUG
+                  Logger.Info($"Single part DXF exported successfully to: {result}");
+                  MessageBox.Show($"DXF file exported successfully to:\n{result}", "Export Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+             }
+             else
+             {
+                  Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Single part DXF export failed for: {swModel.GetPathName()}"); // DEBUG
+                  Logger.Warning($"Single part DXF export failed for: {swModel.GetPathName()}");
+                  MessageBox.Show($"Failed to export DXF file for {fileName}.\n\nCheck log for details: {settings.LogFilePath}", "Export Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+             }
+
+             Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Completed single part processing"); // DEBUG
+             Logger.Info("Completed single part processing");
+             Debug.WriteLine("[DEBUG] ProcessSinglePartSheetMetal END"); // DEBUG
+        }
+        #endregion
+
+        #region Private Methods
         private string ProcessSheetMetalComponent(ModelDoc2 compDoc, string outputFolder)
         {
             if (compDoc == null || compDoc.GetType() != (int)swDocumentTypes_e.swDocPART)
@@ -833,9 +719,205 @@ namespace RoesleinAddIn
             string fileName = Path.GetFileNameWithoutExtension(compDoc.GetPathName());
             string outputPath = Path.Combine(outputFolder, fileName + ".dxf");
             
-            return ProcessSheetMetalPart(swPart, outputPath);
+            // Get the base file name without extension
+            string baseFileName = Path.GetFileNameWithoutExtension(fileName);
+            
+            // Call ProcessSheetMetalPart with the base file name
+            return ProcessSheetMetalPart(swPart, outputFolder, baseFileName);
         }
 
+        /// <summary>
+        /// Process sheet metal part and export to DXF
+        /// </summary>
+        public string ProcessSheetMetalPart(PartDoc swPart, string outputFolder, string baseFileName = null)
+        {
+            if (swPart == null) return null;
+            
+            // Declare variables outside try block for accessibility in catch block
+            string partTitle = "Unknown"; 
+            string fileName = "Unknown";
+            ModelDoc2 swModel = null;
+            string originalConfig = null;
+            ModelDoc2 swDraw = null;
+
+            try
+            {
+                swModel = swPart as ModelDoc2;
+                partTitle = swModel.GetTitle();
+                // LASER CHECK: Check before any property updates
+                if (!IsLaserCuttingPart(swModel))
+                {
+                    Logger.Warning($"Part {partTitle} skipped - not marked for laser cutting (Shop Route: '{GetCustomProperty(swModel, "Shop Route")}')");
+                    ignoredParts.Add(partTitle);
+                    return null;
+                }
+                string partPath = swModel.GetPathName();
+                fileName = baseFileName ?? Path.GetFileNameWithoutExtension(partTitle);
+                string outputPath = Path.Combine(outputFolder, fileName + ".dxf");
+
+                Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Processing part: {partTitle} for DXF export to {outputPath}"); // DEBUG
+                Logger.Info($"Processing part: {partTitle} for DXF export to {outputPath}");
+
+                originalConfig = swModel.ConfigurationManager.ActiveConfiguration.Name;
+                string flatConfig = FindFlatPatternConfig(swModel);
+
+                if (string.IsNullOrEmpty(flatConfig))
+                {
+                    Debug.WriteLine($"[DEBUG] Attempting Logger.Error: No Flat-Pattern configuration found for {partTitle}. Cannot export DXF."); // DEBUG
+                    Logger.Error($"No Flat-Pattern configuration found for {partTitle}. Cannot export DXF.");
+                    exportErrors.Add($"No Flat-Pattern configuration found for {fileName}");
+                    swModel.ShowConfiguration2(originalConfig);
+                    return null;
+                }
+
+                Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Using configuration: {flatConfig}"); // DEBUG
+                Logger.Info($"Using configuration: {flatConfig}");
+                swModel.ShowConfiguration2(flatConfig);
+
+                Feature flatPatternFeature = FindFeatureByType(swPart, "FlatPattern");
+                if (flatPatternFeature == null)
+                {
+                    Debug.WriteLine($"[DEBUG] Attempting Logger.Error: No 'FlatPattern' feature found in configuration '{flatConfig}' for {partTitle}."); // DEBUG
+                    Logger.Error($"No 'FlatPattern' feature found in configuration '{flatConfig}' for {partTitle}.");
+                    exportErrors.Add($"No 'FlatPattern' feature found for {fileName}");
+                    swModel.ShowConfiguration2(originalConfig);
+                    return null;
+                }
+                flatPatternFeature.SetSuppression2((int)swFeatureSuppressionAction_e.swUnSuppressFeature, (int)swInConfigurationOpts_e.swThisConfiguration, null);
+
+                // Hide all visible sketches in the flat pattern config
+                HideAllVisibleSketchesInConfig(swModel);
+                Debug.WriteLine("[DEBUG] Hid visible sketches in flat pattern config.");
+
+                string thickness = GetSheetMetalThickness(swPart, originalConfig);
+                if (string.IsNullOrEmpty(thickness))
+                {
+                    Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Could not determine sheet metal thickness for {partTitle}. Skipping DXF export."); // DEBUG
+                    Logger.Warning($"Could not determine sheet metal thickness for {partTitle}. Skipping DXF export.");
+                    thicknessFailures.Add(fileName);
+                    swModel.ShowConfiguration2(originalConfig);
+                    return null;
+                }
+                Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Determined thickness: {thickness}"); // DEBUG
+                Logger.Info($"Determined thickness: {thickness}");
+
+                // Track DXF count by material and thickness
+                string mat = GetCustomProperty(swModel, "Material");
+                string mappedMaterial = MapMaterial(mat, partTitle);
+                
+                string key = $"{(mappedMaterial ?? mat)} | {thickness}";
+                if (!materialThicknessCounts.ContainsKey(key))
+                    materialThicknessCounts[key] = 0;
+                materialThicknessCounts[key]++;
+
+                string tempDrawingPath = Path.Combine(Path.GetTempPath(), fileName + "_tempDXF.SLDDRW");
+                try
+                {
+                    string drwTemplate = settings.DrawingTemplatePath;
+                    if (string.IsNullOrEmpty(drwTemplate) || !File.Exists(drwTemplate))
+                    {
+                        string msg = $"Drawing template not found or invalid: '{drwTemplate}'. Please check the path in settings.";
+                        Debug.WriteLine($"[DEBUG] {msg}");
+                        Logger.Error(msg);
+                        throw new Exception(msg);
+                    }
+
+                    object newDoc = _swApp.NewDocument(drwTemplate, (int)swDwgPaperSizes_e.swDwgPaperAsize, 0, 0);
+                    if (newDoc == null) throw new Exception("Failed to create new drawing document.");
+                    swDraw = (ModelDoc2)newDoc;
+
+                    DrawingDoc swDrawingDoc = swDraw as DrawingDoc;
+                    if (swDrawingDoc == null) throw new Exception("Failed to get DrawingDoc from new document.");
+
+                    // Set up the bend line layer first
+                    string bendLayerName = !string.IsNullOrEmpty(settings.BendLineLayerName) 
+                        ? settings.BendLineLayerName 
+                        : "Bend";
+
+                    // Create the layer with specified properties
+                    bool layerResult = swDrawingDoc.CreateLayer2(
+                        bendLayerName,
+                        "Sheet‑metal bend lines",
+                        ColorTranslator.ToWin32(Color.Blue),
+                        (int)swLineStyles_e.swLineCENTER,
+                        (int)swLineWeights_e.swLW_THIN,
+                        true,   // visible
+                        true    // printable
+                    );
+
+                    if (!layerResult)  // Check boolean result
+                    {
+                        Logger.Warning($"Failed to create bend line layer: {bendLayerName}");
+                        throw new Exception($"Failed to create bend line layer: {bendLayerName}");
+                    }
+
+                    // Set as current layer
+                    LayerMgr lyrMgr = (LayerMgr)swDraw.GetLayerManager();
+                    if (lyrMgr != null)
+                    {
+                        lyrMgr.SetCurrentLayer(bendLayerName);
+                    }
+
+                    // Create flat pattern view with bend lines visible
+                    SwView flatView = swDrawingDoc.CreateFlatPatternViewFromModelView3(partPath, flatConfig, 0.05, 0.05, 0, false, false);
+                    if (flatView == null) throw new Exception("Failed to create flat pattern view in drawing.");
+                    Logger.Info($"Created flat pattern view named: {flatView.Name}");
+
+                    // Add zoom to fit after creating the view
+                    if (!swDrawingDoc.ActivateView(flatView.Name)) Logger.Warning("Failed to activate view before zoom.");
+                    swDraw.ViewZoomtofit2();
+                    swDraw.GraphicsRedraw2();
+
+                    // Ensure bend lines are on the correct layer
+                    AssignBendLinesToLayer(swDrawingDoc, flatView);
+                    swDraw.ForceRebuild3(true);
+                    swDraw.GraphicsRedraw2();
+
+                    // Set DXF export options before adding notes
+                    SetDxfExportOptions(swDraw);
+
+                    // Pass the flat view name to AddNotesToDrawing
+                    AddNotesToDrawing(swDrawingDoc, swModel, originalConfig, thickness, flatView.Name);
+
+                    int errors = 0;
+                    int warnings = 0;
+                    bool success = swDraw.Extension.SaveAs(outputPath, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                                                         (int)swSaveAsOptions_e.swSaveAsOptions_Silent, null, ref errors, ref warnings);
+
+                    if (!success)
+                    {
+                        Debug.WriteLine($"[DEBUG] Attempting Logger.Error: Failed to save DXF for {partTitle}. Errors: {errors}, Warnings: {warnings}"); // DEBUG
+                        Logger.Error($"Failed to save DXF for {partTitle}. Errors: {errors}, Warnings: {warnings}");
+                        exportErrors.Add($"Failed to save DXF for {fileName} (Error code: {errors})");
+                        return null;
+                    }
+                    Debug.WriteLine($"[DEBUG] Attempting Logger.Info: DXF successfully saved to: {outputPath}"); // DEBUG
+                    Logger.Info($"DXF successfully saved to: {outputPath}");
+
+                    return outputPath;
+                }
+                finally
+                {
+                    if (swDraw != null)
+                    {
+                        _swApp.CloseDoc(swDraw.GetTitle());
+                    }
+                    if (swModel != null && originalConfig != null)
+                    {
+                        swModel.ShowConfiguration2(originalConfig);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Use the variables declared outside the try block
+                Debug.WriteLine($"[DEBUG] Attempting Logger.Error: Error processing part {partTitle}: {ex.Message}"); // DEBUG
+                Logger.Error($"Error processing part {partTitle}: {ex.Message}", ex);
+                exportErrors.Add($"Error processing {fileName}: {ex.Message}");
+                return null;
+            }
+        }
+        
         private string FindFlatPatternConfig(ModelDoc2 swModel)
         {
              if (swModel == null) return null;
@@ -874,6 +956,15 @@ namespace RoesleinAddIn
                   return fallbackConfigName;
              }
 
+             // If no flat pattern config found, use the active configuration as a temporary fallback
+             string activeConfig = swModel.ConfigurationManager?.ActiveConfiguration?.Name;
+             if (!string.IsNullOrEmpty(activeConfig))
+             {
+                  Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: No flat pattern config found, using active config as fallback: {activeConfig}"); // DEBUG
+                  Logger.Warning($"No flat pattern config found, using active config as fallback: {activeConfig}");
+                  return activeConfig;
+             }
+
              Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Could not find a suitable flat pattern configuration (checked default and name convention) for {swModel.GetTitle()}."); // DEBUG
              Logger.Warning($"Could not find a suitable flat pattern configuration (checked default and name convention) for {swModel.GetTitle()}.");
              return null;
@@ -900,14 +991,13 @@ namespace RoesleinAddIn
             string partPath = swModel.GetPathName();
             string partTitle = swModel.GetTitle();
             
-            // Log start of thickness check using Logger
+            // Log start of thickness check
             Logger.Info($"Checking sheet metal thickness for {partTitle} ({partPath}) in config {configName}");
 
             CustomPropertyManager propMgr = swModel.Extension.CustomPropertyManager[configName];
             if (propMgr == null)
             {
-                // Log error using Logger
-                Logger.Error($"Failed to get CustomPropertyManager for {partTitle} config {configName}");
+                Logger.Error($"ERROR: Failed to get CustomPropertyManager for {partTitle} config {configName}");
                 return null;
             }
 
@@ -921,13 +1011,11 @@ namespace RoesleinAddIn
             
             int ret = propMgr.Get6("Sheet Metal Thickness", true, out val, out resVal, out wasRes, out wasLinked);
             
-            // Log results using Logger
-            Logger.Info($"Property check results for {partTitle}: Return code: {ret}, Raw: '{val}', Resolved: '{resVal}', WasResolved: {wasRes}, Linked: {wasLinked}");
+            Logger.Info($"Property check results for {partTitle}: Return code: {ret}, Raw value: '{val}', Resolved value: '{resVal}', Was resolved: {wasRes}, Is linked: {wasLinked}");
 
             // If we have a valid resolved value that's not an equation
             if (ret == 1 && wasRes && !string.IsNullOrEmpty(resVal) && !resVal.Contains("Thickness@"))
             {
-                // Log using Logger
                 Logger.Info($"Using existing thickness value for {partTitle}: {resVal}");
                 return resVal;
             }
@@ -945,53 +1033,38 @@ namespace RoesleinAddIn
                     double thicknessInches = Math.Round(thicknessMeters * 39.3701, 4);
                     string formattedThickness = thicknessInches.ToString("0.0000");
 
-                    // Log using Logger
-                    Logger.Info($"Found thickness in feature for {partTitle}: Meters={thicknessMeters}, Inches={thicknessInches}, Formatted={formattedThickness}");
+                    Logger.Info($"Found thickness in feature for {partTitle}: Meters: {thicknessMeters}, Inches: {thicknessInches}, Formatted: {formattedThickness}");
 
-                    try
-                    {
-                        // Update the custom property
-                        Logger.Info($"Updating custom properties for {partTitle} based on feature thickness.");
+                    // Update the custom property
+                    Logger.Info($"Updating thickness custom property for {partTitle}");
 
-                        propMgr.Add3("Sheet Metal Thickness", 
-                                   (int)swCustomInfoType_e.swCustomInfoText, 
-                                   formattedThickness, 
-                                   (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                    propMgr.Add3("Sheet Metal Thickness", 
+                               (int)swCustomInfoType_e.swCustomInfoText, 
+                               formattedThickness, 
+                               (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
 
-                        // Also update these properties to match Ben's macro
-                        // Use Logger inside UpdateCustomProperty as well
-                        UpdateCustomProperty(propMgr, "Part Number", partTitle.Replace(".SLDPRT", ""));
-                        UpdateCustomProperty(propMgr, "Description", GetCustomPropertyValue(propMgr, "Description"));
-                        UpdateCustomProperty(propMgr, "Revision", GetCustomPropertyValue(propMgr, "Revision"));
-                        UpdateCustomProperty(propMgr, "Material", GetCustomPropertyValue(propMgr, "Material"));
-                        UpdateCustomProperty(propMgr, "Shop Route", GetCustomPropertyValue(propMgr, "Shop Route"));
+                    // Also update these properties to match Ben's macro
+                    UpdateCustomProperty(propMgr, "Part Number", partTitle.Replace(".SLDPRT", ""));
+                    UpdateCustomProperty(propMgr, "Description", GetCustomPropertyValue(propMgr, "Description"));
+                    UpdateCustomProperty(propMgr, "Revision", GetCustomPropertyValue(propMgr, "Revision"));
+                    UpdateCustomProperty(propMgr, "Material", GetCustomPropertyValue(propMgr, "Material"));
+                    UpdateCustomProperty(propMgr, "Shop Route", GetCustomPropertyValue(propMgr, "Shop Route"));
 
-                        Logger.Info($"Successfully updated all properties for {partTitle}");
-                    }
-                    catch (Exception ex)
-                    {
-                        // Use the main Logger to report errors during property updates
-                        Logger.Error($"Error updating custom properties for {partTitle} after finding thickness.", ex);
-                        // Removed the direct File.AppendAllText fallback here
-                        return null; // Return null if property updates fail
-                    }
+                    Logger.Info($"Successfully updated all properties for {partTitle}");
 
                     return formattedThickness;
                 }
                 else
                 {
-                    // Log using Logger
-                    Logger.Error($"Could not get SheetMetalFeatureData for {partTitle}");
+                    Logger.Error($"ERROR: Could not get SheetMetalFeatureData for {partTitle}");
                 }
             }
             else
             {
-                // Log using Logger
-                 Logger.Error($"No SheetMetal feature found in {partTitle}");
+                Logger.Warning($"ERROR: No SheetMetal feature found in {partTitle}");
             }
 
-            // Log using Logger
-            Logger.Warning($"Could not determine thickness for {partTitle}");
+            Logger.Warning($"WARNING: Could not determine thickness for {partTitle}");
             return null;
         }
 
@@ -1007,77 +1080,327 @@ namespace RoesleinAddIn
         {
             if (!string.IsNullOrEmpty(value))
             {
-                 try 
-                 {
-                    propMgr.Add3(propName, (int)swCustomInfoType_e.swCustomInfoText, value,
-                                (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-                    
-                    // Log success using Logger
-                    Logger.Info($"Updated custom property '{propName}' to '{value}'");
-                 }
-                 catch (Exception ex)
-                 {
-                     // Log error using Logger
-                     Logger.Error($"Failed to update custom property '{propName}' to '{value}'", ex);
-                     // Decide if this should re-throw or just log. Logging might be sufficient.
-                 }
-            }
-            else
-            {
-                 Logger.Warning($"Skipped updating custom property '{propName}' because value was null or empty.");
+                propMgr.Add3(propName, (int)swCustomInfoType_e.swCustomInfoText, value,
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                
+                Logger.Info($"Updated {propName}: {value}");
             }
         }
 
         /// <summary>
-        /// Inserts a single note into the drawing at the specified position
+        /// Checks if a part is a sheet metal part by looking for the "SheetMetal" feature.
         /// </summary>
-        /// <param name="swModel">The drawing document</param>
-        /// <param name="noteText">Text to insert</param>
-        /// <param name="x">X coordinate</param>
-        /// <param name="y">Y coordinate</param>
-        /// <param name="layerName">Layer to place the note on</param>
-        /// <returns>True if successful</returns>
-        private bool InsertNote(ModelDoc2 swModel, string noteText, double x, double y, string layerName)
+        public static bool IsSheetMetalPart(PartDoc part)
         {
+            if (part == null) return false;
+
+            ModelDoc2 model = part as ModelDoc2;
+            Feature feat = model.FirstFeature() as Feature;
+
+            while (feat != null)
+            {
+                string typeName = feat.GetTypeName2();
+                if (typeName == "SheetMetal" || typeName == "FlatPattern")
+                {
+                     Debug.WriteLine($"[DEBUG] Part {model.GetTitle()} identified as sheet metal (Feature: {typeName})"); // DEBUG
+                     Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Part {model.GetTitle()} identified as sheet metal (Feature: {typeName})"); // DEBUG
+                     Logger.Info($"Part {model.GetTitle()} identified as sheet metal (Feature: {typeName})");
+                    return true;
+                }
+                feat = feat.GetNextFeature() as Feature;
+            }
+             Debug.WriteLine($"[DEBUG] Part {model.GetTitle()} NOT identified as sheet metal."); // DEBUG
+             Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Part {model.GetTitle()} NOT identified as sheet metal."); // DEBUG
+             Logger.Info($"Part {model.GetTitle()} NOT identified as sheet metal.");
+            return false;
+        }
+
+        private void HideAllVisibleSketchesInConfig(ModelDoc2 swModel)
+        {
+            if (swModel == null) return;
+            Debug.WriteLine("[DEBUG] Hiding user sketches (not bend lines or flat pattern)...");
+            bool changed = false;
+            Feature feat = swModel.FirstFeature() as Feature;
+            while (feat != null)
+            {
+                if (feat.GetTypeName2() == "ProfileFeature")
+                {
+                    string name = feat.Name ?? string.Empty;
+                    // Do NOT hide if name contains 'Bend' or 'Flat' (case-insensitive)
+                    if (name.IndexOf("bend", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        name.IndexOf("flat", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        feat = feat.GetNextFeature() as Feature;
+                        continue;
+                    }
+                    // Hide user sketch
+                    if (feat.Select2(false, -1))
+                    {
+                        swModel.BlankSketch();
+                        swModel.ClearSelection2(true);
+                        changed = true;
+                    }
+                }
+                feat = feat.GetNextFeature() as Feature;
+            }
+            if (changed) swModel.GraphicsRedraw2();
+            Debug.WriteLine("[DEBUG] Finished hiding sketches.");
+        }
+
+        private bool IsLaserCuttingPart(ModelDoc2 doc)
+        {
+            if (!settings.CheckForLaser) 
+            {
+                Logger.Info($"Part {doc.GetTitle()} automatically passed laser check (CheckForLaser setting is off)");
+                return true; // If checkbox is not checked, always return true
+            }
+            
+            string shopRoute = GetCustomProperty(doc, "Shop Route");
+            if (string.IsNullOrEmpty(shopRoute)) 
+            {
+                Logger.Warning($"Part {doc.GetTitle()} failed laser check - Shop Route is empty");
+                return false;
+            }
+            
+            bool hasLaser = shopRoute.IndexOf("Laser Cutting", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (hasLaser)
+            {
+                Logger.Info($"Part {doc.GetTitle()} passed laser check - Shop Route contains 'Laser Cutting': {shopRoute}");
+            }
+            else
+            {
+                Logger.Warning($"Part {doc.GetTitle()} failed laser check - Shop Route does not contain 'Laser Cutting': {shopRoute}");
+            }
+            return hasLaser;
+        }
+
+        private void ProcessAssemblyComponentsRecursively(Component2 swComp, string outputFolder, ref int sheetMetalPartsFound, ref int totalProcessed, List<string> processedFiles)
+        {
+            // Add a static or class-level HashSet to track processed part paths
+            if (_processedPartPaths == null)
+                _processedPartPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            object[] children = swComp.GetChildren() as object[];
+            if (children != null)
+            {
+                foreach (Component2 child in children)
+                {
+                    // Check if the component path has already been processed
+                    string componentPath = child.GetPathName();
+                    
+                    // Skip if we've already processed this file path
+                    if (!string.IsNullOrEmpty(componentPath) && _processedPartPaths.Contains(componentPath))
+                    {
+                        Logger.DebugLog($"Skipping already processed part: {componentPath}");
+                        continue;
+                    }
+
+                    // Get component load state
+                    int loadState = -1;
+                    bool wasLightweight = false;
+                    
+                    try
+                    {
+                        // Check if component is in lightweight state
+                        loadState = child.GetSuppression();
+                        wasLightweight = (loadState == (int)swComponentSuppressionState_e.swComponentLightweight);
+                        
+                        if (wasLightweight)
+                        {
+                            Logger.Info($"Found lightweight component: {componentPath ?? child.Name2}");
+                            
+                            // Try to fully load the component
+                            int loadResult = child.SetSuppression2((int)swComponentSuppressionState_e.swComponentResolved);
+                            if (loadResult != (int)swComponentSuppressionState_e.swComponentResolved)
+                            {
+                                Logger.Warning($"Failed to fully load lightweight component: {componentPath ?? child.Name2}, result code: {loadResult}");
+                            }
+                            else
+                            {
+                                Logger.Info($"Successfully loaded lightweight component: {componentPath ?? child.Name2}");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"Error checking/changing component state: {ex.Message}");
+                    }
+                    
+                    // Get the model document (now hopefully fully loaded)
+                    ModelDoc2 childDoc = null;
+                    try
+                    {
+                        childDoc = child.GetModelDoc2() as ModelDoc2;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"Error getting ModelDoc2 for component: {ex.Message}");
+                    }
+                    
+                    if (childDoc != null && childDoc.GetType() == (int)swDocumentTypes_e.swDocPART)
+                    {
+                        string partPath = childDoc.GetPathName();
+                        if (!string.IsNullOrEmpty(partPath))
+                        {
+                            // Track this file path as processed
+                            _processedPartPaths.Add(partPath);
+                            
+                            try
+                            {
+                                if (IsSheetMetalPart(childDoc as PartDoc))
+                                {
+                                    if (IsLaserCuttingPart(childDoc))
+                                    {
+                                        sheetMetalPartsFound++;
+                                        string resultPath = ProcessSheetMetalPart(childDoc as PartDoc, outputFolder);
+                                        if (!string.IsNullOrEmpty(resultPath))
+                                        {
+                                            totalProcessed++;
+                                            processedFiles.Add(resultPath);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        ignoredParts.Add(childDoc.GetTitle());
+                                        Logger.Info($"Part {childDoc.GetTitle()} ignored - not marked for laser cutting");
+                                    }
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"Error processing potential sheet metal part: {ex.Message}");
+                            }
+                            finally
+                            {
+                                // Return to lightweight state if it was originally lightweight
+                                if (wasLightweight)
+                                {
+                                    try
+                                    {
+                                        int restoreResult = child.SetSuppression2((int)swComponentSuppressionState_e.swComponentLightweight);
+                                        Logger.DebugLog($"Returned component to lightweight state: {restoreResult == (int)swComponentSuppressionState_e.swComponentLightweight}");
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Logger.Error($"Error returning component to lightweight state: {ex.Message}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Recursively process children
+                    ProcessAssemblyComponentsRecursively(child, outputFolder, ref sheetMetalPartsFound, ref totalProcessed, processedFiles);
+                }
+            }
+        }
+
+        private string GetCustomProperty(ModelDoc2 doc, string propName)
+        {
+            if (doc == null) return "";
+            string configName = doc.ConfigurationManager?.ActiveConfiguration?.Name ?? "";
+            CustomPropertyManager custPropMgr = doc.Extension?.CustomPropertyManager[configName];
+            return GetCustomPropertyValue(custPropMgr, propName);
+        }
+
+        private void SetDxfExportOptions(ModelDoc2 swDraw)
+        {
+            Logger.DebugLog("SetDxfExportOptions START");
+
+            if (_swApp == null ||
+                swDraw == null ||
+                swDraw.GetType() != (int)swDocumentTypes_e.swDocDRAWING)
+            {
+                Logger.Error("Invalid input for SetDxfExportOptions.");
+                return;
+            }
+
             try
             {
-                if (string.IsNullOrEmpty(noteText))
-                {
-                    Logger.Warning("Attempted to insert empty note text.");
-                    return false;
-                }
-                
-                Note swNote = swModel.InsertNote(noteText);
-                if (swNote == null)
-                {
-                    Logger.Error($"Failed to insert note: {noteText}");
-                    return false;
-                }
-                
-                Annotation ann = swNote.GetAnnotation();
-                if (ann == null)
-                {
-                    Logger.Error("Could not get annotation for note.");
-                    return false;
-                }
-                
-                ann.Layer = layerName;
-                ann.SetPosition2(x, y, 0);
-                Logger.Info($"Added note '{noteText}' to layer '{layerName}' at ({x:F4}, {y:F4})");
-                return true;
+                // 1 – Force classic R12 format (shop floor friendly)
+                _swApp.SetUserPreferenceIntegerValue(
+                    (int)swUserPreferenceIntegerValue_e.swDxfOutputFormat,
+                    (int)swDxfFormat_e.swDxfFormat_R12);
+
+                // 2 – ***CRITICAL*** Disable custom mapping so SW keeps native layers
+                _swApp.SetUserPreferenceToggle(
+                    (int)swUserPreferenceToggle_e.swDxfMapping,
+                    false);
+
+                // 3 – Export hidden layers (bend‑line layer is hidden if view suppressed)
+                _swApp.SetUserPreferenceToggle(
+                    (int)swUserPreferenceToggle_e.swDXFExportHiddenLayersOn,
+                    true);
+
+                Logger.Info("DXF export options configured (mapping OFF – preserve drawing layers).");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error inserting note: {ex.Message}");
-                return false;
+                Logger.Error("Error setting DXF export options", ex);
             }
+            Logger.DebugLog("SetDxfExportOptions END");
         }
-        
-        private void InsertNotesIntoDXF(ModelDoc2 swModel, List<string> notes)
+
+/// <summary>
+/// Moves every bend-line sketch segment in the supplied flat-pattern drawing view onto the designated layer.
+/// </summary>
+private void AssignBendLinesToLayer(DrawingDoc swDraw, SwView flatView)
+{
+    if (swDraw == null || flatView == null || !flatView.IsFlatPatternView())
+    {
+        Logger.Warning("Invalid parameters for AssignBendLinesToLayer");
+        return;
+    }
+
+    try
+    {
+        string bendLayerName = !string.IsNullOrEmpty(settings.BendLineLayerName) 
+            ? settings.BendLineLayerName 
+            : "Bend";
+
+        // Get the layer manager
+        ModelDoc2 swModel = swDraw as ModelDoc2;
+        if (swModel == null) return;
+        LayerMgr layerMgr = (LayerMgr)swModel.GetLayerManager();
+        if (layerMgr == null) return;
+
+        // Ensure the bend layer exists
+        Layer bendLayer = (Layer)layerMgr.GetLayer(bendLayerName);
+        if (bendLayer == null)
         {
-            // Implement logic to insert notes into the DXF
-            // This is a placeholder for actual implementation
+            int layerResult = layerMgr.AddLayer(
+                bendLayerName, 
+                "Bend Lines Layer", 
+                255, // Blue
+                (int)swLineStyles_e.swLineCENTER,
+                (int)swLineWeights_e.swLW_THIN);
+            if (layerResult != 1) return;
+            bendLayer = (Layer)layerMgr.GetLayer(bendLayerName);
         }
+
+        // Get the sketch from the flat pattern view
+        Sketch sketch = flatView.GetSketch() as Sketch;
+        if (sketch == null) return;
+        object[] segments = sketch.GetSketchSegments() as object[];
+        if (segments == null || segments.Length == 0) return;
+
+        int processedCount = 0;
+        foreach (object segObj in segments)
+        {
+            SketchSegment seg = segObj as SketchSegment;
+            if (seg == null) continue;
+
+            // Just set the layer for each segment (API-compliant)
+            seg.Layer = bendLayerName;
+            processedCount++;
+        }
+        Logger.Info($"Successfully assigned {processedCount} bend lines to layer: {bendLayerName}");
+    }
+    catch (Exception ex)
+    {
+        Logger.Error($"Error in AssignBendLinesToLayer: {ex.Message}");
+    }
+}
         #endregion
     }
 } 
