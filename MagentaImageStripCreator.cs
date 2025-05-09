@@ -17,32 +17,37 @@ namespace RoesleinAddIn
         /// Creates SolidWorks-compatible image strips from individual BMP files
         /// Sets magenta as the transparent color
         /// </summary>
-        public static void CreateAllStrips(string resourcesPath)
+        /// <param name="sourceIndividualIconPath">Path to the directory containing individual source BMP icons.</param>
+        /// <param name="outputGeneratedStripPath">Path to the directory where combined icon strips will be saved.</param>
+        public static void CreateAllStrips(string sourceIndividualIconPath, string outputGeneratedStripPath)
         {
             try
             {
-                // Output paths for the image strips
-                string smallStripPath = Path.Combine(resourcesPath, "ConnexIcons_20x20.bmp");
-                string mediumStripPath = Path.Combine(resourcesPath, "ConnexIcons_32x32.bmp");
-                string largeStripPath = Path.Combine(resourcesPath, "ConnexIcons_40x40.bmp");
+                // Output paths for the image strips will use outputGeneratedStripPath
+                string smallStripPath = Path.Combine(outputGeneratedStripPath, "ConnexIcons_20x20.bmp");
+                string mediumStripPath = Path.Combine(outputGeneratedStripPath, "ConnexIcons_32x32.bmp");
+                string largeStripPath = Path.Combine(outputGeneratedStripPath, "ConnexIcons_40x40.bmp");
 
-                // Source icon paths
+                // Source icon paths will use sourceIndividualIconPath
                 string[] smallIcons = {
-                    Path.Combine(resourcesPath, "Produce Assy 20x20.bmp"),
-                    Path.Combine(resourcesPath, "Produce Single Part 20x20.bmp"),
-                    Path.Combine(resourcesPath, "Settings 20x20.bmp")
+                    Path.Combine(sourceIndividualIconPath, "Produce Assy 20x20.bmp"),
+                    Path.Combine(sourceIndividualIconPath, "Produce Single Part 20x20.bmp"),
+                    Path.Combine(sourceIndividualIconPath, "Export BOM 20x20.bmp"), 
+                    Path.Combine(sourceIndividualIconPath, "Settings 20x20.bmp")     
                 };
 
                 string[] mediumIcons = {
-                    Path.Combine(resourcesPath, "Produce Assy 32x32.bmp"),
-                    Path.Combine(resourcesPath, "Produce Single Part 32x32.bmp"),
-                    Path.Combine(resourcesPath, "Settings 32x32.bmp")
+                    Path.Combine(sourceIndividualIconPath, "Produce Assy 32x32.bmp"),
+                    Path.Combine(sourceIndividualIconPath, "Produce Single Part 32x32.bmp"),
+                    Path.Combine(sourceIndividualIconPath, "Export BOM 32x32.bmp"), 
+                    Path.Combine(sourceIndividualIconPath, "Settings 32x32.bmp")     
                 };
 
                 string[] largeIcons = {
-                    Path.Combine(resourcesPath, "Produce Assy 40x40.bmp"),
-                    Path.Combine(resourcesPath, "Produce Single Part 40x40.bmp"),
-                    Path.Combine(resourcesPath, "Settings 40x40.bmp")
+                    Path.Combine(sourceIndividualIconPath, "Produce Assy 40x40.bmp"),
+                    Path.Combine(sourceIndividualIconPath, "Produce Single Part 40x40.bmp"),
+                    Path.Combine(sourceIndividualIconPath, "Export BOM 40x40.bmp"), 
+                    Path.Combine(sourceIndividualIconPath, "Settings 40x40.bmp")     
                 };
 
                 // Create the image strips

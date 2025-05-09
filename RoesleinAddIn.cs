@@ -32,6 +32,7 @@ namespace RoesleinAddIn
         private const int CMD_EXPORT_ID = 0;
         private const int CMD_SETTINGS_ID = 1;
         private const int CMD_PROCESS_ID = 2;
+        private const int CMD_BOM_ID = 3;
 
         // Resources
         private string addinPath;
@@ -39,6 +40,7 @@ namespace RoesleinAddIn
         // Main objects
         private ICommandGroup cmdGroup;
         private SheetMetalProcessor processor;
+        private BomProcessor bomProcessor;
         private SettingsFormV2 settingsForm;
         #endregion
 
@@ -129,78 +131,53 @@ namespace RoesleinAddIn
                 WriteToLog($"Add-in path: {addinPath}");
                 WriteToLog($"Add-in path exists: {Directory.Exists(addinPath)}");
 
+                // Create processors
+                processor = new SheetMetalProcessor(swApp);
+                bomProcessor = new BomProcessor(swApp);
+
                 // Add the CommandManager
                 AddCommandMgr();
-
-                // Create the sheet metal processor
-                WriteToLog("Attempting to create SheetMetalProcessor...");
-                try
-                {
-                    processor = new SheetMetalProcessor(swApp);
-                    WriteToLog("SheetMetalProcessor created successfully.");
-                }
-                catch (Exception ex)
-                {
-                    WriteToLog($"CRITICAL ERROR Creating SheetMetalProcessor: {ex.Message}");
-                    WriteToLog($"StackTrace: {ex.StackTrace}");
-                    MessageBox.Show($"Failed to initialize core processing component: {ex.Message}", 
-                                    "Roeslein Add-in Critical Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    processor = null;
-                }
 
                 // ---- Configure Logger AFTER processor creation ----
                 try
                 {
                     WriteToLog("Attempting to configure global logger...");
-                    var settings = Settings.LoadSettings(); // Load current settings
+                    var settings = Settings.LoadSettings();
 
                     if (settings != null)
                     {
-                        // Configure main logging
                         Logger.Instance.SetSettingsEnabled(settings.LoggingEnabled);
-                        
-                        // Configure debug logging
                         Logger.Instance.SetDebugEnabled(settings.DebugLoggingEnabled);
                         
                         if (!string.IsNullOrWhiteSpace(settings.LogFilePath))
                         {
-                            // Set log file path for main logger
                             Logger.Instance.SetLogFilePath(settings.LogFilePath);
-                            
-                            // Set debug log path from settings or use default if not specified
                             string debugLogPath = settings.DebugLogFilePath;
                             if (string.IsNullOrWhiteSpace(debugLogPath))
                             {
-                                // Use Documents folder for debug log
                                 debugLogPath = Path.Combine(
                                     System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments),
                                     "RoesleinAddIn_Debug.log"
                                 );
                             }
-                            
-                            // Set debug log path
                             Logger.Instance.SetDebugLogPath(debugLogPath);
-                            
                             WriteToLog($"Logger configured: Enabled={settings.LoggingEnabled}, DebugEnabled={settings.DebugLoggingEnabled}, Path={settings.LogFilePath}, DebugPath={debugLogPath}");
                         }
                         else
                         {
-                            Logger.Instance.SetSettingsEnabled(false); // Disable if path is invalid
-                            Logger.Instance.SetDebugEnabled(false);    // Also disable debug logging
+                            Logger.Instance.SetSettingsEnabled(false); 
+                            Logger.Instance.SetDebugEnabled(false);    
                             WriteToLog("Logger disabled due to empty/invalid log file path in settings.");
                         }
                     }
                     else
                     {
                         WriteToLog("Could not load settings to configure logger. Using defaults or previous state.");
-                        // Optional: Disable logger if settings are crucial
-                        // Logger.Instance.SetSettingsEnabled(false);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception exLogger)
                 {
-                    WriteToLog($"ERROR configuring logger: {ex.Message}");
-                    // Attempt to disable logger if configuration failed
+                    WriteToLog($"ERROR configuring logger: {exLogger.Message}");
                     try { 
                         Logger.Instance.SetSettingsEnabled(false);
                         Logger.Instance.SetDebugEnabled(false);
@@ -244,6 +221,7 @@ namespace RoesleinAddIn
             cmdMgr = null;
             swApp = null;
             processor = null;
+            bomProcessor = null;
 
             // Force garbage collection
             GC.Collect();
@@ -291,27 +269,40 @@ namespace RoesleinAddIn
                 {
                     WriteToLog("Command group created successfully");
 
-                    // Get paths to icon files
-                    string iconPath = Path.Combine(addinPath, "Resources");
-                    WriteToLog($"Icon path directory: {iconPath}");
-                    WriteToLog($"Icon directory exists: {Directory.Exists(iconPath)}");
+                    // Path to the INSTALLED individual source icons (e.g., C:\Program Files\...\Resources)
+                    string sourceIconPath = Path.Combine(addinPath, "Resources");
+                    WriteToLog($"Source Icon path directory: {sourceIconPath}");
+                    WriteToLog($"Source Icon directory exists: {Directory.Exists(sourceIconPath)}");
 
-                    // Ensure Resources directory exists
-                    if (!Directory.Exists(iconPath))
+                    // Define a user-writable path for the GENERATED icon strips
+                    string userGeneratedResourcesPath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "GeneratedIconStrips");
+                    try
                     {
-                        Directory.CreateDirectory(iconPath);
-                        WriteToLog("Created Resources directory");
+                        // Ensure the directory for generated strips exists
+                        if (!Directory.Exists(userGeneratedResourcesPath))
+                        {
+                            Directory.CreateDirectory(userGeneratedResourcesPath);
+                            WriteToLog($"Created user-writable directory for generated icon strips: {userGeneratedResourcesPath}");
+                        }
                     }
+                    catch (Exception ex)
+                    {
+                        WriteToLog($"Error creating user-writable directory {userGeneratedResourcesPath}: {ex.Message}");
+                        // Handle error appropriately, maybe disable custom icons or show a message
+                    }
+                    
 
-                    // Check if individual icon files exist
-                    CheckIconsExist(iconPath);
+                    // Check if individual source icon files exist in the installation directory
+                    CheckIconsExist(sourceIconPath);
 
                     // Create magenta-background image strips for SolidWorks
+                    // Pass BOTH the source path (for reading individual icons) 
+                    // AND the userGeneratedResourcesPath (for writing the combined strips)
                     try
                     {
                         WriteToLog("Creating magenta-background image strips...");
-                        MagentaImageStripCreator.CreateAllStrips(iconPath);
-                        WriteToLog("Image strips created successfully");
+                        MagentaImageStripCreator.CreateAllStrips(sourceIconPath, userGeneratedResourcesPath);
+                        WriteToLog("Image strips created successfully in user-writable directory.");
                     }
                     catch (Exception ex)
                     {
@@ -319,17 +310,17 @@ namespace RoesleinAddIn
                         WriteToLog($"StackTrace: {ex.StackTrace}");
                     }
 
-                    // Define strip icon paths
+                    // Define strip icon paths FROM THE USER-WRITABLE LOCATION
                     string[] iconList = new string[] {
-                Path.Combine(iconPath, "ConnexIcons_20x20.bmp"), // Small icons
-                Path.Combine(iconPath, "ConnexIcons_32x32.bmp"), // Medium icons 
-                Path.Combine(iconPath, "ConnexIcons_40x40.bmp")  // Large icons
-            };
+                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_20x20.bmp"), // Small icons
+                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_32x32.bmp"), // Medium icons 
+                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_40x40.bmp")  // Large icons
+                    };
 
-                    // Verify image strips were created
-                    foreach (string stripPath in iconList)
+                    // Verify image strips were created in the user-writable location
+                    foreach (string stripPathInUserDir in iconList)
                     {
-                        WriteToLog($"Image strip exists: {Path.GetFileName(stripPath)} = {File.Exists(stripPath)}");
+                        WriteToLog($"Image strip exists in user dir: {Path.GetFileName(stripPathInUserDir)} = {File.Exists(stripPathInUserDir)}");
                     }
 
                     // Set the main icon list for the command group
@@ -352,10 +343,10 @@ namespace RoesleinAddIn
     "Export_DXF",
     "Enable_Export_DXF",
     CMD_EXPORT_ID,
-    cmdItemType) == 0; // Fix: Changed comparison to check for equality with 0 instead of null
+    cmdItemType) == 0;
                     WriteToLog($"Added Export DXF command item: {item1Added}");
 
-                    // 2. Single Part Export (middle in toolbar)
+                    // 2. Single Part Export (second from left in toolbar)
                     bool item2Added = cmdGroup.AddCommandItem2(
     "Export Single Part",
     -1,
@@ -365,20 +356,33 @@ namespace RoesleinAddIn
     "Process_Part",
     "Enable_Process_Part",
     CMD_PROCESS_ID,
-    cmdItemType) == 0; // Fix: Changed comparison to check for equality with 0 instead of null
+    cmdItemType) == 0;
                     WriteToLog($"Added Process Single Part command item: {item2Added}");
 
-                    // 3. Settings (rightmost in toolbar)
+                    // 3. Export BOM (third from left in toolbar)
+                    bool item4Added = cmdGroup.AddCommandItem2(
+    "Export BOM",
+    -1,
+    "Export Bill of Materials from Assembly",
+    "Export BOM to Excel",
+    2,  // Index in the icon strip (2 = third image from left)
+    "Export_BOM",
+    "Enable_BOM",
+    CMD_BOM_ID,
+    cmdItemType) == 0;
+                    WriteToLog($"Added Export BOM command item: {item4Added}");
+
+                    // 4. Settings (rightmost in toolbar)
                     bool item3Added = cmdGroup.AddCommandItem2(
     "Settings",
     -1,
     "Connex Add-in Settings",
     "Configure Connex add-in settings",
-    2,  // Index in the icon strip (2 = third image from left)
+    3,  // Index in the icon strip (3 = fourth image from left)
     "Show_Settings",
     "Enable_Settings",
     CMD_SETTINGS_ID,
-    cmdItemType) == 0; // Fix: Changed comparison to check for equality with 0 instead of null
+    cmdItemType) == 0;
                     WriteToLog($"Added Settings command item: {item3Added}");
 
                     cmdGroup.HasToolbar = true;
@@ -443,7 +447,12 @@ namespace RoesleinAddIn
             // Settings icons
             "Settings 20x20.bmp",
             "Settings 32x32.bmp",
-            "Settings 40x40.bmp"
+            "Settings 40x40.bmp",
+            
+            // Export BOM icons
+            "Export BOM 20x20.bmp",
+            "Export BOM 32x32.bmp",
+            "Export BOM 40x40.bmp"
         };
 
                 WriteToLog("Checking icon files:");
@@ -471,21 +480,24 @@ namespace RoesleinAddIn
                 string[] smallIconFiles = {
                     Path.Combine(iconPath, "Produce Assy 20x20.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 20x20.bmp"),
-                    Path.Combine(iconPath, "Settings 20x20.bmp")
+                    Path.Combine(iconPath, "Settings 20x20.bmp"),
+                    Path.Combine(iconPath, "Export BOM 20x20.bmp")
                 };
 
                 // Medium icons strip (32x32)
                 string[] mediumIconFiles = {
                     Path.Combine(iconPath, "Produce Assy 32x32.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 32x32.bmp"),
-                    Path.Combine(iconPath, "Settings 32x32.bmp")
+                    Path.Combine(iconPath, "Settings 32x32.bmp"),
+                    Path.Combine(iconPath, "Export BOM 32x32.bmp")
                 };
 
                 // Large icons strip (40x40)
                 string[] largeIconFiles = {
                     Path.Combine(iconPath, "Produce Assy 40x40.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 40x40.bmp"),
-                    Path.Combine(iconPath, "Settings 40x40.bmp")
+                    Path.Combine(iconPath, "Settings 40x40.bmp"),
+                    Path.Combine(iconPath, "Export BOM 40x40.bmp")
                 };
 
                 // Create the image strips
@@ -618,15 +630,63 @@ namespace RoesleinAddIn
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-                Debug.WriteLine($"[DEBUG] ERROR in Export_DXF: {ex.GetType().Name} - {ex.Message}");
-                Debug.WriteLine($"[DEBUG] StackTrace: {ex.StackTrace}");
-                Debug.WriteLine("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-                WriteToLog($"Error in Export_DXF: {ex.Message}"); // Keep existing simple log for now
-                MessageBox.Show($"Error exporting DXF: {ex.Message}", "Roeslein Add-in",
-                               MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Debug.WriteLine($"[DEBUG] Export_DXF: Error: {ex.Message}\n{ex.StackTrace}"); // DEBUG
+                WriteToLog($"Export_DXF: Error: {ex.Message}\n{ex.StackTrace}");
+                MessageBox.Show($"Error processing assembly: {ex.Message}", "Roeslein Add-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-            Debug.WriteLine("[DEBUG] Export_DXF END"); // DEBUG
+        }
+
+        /// <summary>
+        /// Export BOM command
+        /// </summary>
+        public void Export_BOM()
+        {
+            WriteToLog("Export_BOM called");
+            Debug.WriteLine("[DEBUG] Export_BOM called");
+
+            try
+            {
+                // Check if bomProcessor is initialized
+                if (bomProcessor == null)
+                {
+                    Debug.WriteLine("[DEBUG] Export_BOM: ERROR - BomProcessor instance is null!");
+                    WriteToLog("Export_BOM: ERROR - BomProcessor instance is null!");
+                    MessageBox.Show("BomProcessor failed to initialize. Please check logs.",
+                                   "Roeslein Add-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // Show BOM options dialog
+                if (swApp != null)
+                {
+                    BomExportForm bomDialog = new BomExportForm(swApp);
+                    DialogResult dialogResult = bomDialog.ShowDialog();
+
+                    if (dialogResult == DialogResult.OK)
+                    {
+                        System.Diagnostics.Debug.WriteLine("BOM Export process initiated via BomExportForm.");
+                    }
+                    else if (dialogResult == DialogResult.Cancel)
+                    {
+                        System.Diagnostics.Debug.WriteLine("BOM Export was cancelled by the user in the BomExportForm.");
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"BOM Export form closed with result: {dialogResult}");
+                    }
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("ISldWorks _swApp instance is null. Cannot show BOM Export form.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[DEBUG] Export_BOM: Error: {ex.Message}\n{ex.StackTrace}");
+                WriteToLog($"Export_BOM: Error: {ex.Message}\n{ex.StackTrace}");
+                MessageBox.Show($"Error exporting BOM: {ex.Message}", 
+                               "Roeslein Add-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         /// <summary>
@@ -672,8 +732,14 @@ namespace RoesleinAddIn
         /// </summary>
         public int Enable_Export_DXF()
         {
-            // Enable if there's an active document
-            return (swApp?.ActiveDoc != null) ? 1 : 0;
+            // Enable if there's an active document AND it's an assembly
+            ModelDoc2 swModel = swApp?.ActiveDoc as ModelDoc2;
+            if (swModel == null) return 0;
+
+            if (swModel.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY)
+                return 0;
+            
+            return 1;
         }
 
         /// <summary>
@@ -724,12 +790,47 @@ namespace RoesleinAddIn
         }
 
         /// <summary>
-        /// Enable callback for Process Single Part command
+        /// Enable the Process Part button if a sheet metal part is active
         /// </summary>
         public int Enable_Process_Part()
         {
-            // Enable if there's an active document
-            return (swApp?.ActiveDoc != null) ? 1 : 0;
+            try
+            {
+                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+                if (swModel == null) return 0;
+                
+                if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
+                    return 0;
+                
+                return 1;
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Enable_Process_Part: {ex.Message}\n{ex.StackTrace}");
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Enable the BOM button if an assembly is active
+        /// </summary>
+        public int Enable_BOM()
+        {
+            try
+            {
+                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+                if (swModel == null) return 0;
+                
+                if (swModel.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY)
+                    return 0;
+                
+                return 1;
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Enable_BOM: {ex.Message}\n{ex.StackTrace}");
+                return 0;
+            }
         }
         #endregion
 

@@ -658,33 +658,21 @@ namespace RoesleinAddIn
              Logger.Info($"Starting single part processing for: {swModel.GetPathName()}");
              LoadSettings();
 
-             // Determine output folder
-             string defaultSinglePartFolder = @"\\roeslein.com\locations$\RoesleinFabrication\Connex-Metamation Hot Folder\DXFs From PDM";
-             string outputFolder = null;
-             if (!string.IsNullOrEmpty(settings.LastSinglePartExportFolder) && Directory.Exists(settings.LastSinglePartExportFolder))
+             // Determine output folder - Use the DXF Output Folder from settings (this.outDir)
+             string outputFolder = this.outDir; // this.outDir is initialized by LoadSettings from settings.LastExportFolder
+
+             // Sanity check for the output folder
+             if (string.IsNullOrEmpty(outputFolder) || !Directory.Exists(outputFolder))
              {
-                 outputFolder = settings.LastSinglePartExportFolder;
-             }
-             else if (Directory.Exists(defaultSinglePartFolder))
-             {
-                 outputFolder = defaultSinglePartFolder;
-             }
-             else if (!string.IsNullOrEmpty(swModel.GetPathName()))
-             {
-                 outputFolder = Path.GetDirectoryName(swModel.GetPathName());
-             }
-             else
-             {
-                 outputFolder = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments);
+                 Logger.Error($"Single Part Export: Output folder from settings ('{outputFolder ?? "NULL"}') is invalid or inaccessible. Please check settings.");
+                 MessageBox.Show($"The DXF Output Folder specified in settings ('{outputFolder ?? "Not Set"}') is invalid or does not exist.\n\nPlease check the path in the settings form.", 
+                                 "Roeslein Add-in - Export Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                 return;
              }
 
              // Compose output file path
              string fileName = Path.GetFileNameWithoutExtension(swModel.GetPathName()) + ".dxf";
              string outputPath = Path.Combine(outputFolder, fileName);
-
-             // Save the folder as the new default
-             settings.LastSinglePartExportFolder = outputFolder;
-             settings.SaveSettings();
 
              string result = ProcessSheetMetalPart(swPart, outputFolder, Path.GetFileNameWithoutExtension(swModel.GetPathName()));
 
@@ -1044,7 +1032,8 @@ namespace RoesleinAddIn
                                (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
 
                     // Also update these properties to match Ben's macro
-                    UpdateCustomProperty(propMgr, "Part Number", partTitle.Replace(".SLDPRT", ""));
+                    // BEN ROLAND - 2024-07-26: Commented out next line to use existing Part Number property instead of filename.
+                    // Original behavior (to match Ben's macro) was: UpdateCustomProperty(propMgr, "Part Number", partTitle.Replace(".SLDPRT", ""));
                     UpdateCustomProperty(propMgr, "Description", GetCustomPropertyValue(propMgr, "Description"));
                     UpdateCustomProperty(propMgr, "Revision", GetCustomPropertyValue(propMgr, "Revision"));
                     UpdateCustomProperty(propMgr, "Material", GetCustomPropertyValue(propMgr, "Material"));
