@@ -8,82 +8,272 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.IO;
+using System.Globalization;
+using System.Reflection;
+using EPDM.Interop.epdm;
+using SolidWorks.Interop.sldworks;
 
 namespace RoesleinAddIn
 {
     public partial class SettingsFormV2 : Form
     {
-        private ContextMenuStrip dgvContextMenu;
-        private ContextMenuStrip dgvMaterialContextMenu;
-        private ContextMenuStrip dgvThicknessContextMenu;
         private const string MainLogFileName = "RoesleinAddInLogger.log";
         private const string DebugLogFileName = "RoesleinAddInDebugLog.log";
+        private IEdmVault5 pdmVault;
+        private ISldWorks swApp;
+        private string pdmCsvFilePath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\Raw Material SheetMetal.csv";
+        
+        // currentSettings is primarily for general settings UI elements, not necessarily the DataGridViews
+        // that have their own static Load methods in Settings.cs
+        private Settings currentGeneralSettings; 
 
-        public SettingsFormV2()
+        // Context Menus for the other grids (restored from backup logic)
+        private ContextMenuStrip dgvPropertyMappingsContextMenu;
+        private ContextMenuStrip dgvMaterialMappingContextMenu;
+        private ContextMenuStrip dgvThicknessMappingContextMenu;
+
+
+        public SettingsFormV2(ISldWorks sldWorksApp, IEdmVault5 vault)
         {
             InitializeComponent();
-            
-            // Display the version number dynamically
-            lblVersionNumber.Text = "Version: " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
-            
-            // Display the copyright dynamically
-            lblCopyright.Text = "Copyright © " + DateTime.Now.Year + " Roeslein & Associates, Inc.";
-            
-            // Initialize context menus
-            InitializeContextMenus();
-            
-            // Initialize data grids
-            InitializePropertyMappings();
-            InitializeMaterialMappings();
-            InitializeThicknessMappings();
-            
-            // Wire up event handlers
-            btnOK.Click += btnOK_Click;
-            btnCancel.Click += btnCancel_Click;
-            btnBrowseHotFolder.Click += btnBrowseHotFolder_Click;
-            btnUseDefaultHotFolder.Click += btnUseDefaultHotFolder_Click;
-            btnBrowseLogFile.Click += btnBrowseLogFile_Click;
-            chkEnableLogging.CheckedChanged += chkEnableLogging_CheckedChanged;
-            chkEnableDebugLogging.CheckedChanged += chkEnableDebugLogging_CheckedChanged;
-            btnBrowseDebugLogFile.Click += btnBrowseDebugLogFile_Click;
-            btnSaveMappings.Click += btnSaveMappings_Click;
-            btnAddNewRow.Click += btnAddNewRow_Click;
-            BtnAddNewRowMaterial.Click += BtnAddNewRowMaterial_Click;
-            BtnAddNewThickness.Click += BtnAddNewThickness_Click;
-            btnSaveMappingsMaterial.Click += btnSaveMappingsMaterial_Click;
-            btnSaveThickness.Click += btnSaveThickness_Click;
-            BtnBrowseDrawingTemplate.Click += BtnBrowseDrawingTemplate_Click;
+            // Display the version number and copyright (from backup)
+            // Assuming lblVersionNumber and lblCopyright exist on SettingsFormV2.Designer.cs
+            // If not, these lines will cause an error and should be removed or controls added.
+            // lblVersionNumber.Text = "Version: " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
+            // lblCopyright.Text = "Copyright © " + DateTime.Now.Year + " Roeslein & Associates, Inc.";
 
-            // Load settings and mappings
-            LoadSettings();
-            LoadPropertyMappings();
-            LoadMaterialMappings();
-            LoadThicknessMappings();
+
+            this.swApp = sldWorksApp;
+            this.pdmVault = vault;
+
+            // Load general settings for UI controls (textboxes, checkboxes etc.)
+            try
+            {
+                this.currentGeneralSettings = Settings.LoadSettings();
+                if (this.currentGeneralSettings == null)
+                {
+                    Logger.DebugLog("Warning: Settings.LoadSettings() returned null. General UI fields may not populate correctly.");
+                    this.currentGeneralSettings = new Settings(); // Ensure it's not null
+                }
+                // Call a method to populate general UI fields from currentGeneralSettings (from backup logic)
+                PopulateGeneralSettingsUI(); 
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"Error loading general settings: {ex.Message}. General UI fields may use defaults.");
+                MessageBox.Show($"Error loading application settings: {ex.Message}\nGeneral settings fields may use defaults.", "Settings Load Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                this.currentGeneralSettings = new Settings(); // Fallback
+            }
+
+            // Initialize and Load DataGridViews
+            InitializeContextMenus(); // From backup
+
+            InitializePropertyMappingsGrid(); // Renamed from InitializeAndLoad...
+            LoadPropertyMappingsData();       // Renamed and uses static Settings.LoadPropertyMappings()
+
+            InitializeMaterialMappingsGrid(); // Renamed
+            LoadMaterialMappingsData();       // Renamed and uses static Settings.LoadMaterialMappings()
+
+            InitializeThicknessMappingsGrid(); // Renamed
+            LoadThicknessMappingsData();       // Renamed and uses static Settings.LoadThicknessMappings()
+
+            InitializePropertyStandardsGrid(); // Re-adding call for PropertyStandards
+            LoadPropertyStandardsData();     // Re-adding call for PropertyStandards
+
+            InitializeRawSheetGrid();
+            LoadRawSheetData();
+            
+            // dgvPropertyStandards is NOT initialized or loaded here as per backup file.
+            // If it needs to be, separate Initialize & Load methods are required.
+
+            // Wire up event handlers from backup for General Settings tab and form-level buttons
+            if (btnOK != null) btnOK.Click += btnOK_Click;
+            if (btnCancel != null) btnCancel.Click += btnCancel_Click;
+            if (btnBrowseHotFolder != null) btnBrowseHotFolder.Click += btnBrowseHotFolder_Click;
+            if (btnUseDefaultHotFolder != null) btnUseDefaultHotFolder.Click += btnUseDefaultHotFolder_Click;
+            if (btnBrowseLogFile != null) btnBrowseLogFile.Click += btnBrowseLogFile_Click;
+            if (chkEnableLogging != null) chkEnableLogging.CheckedChanged += chkEnableLogging_CheckedChanged;
+            if (chkEnableDebugLogging != null) chkEnableDebugLogging.CheckedChanged += chkEnableDebugLogging_CheckedChanged;
+            if (btnBrowseDebugLogFile != null) btnBrowseDebugLogFile.Click += btnBrowseDebugLogFile_Click;
+            if (BtnBrowseDrawingTemplate != null) BtnBrowseDrawingTemplate.Click += BtnBrowseDrawingTemplate_Click;
+            
+            // Event handlers for PropertyMappings DGV on General Settings Tab (if buttons are on this tab)
+            // The backup shows btnSaveMappings and btnAddNewRow for dgvPropertyMappings.
+            // These should be wired up if the controls exist on SettingsFormV2.Designer.cs
+            if (btnSaveMappings != null) btnSaveMappings.Click += btnSavePropertyMappings_Click; 
+            if (btnAddNewRow != null) btnAddNewRow.Click += btnAddNewPropertyRow_Click; 
+
+            // Event handlers for Material Mappings Tab
+            if (BtnAddNewRowMaterial != null) BtnAddNewRowMaterial.Click += BtnAddNewRowMaterial_Click;
+            if (btnSaveMappingsMaterial != null) btnSaveMappingsMaterial.Click += btnSaveMappingsMaterial_Click;
+
+            // Event handlers for Thickness Mappings Tab
+            if (BtnAddNewThickness != null) BtnAddNewThickness.Click += BtnAddNewThickness_Click;
+            if (btnSaveThickness != null) btnSaveThickness.Click += btnSaveThickness_Click;
+
+            // Event handlers for Property Standards Tab
+            if (BtnAddNewFileProp != null) BtnAddNewFileProp.Click += BtnAddNewFileProp_Click;
+            if (btnSaveFileProp != null) btnSaveFileProp.Click += btnSaveFileProp_Click;
         }
 
-        private void InitializeContextMenus()
+        // Method to populate General Settings tab UI controls (from backup logic)
+        private void PopulateGeneralSettingsUI()
         {
-            // Property mappings context menu
-            dgvContextMenu = new ContextMenuStrip();
-            var deleteMenuItem = new ToolStripMenuItem("Delete Row");
-            deleteMenuItem.Click += DgvDeleteMenuItem_Click;
-            dgvContextMenu.Items.Add(deleteMenuItem);
+            if (this.currentGeneralSettings == null) 
+            {
+                Logger.DebugLog("PopulateGeneralSettingsUI: currentGeneralSettings is null. Cannot populate UI.");
+                // Optionally, initialize to new Settings() here if it makes sense for your app flow
+                // this.currentGeneralSettings = new Settings(); 
+                return;
+            }
 
-            // Material mappings context menu
-            dgvMaterialContextMenu = new ContextMenuStrip();
-            var deleteMaterialMenuItem = new ToolStripMenuItem("Delete Row");
-            deleteMaterialMenuItem.Click += DgvMaterialDeleteMenuItem_Click;
-            dgvMaterialContextMenu.Items.Add(deleteMaterialMenuItem);
+            // Assuming control names like txtHotFolder, chkEnableLogging, etc., exist on the form designer.
+            // If any control is null, a NullReferenceException will occur here.
+            // It's good practice to check for null controls if there's any doubt.
 
-            // Thickness mappings context menu
-            dgvThicknessContextMenu = new ContextMenuStrip();
-            var deleteThicknessMenuItem = new ToolStripMenuItem("Delete Row");
-            deleteThicknessMenuItem.Click += DgvThicknessDeleteMenuItem_Click;
-            dgvThicknessContextMenu.Items.Add(deleteThicknessMenuItem);
+            txtHotFolder.Text = this.currentGeneralSettings.LastExportFolder ?? "";
+            txtDrawingTemplate.Text = this.currentGeneralSettings.DrawingTemplatePath ?? "";
+            
+            // For log file paths, the backup code stores the directory. We need to ensure this logic is consistent.
+            // The Settings class (from backup) stores the full path including filename for LogFilePath and DebugLogFilePath.
+            // The UI (txtLogFile, txtDebugLogFile in backup) seems to display only the directory path.
+            // For populating, let's display the directory. Saving will recombine with filename.
+            txtLogFile.Text = !string.IsNullOrEmpty(this.currentGeneralSettings.LogFilePath) ? Path.GetDirectoryName(this.currentGeneralSettings.LogFilePath) : "";
+            txtDebugLogFile.Text = !string.IsNullOrEmpty(this.currentGeneralSettings.DebugLogFilePath) ? Path.GetDirectoryName(this.currentGeneralSettings.DebugLogFilePath) : "";
+
+            chkEnableLogging.Checked = this.currentGeneralSettings.LoggingEnabled;
+            chkEnableDebugLogging.Checked = this.currentGeneralSettings.DebugLoggingEnabled;
+
+            txtTextLayer.Text = this.currentGeneralSettings.TextLayerName ?? "Notes";
+            txtBendLineLayer.Text = this.currentGeneralSettings.BendLineLayerName ?? "Bend_Lines"; // Default from Settings backup
+            chkShowBendLines.Checked = this.currentGeneralSettings.ShowBendLines;
+            chkCheckForLaser.Checked = this.currentGeneralSettings.CheckForLaser; // This property exists in backup Settings.cs
+
+            // Populate cboTextLocation (ComboBox)
+            if (cboTextLocation.Items.Count == 0)
+            {
+                cboTextLocation.Items.Add("Centered");
+                cboTextLocation.Items.Add("Top Left");
+                cboTextLocation.Items.Add("Top Right");
+                cboTextLocation.Items.Add("Bottom Left");
+                cboTextLocation.Items.Add("Bottom Right");
+            }
+
+            if (!string.IsNullOrEmpty(this.currentGeneralSettings.TextLocation) && cboTextLocation.Items.Contains(this.currentGeneralSettings.TextLocation))
+            {
+                cboTextLocation.SelectedItem = this.currentGeneralSettings.TextLocation;
+            }
+            else
+            {
+                cboTextLocation.SelectedItem = "Centered"; // Default if not found or empty
+            }
+
+            // Set enabled state for log controls based on checkboxes (from backup logic)
+            SetLogControlsEnabled(chkEnableLogging.Checked);
+            SetDebugLogControlsEnabled(chkEnableDebugLogging.Checked);
+            
+            // Version and Copyright labels - these might be better set once in the constructor if static
+            // Or if they are on the General Settings tab specifically:
+            if (lblVersionNumber != null) lblVersionNumber.Text = "Version: " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
+            if (lblCopyright != null) lblCopyright.Text = "Copyright © " + DateTime.Now.Year + " Roeslein & Associates, Inc.";
         }
 
-        private void InitializePropertyMappings()
+        // Helper methods from backup to manage enabled state of log path controls
+        private void SetLogControlsEnabled(bool enabled)
         {
+            if (txtLogFile != null) txtLogFile.Enabled = enabled;
+            if (btnBrowseLogFile != null) btnBrowseLogFile.Enabled = enabled;
+            // Assuming lblLogFile exists, though not explicitly in the backup's SetLogControlsEnabled
+            // if (lblLogFile != null) lblLogFile.Enabled = enabled; 
+        }
+
+        private void SetDebugLogControlsEnabled(bool enabled)
+        {
+            if (txtDebugLogFile != null) txtDebugLogFile.Enabled = enabled;
+            if (btnBrowseDebugLogFile != null) btnBrowseDebugLogFile.Enabled = enabled;
+            // Assuming lblDebugLogFile exists
+            // if (lblDebugLogFile != null) lblDebugLogFile.Enabled = enabled; 
+        }
+
+        private void SaveGeneralSettings()
+        {
+            if (this.currentGeneralSettings == null)
+            {
+                Logger.DebugLog("SaveGeneralSettings: currentGeneralSettings is null. Cannot save.");
+                // Potentially create a new Settings object if appropriate, or show error
+                // this.currentGeneralSettings = new Settings(); 
+                MessageBox.Show("Critical error: Settings object not initialized. Cannot save general settings.", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            try
+            {
+                this.currentGeneralSettings.LastExportFolder = txtHotFolder.Text;
+                this.currentGeneralSettings.DrawingTemplatePath = txtDrawingTemplate.Text;
+                
+                // When saving LogFilePath, combine directory from textbox with the fixed filename
+                this.currentGeneralSettings.LogFilePath = !string.IsNullOrWhiteSpace(txtLogFile.Text) ? Path.Combine(txtLogFile.Text, MainLogFileName) : "";
+                this.currentGeneralSettings.DebugLogFilePath = !string.IsNullOrWhiteSpace(txtDebugLogFile.Text) ? Path.Combine(txtDebugLogFile.Text, DebugLogFileName) : "";
+
+                this.currentGeneralSettings.LoggingEnabled = chkEnableLogging.Checked;
+                this.currentGeneralSettings.DebugLoggingEnabled = chkEnableDebugLogging.Checked;
+                
+                this.currentGeneralSettings.TextLayerName = txtTextLayer.Text;
+                this.currentGeneralSettings.BendLineLayerName = txtBendLineLayer.Text;
+                this.currentGeneralSettings.ShowBendLines = chkShowBendLines.Checked;
+                this.currentGeneralSettings.CheckForLaser = chkCheckForLaser.Checked;
+                this.currentGeneralSettings.TextLocation = cboTextLocation.SelectedItem?.ToString() ?? "Centered";
+
+                // These properties are from Settings.cs but not on the General Settings UI in the screenshot
+                // If they need to be preserved or have defaults, that logic is in Settings.cs constructor/load.
+                // currentGeneralSettings.UseCustomScale = ...; 
+                // currentGeneralSettings.DrawingScale = ...;
+                // currentGeneralSettings.AddDimensions = ...;
+                // currentGeneralSettings.ImportModelDimensions = ...;
+                // currentGeneralSettings.ExportHiddenGeometry = ...;
+                // currentGeneralSettings.AddTitleBlockInfo = ...;
+                // currentGeneralSettings.TitleBlockText = ...;
+
+                if (this.currentGeneralSettings.SaveSettings()) // SaveSettings in Settings.cs handles XML and Registry
+                {
+                    Logger.DebugLog("General settings saved successfully.");
+                    // Optionally, provide user feedback
+                    // MessageBox.Show("General settings saved.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information); 
+                }
+                else
+                {
+                    Logger.DebugLog("Failed to save general settings via currentGeneralSettings.SaveSettings().");
+                    MessageBox.Show("Failed to save general settings. Check logs for details.", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"Error saving general settings: {ex.Message}");
+                MessageBox.Show($"Error saving general settings: {ex.Message}", "Settings Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void InitializeContextMenus() // From backup
+        {
+            dgvPropertyMappingsContextMenu = new ContextMenuStrip();
+            var deletePropMapItem = new ToolStripMenuItem("Delete Row");
+            // deletePropMapItem.Click += DgvPropertyMappingsDeleteMenuItem_Click; // Ensure this handler exists or is added
+            dgvPropertyMappingsContextMenu.Items.Add(deletePropMapItem);
+
+            dgvMaterialMappingContextMenu = new ContextMenuStrip();
+            var deleteMatMapItem = new ToolStripMenuItem("Delete Row");
+            // deleteMatMapItem.Click += DgvMaterialMappingDeleteMenuItem_Click; // Ensure this handler exists or is added
+            dgvMaterialMappingContextMenu.Items.Add(deleteMatMapItem);
+
+            dgvThicknessMappingContextMenu = new ContextMenuStrip();
+            var deleteThickMapItem = new ToolStripMenuItem("Delete Row");
+            // deleteThickMapItem.Click += DgvThicknessMappingDeleteMenuItem_Click; // Ensure this handler exists or is added
+            dgvThicknessMappingContextMenu.Items.Add(deleteThickMapItem);
+        }
+
+        private void InitializePropertyMappingsGrid() // Adapted from backup
+        {
+            if (dgvPropertyMappings == null) { Logger.DebugLog("dgvPropertyMappings is null, skipping init."); return; }
             dgvPropertyMappings.Columns.Clear();
             dgvPropertyMappings.Columns.Add("RowNumber", "Row Number");
             dgvPropertyMappings.Columns.Add("DxfPropertyName", "DXF Property Name");
@@ -91,20 +281,44 @@ namespace RoesleinAddIn
 
             dgvPropertyMappings.Columns["RowNumber"].Width = 80;
             dgvPropertyMappings.Columns["RowNumber"].ReadOnly = true;
-            dgvPropertyMappings.AllowUserToAddRows = false;
-            dgvPropertyMappings.AllowUserToDeleteRows = false;
+            dgvPropertyMappings.AllowUserToAddRows = false; // As per backup, explicit add button is used
+            dgvPropertyMappings.AllowUserToDeleteRows = false; // Deletion via context menu
             dgvPropertyMappings.RowHeadersVisible = false;
             dgvPropertyMappings.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            dgvPropertyMappings.ContextMenuStrip = dgvContextMenu;
-            dgvPropertyMappings.MouseDown += DgvPropertyMappings_MouseDown;
-            
-            // Auto-size columns
+            dgvPropertyMappings.ContextMenuStrip = dgvPropertyMappingsContextMenu;
+            // dgvPropertyMappings.MouseDown += DgvPropertyMappings_MouseDown; // Ensure this handler exists
+
             dgvPropertyMappings.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
             dgvPropertyMappings.Columns["RowNumber"].AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
         }
 
-        private void InitializeMaterialMappings()
+        private void LoadPropertyMappingsData() // Adapted from backup
         {
+            if (dgvPropertyMappings == null) return;
+            try
+            {
+                dgvPropertyMappings.Rows.Clear();
+                var mappings = Settings.LoadPropertyMappings(); // Static call from Settings.cs
+                if (mappings != null)
+                {
+                    // Assuming PropertyMapping class has: RowNumber, DxfPropertyName, SwCustomProperty
+                    foreach (var mapping in mappings.OrderBy(m => m.RowNumber))
+                    {
+                        dgvPropertyMappings.Rows.Add(mapping.RowNumber, mapping.DxfPropertyName, mapping.SwCustomProperty);
+                    }
+                }
+                // AddDefaultPropertyMappings(); // Call if needed, as per backup logic if list is empty
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"Error loading property mappings: {ex.Message}");
+                MessageBox.Show($"Error loading property mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void InitializeMaterialMappingsGrid() // Adapted from backup
+        {
+            if (dgvMaterialMapping == null) { Logger.DebugLog("dgvMaterialMapping is null, skipping init."); return; }
             dgvMaterialMapping.Columns.Clear();
             dgvMaterialMapping.Columns.Add("RowNumber", "Row Number");
             dgvMaterialMapping.Columns.Add("SwMaterial", "SolidWorks Material");
@@ -116,315 +330,643 @@ namespace RoesleinAddIn
             dgvMaterialMapping.AllowUserToDeleteRows = false;
             dgvMaterialMapping.RowHeadersVisible = false;
             dgvMaterialMapping.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            dgvMaterialMapping.ContextMenuStrip = dgvMaterialContextMenu;
-            dgvMaterialMapping.MouseDown += DgvMaterialMappings_MouseDown;
-            
-            // Auto-size columns
+            dgvMaterialMapping.ContextMenuStrip = dgvMaterialMappingContextMenu;
+            // dgvMaterialMapping.MouseDown += DgvMaterialMappings_MouseDown; // Ensure this handler exists
+
             dgvMaterialMapping.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
             dgvMaterialMapping.Columns["RowNumber"].AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
         }
 
-        private void InitializeThicknessMappings()
+        private void LoadMaterialMappingsData() // Adapted from backup
         {
-            dgvThicknessMapping.Columns.Clear();
-            dgvThicknessMapping.Columns.Add("RowNumber", "Row Number");
-            dgvThicknessMapping.Columns.Add("SwThickness", "SolidWorks Thickness");
-            dgvThicknessMapping.Columns.Add("DxfThickness", "DXF Output Thickness");
-
-            dgvThicknessMapping.Columns["RowNumber"].Width = 80;
-            dgvThicknessMapping.Columns["RowNumber"].ReadOnly = true;
-            dgvThicknessMapping.AllowUserToAddRows = false;
-            dgvThicknessMapping.AllowUserToDeleteRows = false;
-            dgvThicknessMapping.RowHeadersVisible = false;
-            dgvThicknessMapping.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            dgvThicknessMapping.ContextMenuStrip = dgvThicknessContextMenu;
-            dgvThicknessMapping.MouseDown += DgvThicknessMappings_MouseDown;
-            
-            // Auto-size columns
-            dgvThicknessMapping.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-            dgvThicknessMapping.Columns["RowNumber"].AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
-        }
-
-        private void LoadSettings()
-        {
-            try
-            {
-                var settings = Settings.LoadSettings();
-                if (settings == null)
-                {
-                    MessageBox.Show("Settings could not be loaded (null). Using defaults.", "Settings Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    settings = new Settings();
-                }
-
-                txtHotFolder.Text = settings.LastExportFolder ?? "";
-                txtLogFile.Text = string.IsNullOrEmpty(settings.LogFilePath) ? "" : Path.GetDirectoryName(settings.LogFilePath);
-                txtDebugLogFile.Text = string.IsNullOrEmpty(settings.DebugLogFilePath) ? "" : Path.GetDirectoryName(settings.DebugLogFilePath);
-                chkEnableLogging.Checked = settings.LoggingEnabled;
-                chkEnableDebugLogging.Checked = settings.DebugLoggingEnabled;
-                txtTextLayer.Text = settings.TextLayerName ?? "Notes";
-                txtBendLineLayer.Text = settings.BendLineLayerName ?? "Bend";
-                chkShowBendLines.Checked = settings.ShowBendLines;
-                txtDrawingTemplate.Text = settings.DrawingTemplatePath ?? "";
-                // Set Check For Laser default to true if not present in settings
-                if (settings == null || !settings.GetType().GetProperties().Any(p => p.Name == "CheckForLaser"))
-                    chkCheckForLaser.Checked = true;
-                else
-                    chkCheckForLaser.Checked = settings.CheckForLaser;
-
-                if (cboTextLocation.Items.Count == 0)
-                {
-                    cboTextLocation.Items.Add("Centered");
-                    cboTextLocation.Items.Add("Top Left");
-                    cboTextLocation.Items.Add("Top Right");
-                    cboTextLocation.Items.Add("Bottom Left");
-                    cboTextLocation.Items.Add("Bottom Right");
-                }
-
-                if (!string.IsNullOrEmpty(settings.TextLocation) && cboTextLocation.Items.Contains(settings.TextLocation))
-                    cboTextLocation.SelectedItem = settings.TextLocation;
-                else
-                    cboTextLocation.SelectedItem = "Centered";
-
-                // Set enabled state for log controls
-                SetLogControlsEnabled(chkEnableLogging.Checked);
-                SetDebugLogControlsEnabled(chkEnableDebugLogging.Checked);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error loading settings: {ex.Message}", "Settings Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void SetLogControlsEnabled(bool enabled)
-        {
-            txtLogFile.Enabled = enabled;
-            btnBrowseLogFile.Enabled = enabled;
-            lblLogFile.Enabled = enabled;
-        }
-
-        private void SetDebugLogControlsEnabled(bool enabled)
-        {
-            txtDebugLogFile.Enabled = enabled;
-            btnBrowseDebugLogFile.Enabled = enabled;
-            lblDebugLogFile.Enabled = enabled;
-        }
-
-        private void LoadPropertyMappings()
-        {
-            try
-            {
-                dgvPropertyMappings.Rows.Clear();
-                var mappings = Settings.LoadPropertyMappings();
-                if (mappings != null)
-                {
-                    foreach (var mapping in mappings.OrderBy(m => m.RowNumber))
-                    {
-                        dgvPropertyMappings.Rows.Add(mapping.RowNumber, mapping.DxfPropertyName, mapping.SwCustomProperty);
-                    }
-                }
-
-                // If no mappings exist, add default mappings
-                if (dgvPropertyMappings.Rows.Count == 0)
-                {
-                    AddDefaultPropertyMappings();
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error loading property mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void LoadMaterialMappings()
-        {
+            if (dgvMaterialMapping == null) return;
             try
             {
                 dgvMaterialMapping.Rows.Clear();
-                var mappings = Settings.LoadMaterialMappings();
+                var mappings = Settings.LoadMaterialMappings(); // Static call
                 if (mappings != null)
                 {
+                    // Assuming MaterialMapping class has: RowNumber, SwMaterial, DxfMaterial
                     foreach (var mapping in mappings.OrderBy(m => m.RowNumber))
                     {
                         dgvMaterialMapping.Rows.Add(mapping.RowNumber, mapping.SwMaterial, mapping.DxfMaterial);
                     }
                 }
-
-                // If no mappings exist, add default mappings
-                if (dgvMaterialMapping.Rows.Count == 0)
-                {
-                    AddDefaultMaterialMappings();
-                }
+                // AddDefaultMaterialMappings(); // Call if needed
             }
             catch (Exception ex)
             {
+                Logger.DebugLog($"Error loading material mappings: {ex.Message}");
                 MessageBox.Show($"Error loading material mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void LoadThicknessMappings()
+        private void InitializeThicknessMappingsGrid() // Adapted from backup
         {
+            if (dgvThicknessMapping == null) { Logger.DebugLog("dgvThicknessMapping is null, skipping init."); return; }
+            dgvThicknessMapping.Columns.Clear();
+            dgvThicknessMapping.Columns.Add("RowNumber", "Row Number");
+            dgvThicknessMapping.Columns.Add("SwThickness", "SolidWorks Thickness"); // String type from CSV/XML
+            dgvThicknessMapping.Columns.Add("DxfThickness", "DXF Output Thickness"); // String type
+
+            dgvThicknessMapping.Columns["RowNumber"].Width = 80;
+            dgvThicknessMapping.Columns["RowNumber"].ReadOnly = true;
+            dgvThicknessMapping.Columns["SwThickness"].DefaultCellStyle.Format = "N4"; 
+            dgvThicknessMapping.Columns["DxfThickness"].DefaultCellStyle.Format = "N4";
+            dgvThicknessMapping.AllowUserToAddRows = false;
+            dgvThicknessMapping.AllowUserToDeleteRows = false;
+            dgvThicknessMapping.RowHeadersVisible = false;
+            dgvThicknessMapping.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            dgvThicknessMapping.ContextMenuStrip = dgvThicknessMappingContextMenu;
+            // dgvThicknessMapping.MouseDown += DgvThicknessMappings_MouseDown; // Ensure this handler exists
+
+            dgvThicknessMapping.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+            dgvThicknessMapping.Columns["RowNumber"].AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
+        }
+
+        private void LoadThicknessMappingsData() // Adapted from backup
+        {
+            if (dgvThicknessMapping == null) return;
             try
             {
                 dgvThicknessMapping.Rows.Clear();
-                var mappings = Settings.LoadThicknessMappings();
+                // Settings.LoadThicknessMappings() returns List<ThicknessMapping> where SwThickness/DxfThickness are strings
+                var mappings = Settings.LoadThicknessMappings(); // Static call
                 if (mappings != null)
                 {
+                    // Assuming ThicknessMapping class has: RowNumber, SwThickness (string), DxfThickness (string)
                     foreach (var mapping in mappings.OrderBy(m => m.RowNumber))
                     {
                         dgvThicknessMapping.Rows.Add(mapping.RowNumber, mapping.SwThickness, mapping.DxfThickness);
                     }
                 }
-
-                // If no mappings exist, add default mappings
-                if (dgvThicknessMapping.Rows.Count == 0)
-                {
-                    AddDefaultThicknessMappings();
-                }
+                // AddDefaultThicknessMappings(); // Call if needed
             }
             catch (Exception ex)
             {
+                Logger.DebugLog($"Error loading thickness mappings: {ex.Message}");
                 MessageBox.Show($"Error loading thickness mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+        
+        // --- dgvPropertyStandards is intentionally not loaded as per backup ---
+        // private void InitializeAndLoadPropertyStandardsGrid() { ... } 
 
-        private void AddDefaultPropertyMappings()
+        // --- Methods for dgvPropertyStandards ---
+        // IMPORTANT: You MUST adapt these method based on your actual data class (e.g., PropertyStandardSetting)
+        // and how its data is stored/loaded (e.g., via Settings.cs)
+        private void InitializePropertyStandardsGrid()
         {
-            dgvPropertyMappings.Rows.Add(1, "Part Number", "Part Number");
-            dgvPropertyMappings.Rows.Add(2, "Description", "Description");
-            dgvPropertyMappings.Rows.Add(3, "Revision", "Revision");
-            dgvPropertyMappings.Rows.Add(4, "Material", "Material");
-            dgvPropertyMappings.Rows.Add(5, "Thickness", "Sheet Metal Thickness");
-            dgvPropertyMappings.Rows.Add(6, "Shop Route", "Shop Route");
+            if (dgvPropertyStandards == null) { Logger.DebugLog("dgvPropertyStandards is null, skipping init."); return; }
+            dgvPropertyStandards.Columns.Clear();
+            dgvPropertyStandards.AutoGenerateColumns = false; // Crucial for manual column definition
+
+            // Use nameof for DataPropertyName for type safety if PropertyStandardSetting is an inner class or in the same namespace
+            dgvPropertyStandards.Columns.Add(new DataGridViewCheckBoxColumn { Name = "UseDefaultValue", HeaderText = "Use Default Value", DataPropertyName = nameof(PropertyStandardSetting.UseDefaultValue), AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvPropertyStandards.Columns.Add(new DataGridViewTextBoxColumn { Name = "PropertyName", HeaderText = "Property Name", DataPropertyName = nameof(PropertyStandardSetting.PropertyName), AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvPropertyStandards.Columns.Add(new DataGridViewTextBoxColumn { Name = "DefaultValueExpr", HeaderText = "Default Value/Expr", DataPropertyName = nameof(PropertyStandardSetting.DefaultValueExpr), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+            dgvPropertyStandards.Columns.Add(new DataGridViewCheckBoxColumn { Name = "IsCustomProperty", HeaderText = "Custom Prop", DataPropertyName = nameof(PropertyStandardSetting.IsCustomProperty), AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvPropertyStandards.Columns.Add(new DataGridViewCheckBoxColumn { Name = "IsConfigSpecific", HeaderText = "Config Specific", DataPropertyName = nameof(PropertyStandardSetting.IsConfigSpecific), AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvPropertyStandards.Columns.Add(new DataGridViewCheckBoxColumn { Name = "UseOnPartFiles", HeaderText = "Use on Part Files", DataPropertyName = nameof(PropertyStandardSetting.UseOnPartFiles), AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvPropertyStandards.Columns.Add(new DataGridViewCheckBoxColumn { Name = "UseOnAssemblyFiles", HeaderText = "Use on Assembly Files", DataPropertyName = nameof(PropertyStandardSetting.UseOnAssemblyFiles), AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvPropertyStandards.Columns.Add(new DataGridViewCheckBoxColumn { Name = "UseOnDrawingFiles", HeaderText = "Use on Drawing Files", DataPropertyName = nameof(PropertyStandardSetting.UseOnDrawingFiles), AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            
+            dgvPropertyStandards.AllowUserToAddRows = false; // Using custom button
+            dgvPropertyStandards.RowHeadersVisible = true; 
         }
 
-        private void AddDefaultMaterialMappings()
+        private void LoadPropertyStandardsData()
         {
-            dgvMaterialMapping.Rows.Add(1, "ASTM A1008 Steel- Cold Rolled Sheet", "ASTM A1008 Steel- Cold Rolled Sheet");
-            dgvMaterialMapping.Rows.Add(2, "AISI 304 Stainless Steel Sheet", "AISI 304 Stainless Steel Sheet");
-            dgvMaterialMapping.Rows.Add(3, "ASTM A36 Steel- Hot Rolled Sheet", "ASTM A36 Steel- Hot Rolled Sheet");
-            dgvMaterialMapping.Rows.Add(4, "ASTM A572 Steel- Hot Rolled plate", "ASTM A572 Steel- Hot Rolled plate");
+            if (dgvPropertyStandards == null) { Logger.DebugLog("LoadPropertyStandardsData: dgvPropertyStandards is null."); return; }
+
+            // This will eventually call Settings.LoadPropertyStandards() or similar to load from XML.
+            // For now, populate with defaults from screenshots.
+            var defaultStandards = new List<PropertyStandardSetting>
+            {
+                new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Part Number",           DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Description",           DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Revision",              DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Status",                DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false }, // As per screenshot values
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Shop Route",            DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Spare Part",            DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "MFG Stocked Item",      DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Weight",                DefaultValueExpr = "\"SW-Mass@${PARTNUMBER}.SLDPRT\"", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Material",              DefaultValueExpr = "\"SW-Material@${PARTNUMBER}.SLDPRT\"", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Sheet Metal Thickness", DefaultValueExpr = "\"Thickness@${PARTNUMBER}.SLDPRT\"", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Vendor",                DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Vendor Part Number",    DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Raw Material Number",   DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Unit of Measurement",   DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Raw Mat Amount",        DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = false, UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                // Additional rows from second screenshot
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Legacy Part Number",    DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Legacy Unit of Measure",DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Legacy Raw Mat Amount", DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "NC Punch Programs",     DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "NC Punch Sheet Size",   DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Bens Test Prop",        DefaultValueExpr = "Test Default Property",           IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+            };
+
+            dgvPropertyStandards.DataSource = new BindingList<PropertyStandardSetting>(defaultStandards);
+            Logger.DebugLog($"Loaded {defaultStandards.Count} default property standards into dgvPropertyStandards.");
         }
 
-        private void AddDefaultThicknessMappings()
+        private void BtnAddNewFileProp_Click(object sender, EventArgs e)
         {
-            dgvThicknessMapping.Rows.Add(1, ".1196", ".12");
-            dgvThicknessMapping.Rows.Add(2, ".0897", ".09");
-            dgvThicknessMapping.Rows.Add(3, ".0598", ".06");
-            dgvThicknessMapping.Rows.Add(4, ".0478", ".048");
+            if (dgvPropertyStandards == null) { Logger.DebugLog("BtnAddNewFileProp_Click: dgvPropertyStandards is null."); return; }
+
+            if (dgvPropertyStandards.DataSource is BindingList<PropertyStandardSetting> bindingList)
+            {
+                // The PropertyStandardSetting constructor provides defaults for a new row.
+                bindingList.Add(new PropertyStandardSetting()); 
+                Logger.DebugLog("New PropertyStandardSetting row added to dgvPropertyStandards' BindingList.");
+            }
+            else
+            {
+                Logger.DebugLog("dgvPropertyStandards.DataSource is not a BindingList<PropertyStandardSetting>. Cannot add new typed row. This indicates an issue in LoadPropertyStandardsData.");
+                MessageBox.Show("Could not add new row: Data source is not correctly configured.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
-        private void SaveSettings()
+        // Define the data class for dgvPropertyStandards
+        public class PropertyStandardSetting
         {
+            public bool UseDefaultValue { get; set; }
+            public string PropertyName { get; set; }
+            public string DefaultValueExpr { get; set; }
+            public bool IsCustomProperty { get; set; }
+            public bool IsConfigSpecific { get; set; }
+            public bool UseOnPartFiles { get; set; }
+            public bool UseOnAssemblyFiles { get; set; }
+            public bool UseOnDrawingFiles { get; set; }
+        }
+
+        // +++ Methods for dgvRawSheet +++
+        private void InitializeRawSheetGrid()
+        {
+            if (dgvRawSheet == null) 
+            {
+                Logger.DebugLog("dgvRawSheet is null. Cannot initialize.");
+                return;
+            }
+
+            dgvRawSheet.Columns.Clear();
+            dgvRawSheet.AutoGenerateColumns = false; // Important for manual column definition
+
+            // Define columns based on RawSheetData properties
+            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "PartNumber", HeaderText = "PartNumber", DataPropertyName = "PartNumber", AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "LegacyPartNumber", HeaderText = "Legacy Part Number", DataPropertyName = "LegacyPartNumber", AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "Material", HeaderText = "Material", DataPropertyName = "Material", AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "Thickness", HeaderText = "Thickness", DataPropertyName = "Thickness", DefaultCellStyle = { Format = "N4" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "Description", HeaderText = "Description", DataPropertyName = "Description", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "TotalSQInch", HeaderText = "Total SQ Inch", DataPropertyName = "TotalSQInch", DefaultCellStyle = { Format = "N2" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "SheetLengthInch", HeaderText = "Sheet Length Inch", DataPropertyName = "SheetLengthInch", DefaultCellStyle = { Format = "N2" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "SheetHeightInch", HeaderText = "Sheet Height Inch", DataPropertyName = "SheetHeightInch", DefaultCellStyle = { Format = "N2" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "LastCost", HeaderText = "Last Cost", DataPropertyName = "LastCost", DefaultCellStyle = { Format = "c" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            
+            dgvRawSheet.AllowUserToAddRows = false; // Using a button instead
+            dgvRawSheet.AllowUserToDeleteRows = true; // Or handle via context menu if preferred
+            dgvRawSheet.RowHeadersVisible = true;
+            dgvRawSheet.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+
+            // Wire up event handlers previously developed
+            if (BtnAddNewRawSheet != null) // Ensure button exists
+            {
+                BtnAddNewRawSheet.Click -= BtnAddNewRawSheet_Click; // Prevent multiple subscriptions
+                BtnAddNewRawSheet.Click += BtnAddNewRawSheet_Click;
+            }
+            else { Logger.DebugLog("BtnAddNewRawSheet is null, cannot attach click handler."); }
+
+            if (btnSaveRawSheet != null) // Ensure button exists
+            {
+                btnSaveRawSheet.Click -= BtnSaveRawSheet_Click; // Prevent multiple subscriptions
+                btnSaveRawSheet.Click += BtnSaveRawSheet_Click;
+            }
+            else { Logger.DebugLog("btnSaveRawSheet is null, cannot attach click handler."); }
+
+            dgvRawSheet.CellValidated -= dgvRawSheet_CellValidated; // Prevent multiple subscriptions
+            dgvRawSheet.CellValidated += dgvRawSheet_CellValidated;
+        }
+
+        private void LoadRawSheetData()
+        {
+            if (dgvRawSheet == null) return;
             try
             {
-                var settings = new Settings
-                {
-                    LastExportFolder = txtHotFolder.Text,
-                    // Always append the fixed file name
-                    LogFilePath = string.IsNullOrWhiteSpace(txtLogFile.Text) ? "" : Path.Combine(txtLogFile.Text, MainLogFileName),
-                    DebugLogFilePath = string.IsNullOrWhiteSpace(txtDebugLogFile.Text) ? "" : Path.Combine(txtDebugLogFile.Text, DebugLogFileName),
-                    LoggingEnabled = chkEnableLogging.Checked,
-                    DebugLoggingEnabled = chkEnableDebugLogging.Checked,
-                    TextLayerName = txtTextLayer.Text,
-                    BendLineLayerName = txtBendLineLayer.Text,
-                    ShowBendLines = chkShowBendLines.Checked,
-                    TextLocation = cboTextLocation.SelectedItem?.ToString() ?? "Centered",
-                    DrawingTemplatePath = txtDrawingTemplate.Text,
-                    CheckForLaser = chkCheckForLaser.Checked
-                };
-                settings.SaveSettings();
+                List<RawSheetData> rawSheetEntries = LoadAndParsePdmCsv(pdmCsvFilePath);
+                dgvRawSheet.DataSource = new BindingList<RawSheetData>(rawSheetEntries); // Use BindingList for dynamic updates
+                Logger.DebugLog($"Successfully loaded {rawSheetEntries.Count} entries into dgvRawSheet.");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error saving settings: {ex.Message}", "Settings Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.DebugLog($"Error in LoadRawSheetData: {ex.Message}\\nStack Trace: {ex.StackTrace}");
+                MessageBox.Show($"Error loading raw sheet data: {ex.Message}", "Load Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                dgvRawSheet.DataSource = new BindingList<RawSheetData>(); // Ensure it's at least an empty list
+            }
+        }
+        
+        private List<RawSheetData> LoadAndParsePdmCsv(string filePath)
+        {
+            Logger.DebugLog($"Attempting to load and parse CSV from PDM path: {filePath}");
+            if (pdmVault == null)
+            {
+                Logger.DebugLog("PDM vault object is null. Cannot load CSV from PDM.");
+                MessageBox.Show("PDM connection is not available. Cannot load raw sheet data.", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return new List<RawSheetData>();
+            }
+
+            if (!pdmVault.IsLoggedIn)
+            {
+                Logger.DebugLog("Not logged into PDM. Cannot load CSV.");
+                // Attempt to login or prompt user? For now, just show error.
+                MessageBox.Show("Not logged into PDM. Please log in and try again.", "PDM Login Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return new List<RawSheetData>();
+            }
+
+            try
+            {
+                IEdmFolder5 edmFolder = null;
+                IEdmFile5 edmFile = pdmVault.GetFileFromPath(filePath, out edmFolder);
+
+                if (edmFile == null)
+                {
+                    Logger.DebugLog($"PDM file not found at path: {filePath}");
+                    MessageBox.Show($"The Raw Material CSV file was not found in PDM at the expected location:\\n{filePath}\\nPlease check the path and PDM availability.", "File Not Found", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return new List<RawSheetData>();
+                }
+
+                Logger.DebugLog($"PDM File found: {edmFile.Name}, ID: {edmFile.ID}, Version: {edmFile.CurrentVersion}");
+                
+                // Get the file to ensure we have the latest version locally
+                // EdmCmdFlags.EdmCmd_Force (if needed to overwrite) | EdmCmdFlags.EdmCmd_Silent
+                edmFile.GetFileCopy((int)GetParentWindowHandle(), 0); // Changed from (int)EPDM.Interop.epdm.EdmCmdFlags.EdmCmd_Nothing to 0
+                Logger.DebugLog($"Local copy of PDM file '{edmFile.Name}' obtained/updated.");
+
+                string localPath = edmFile.GetLocalPath(edmFolder.ID); // Get local path after GetFileCopy
+                if (!File.Exists(localPath))
+                {
+                     Logger.DebugLog($"Local file copy does not exist after GetFileCopy: {localPath}");
+                     MessageBox.Show($"Failed to retrieve a local copy of the PDM file: {localPath}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                     return new List<RawSheetData>();
+                }
+                Logger.DebugLog($"Reading from local PDM file copy: {localPath}");
+                
+                string csvContent;
+                using (StreamReader reader = new StreamReader(localPath, Encoding.UTF8)) // Specify UTF-8
+                {
+                    csvContent = reader.ReadToEnd();
+                }
+                Logger.DebugLog($"Successfully read {csvContent.Length} characters from PDM CSV file.");
+                return ParseRawSheetCsv(csvContent);
+            }
+            catch (System.Runtime.InteropServices.COMException cex)
+            {
+                string errorMsg = GetEdmErrorString(cex.ErrorCode);
+                Logger.DebugLog($"PDM COM Exception in LoadAndParsePdmCsv: {cex.Message} (Code: {cex.ErrorCode}, PDM Msg: {errorMsg})\\nStackTrace: {cex.StackTrace}");
+                MessageBox.Show($"A PDM error occurred while loading the raw material data: {errorMsg} (Code: {cex.ErrorCode})", "PDM Operation Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return new List<RawSheetData>();
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"General Exception in LoadAndParsePdmCsv: {ex.Message}\\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show($"An error occurred while loading or parsing the raw material CSV: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return new List<RawSheetData>();
             }
         }
 
-        private void SavePropertyMappings()
+        private List<RawSheetData> ParseRawSheetCsv(string csvData)
         {
-            try
+            var entries = new List<RawSheetData>();
+            if (string.IsNullOrWhiteSpace(csvData))
             {
-                var mappings = new List<PropertyMapping>();
-                foreach (DataGridViewRow row in dgvPropertyMappings.Rows)
+                Logger.DebugLog("CSV data is empty or null in ParseRawSheetCsv.");
+                return entries;
+            }
+
+            // Basic CSV parsing, handles quotes and commas within fields
+            var lines = csvData.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            if (!lines.Any()) return entries;
+
+            // Skip header line by starting from index 1
+            for (int i = 1; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                var values = new List<string>();
+                var currentField = new StringBuilder();
+                bool inQuotes = false;
+
+                for (int j = 0; j < line.Length; j++)
                 {
-                    if (row.Cells["DxfPropertyName"].Value != null && row.Cells["SwCustomProperty"].Value != null)
+                    char c = line[j];
+                    if (c == '\"')
                     {
-                        mappings.Add(new PropertyMapping
+                        // Handle double quotes "" as a single quote literal within a quoted field
+                        if (inQuotes && j + 1 < line.Length && line[j+1] == '\"')
                         {
-                            RowNumber = Convert.ToInt32(row.Cells["RowNumber"].Value),
-                            DxfPropertyName = row.Cells["DxfPropertyName"].Value.ToString(),
-                            SwCustomProperty = row.Cells["SwCustomProperty"].Value.ToString()
-                        });
+                            currentField.Append('\"');
+                            j++; // Skip next quote
+                        }
+                        else
+                        {
+                            inQuotes = !inQuotes;
+                        }
+                    }
+                    else if (c == ',' && !inQuotes)
+                    {
+                        values.Add(currentField.ToString());
+                        currentField.Clear();
+                    }
+                    else
+                    {
+                        currentField.Append(c);
                     }
                 }
-                Settings.SavePropertyMappings(mappings);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error saving property mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
+                values.Add(currentField.ToString()); // Add the last field
 
-        private void SaveMaterialMappings()
-        {
-            try
-            {
-                var mappings = new List<MaterialMapping>();
-                foreach (DataGridViewRow row in dgvMaterialMapping.Rows)
+                if (values.Count == 9) // Expecting 9 columns as per RawSheetData
                 {
-                    if (row.Cells["SwMaterial"].Value != null && row.Cells["DxfMaterial"].Value != null)
+                    try
                     {
-                        mappings.Add(new MaterialMapping
+                        entries.Add(new RawSheetData
                         {
-                            RowNumber = Convert.ToInt32(row.Cells["RowNumber"].Value),
-                            SwMaterial = row.Cells["SwMaterial"].Value.ToString(),
-                            DxfMaterial = row.Cells["DxfMaterial"].Value.ToString()
+                            PartNumber = values[0].Trim(),
+                            LegacyPartNumber = values[1].Trim(),
+                            Material = values[2].Trim(),
+                            Thickness = decimal.TryParse(values[3].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out decimal thk) ? thk : 0m,
+                            Description = values[4].Trim(),
+                            TotalSQInch = decimal.TryParse(values[5].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out decimal sqi) ? sqi : 0m,
+                            SheetLengthInch = decimal.TryParse(values[6].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out decimal slen) ? slen : 0m,
+                            SheetHeightInch = decimal.TryParse(values[7].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out decimal shgt) ? shgt : 0m,
+                            // Handle currency symbols if present during parsing, though ideally they are not in the raw data for LastCost
+                            LastCost = decimal.TryParse(values[8].Trim().Replace("$", "").Replace("£", "").Replace("Â", ""), NumberStyles.Currency, CultureInfo.InvariantCulture, out decimal cost) ? cost : 0m
                         });
                     }
-                }
-                Settings.SaveMaterialMappings(mappings);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error saving material mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        private void SaveThicknessMappings()
-        {
-            try
-            {
-                var mappings = new List<ThicknessMapping>();
-                foreach (DataGridViewRow row in dgvThicknessMapping.Rows)
-                {
-                    if (row.Cells["SwThickness"].Value != null && row.Cells["DxfThickness"].Value != null)
+                    catch (Exception ex)
                     {
-                        mappings.Add(new ThicknessMapping
-                        {
-                            RowNumber = Convert.ToInt32(row.Cells["RowNumber"].Value),
-                            SwThickness = row.Cells["SwThickness"].Value.ToString(),
-                            DxfThickness = row.Cells["DxfThickness"].Value.ToString()
-                        });
+                        Logger.DebugLog($"Error parsing CSV line {i+1}: '{line}'. Error: {ex.Message}");
+                        // Optionally, skip this line or add a placeholder with error info
                     }
                 }
-                Settings.SaveThicknessMappings(mappings);
+                else
+                {
+                    Logger.DebugLog($"Skipping CSV line {i+1} due to incorrect number of columns ({values.Count}): '{line}'");
+                }
             }
-            catch (Exception ex)
+            Logger.DebugLog($"Parsed {entries.Count} entries from CSV data.");
+            return entries;
+        }
+
+        private void BtnAddNewRawSheet_Click(object sender, EventArgs e)
+        {
+            if (dgvRawSheet.DataSource is BindingList<RawSheetData> bindingList)
             {
-                MessageBox.Show($"Error saving thickness mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                bindingList.AddNew(); // This adds a new RawSheetData object to the list and grid
+                                      // Default values from RawSheetData constructor (if any) or property initializers will be used.
+                                      // Or, you can create an instance and add it:
+                                      // var newSheet = new RawSheetData { PartNumber = "New", ... };
+                                      // bindingList.Add(newSheet);
+                Logger.DebugLog("New row added to dgvRawSheet via BtnAddNewRawSheet_Click.");
+            }
+            else
+            {
+                Logger.DebugLog("dgvRawSheet.DataSource is not a BindingList<RawSheetData>. Cannot add new row.");
             }
         }
 
-        // Event Handlers
+        private void BtnSaveRawSheet_Click(object sender, EventArgs e)
+        {
+            Logger.DebugLog("BtnSaveRawSheet_Click triggered.");
+            SaveRawSheetData();
+        }
+        
+        private void SaveRawSheetData()
+        {
+            Logger.DebugLog("Attempting to save dgvRawSheet data to PDM CSV.");
+            if (dgvRawSheet == null || pdmVault == null || swApp == null)
+            {
+                Logger.DebugLog("SaveRawSheetData: One or more critical objects (dgvRawSheet, pdmVault, swApp) are null. Aborting save.");
+                MessageBox.Show("Cannot save raw sheet data. Essential components are missing.", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (!pdmVault.IsLoggedIn)
+            {
+                Logger.DebugLog("SaveRawSheetData: Not logged into PDM. Aborting save.");
+                MessageBox.Show("Not logged into PDM. Please log in and try again.", "PDM Login Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Ensure any pending edits are committed to the DataSource
+            try
+            {
+                dgvRawSheet.EndEdit(); 
+            }
+            catch (Exception ex)
+            {
+                 Logger.DebugLog($"Exception during dgvRawSheet.EndEdit(): {ex.Message}. May affect data accuracy for the currently edited cell.");
+            }
+
+
+            IEdmFile5 edmFile = null;
+            IEdmFolder5 edmFolder = null;
+            long parentWinHandle = GetParentWindowHandle();
+
+            try
+            {
+                edmFile = pdmVault.GetFileFromPath(pdmCsvFilePath, out edmFolder);
+                if (edmFile == null)
+                {
+                    Logger.DebugLog($"SaveRawSheetData: PDM file not found at {pdmCsvFilePath}. Save aborted.");
+                    MessageBox.Show($"The Raw Material CSV file was not found in PDM at the expected location:\\n{pdmCsvFilePath}\\nCannot save changes.", "File Not Found", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+                Logger.DebugLog($"SaveRawSheetData: Found PDM file '{edmFile.Name}' (ID: {edmFile.ID}) for saving.");
+
+                // Check out the file
+                // EdmLockFlag: EdmLock_Simple, EdmLock_KeepHCopy (if you want to keep it checked out)
+                // EdmLockFlag.EdmLock_Simple should be sufficient for checkout-edit-checkin
+                edmFile.LockFile((int)parentWinHandle, (int)EdmLockFlag.EdmLock_Simple, 0); // 0 for no flags
+                Logger.DebugLog($"SaveRawSheetData: PDM file '{edmFile.Name}' locked (checked out).");
+
+                // Serialize DataGridView content to CSV string
+                var csvLines = new List<string>();
+                // Add header row - MUST match the order in RawSheetData and ParseRawSheetCsv
+                csvLines.Add("PartNumber,Legacy Part Number,Material,Thickness,Description,Total SQ Inch,Sheet Length Inch,Sheet Height Inch,Last Cost");
+
+                if (dgvRawSheet.DataSource is BindingList<RawSheetData> dataList)
+                {
+                    foreach (RawSheetData item in dataList)
+                    {
+                        // Ensure all fields are present and handle nulls for string fields if necessary
+                        string pn = QuoteCsvField(item.PartNumber ?? "");
+                        string lpn = QuoteCsvField(item.LegacyPartNumber ?? "");
+                        string mat = QuoteCsvField(item.Material ?? ""); // Material from class
+                        // Using InvariantCulture for decimal to string conversion to ensure '.' as decimal separator
+                        string thk = item.Thickness.ToString(CultureInfo.InvariantCulture);
+                        string desc = QuoteCsvField(item.Description ?? "");
+                        string tsqi = item.TotalSQInch.ToString(CultureInfo.InvariantCulture);
+                        string slen = item.SheetLengthInch.ToString(CultureInfo.InvariantCulture);
+                        string shgt = item.SheetHeightInch.ToString(CultureInfo.InvariantCulture);
+                        // Store LastCost as a plain number, formatting is for display. Using en-US for save consistency.
+                        string lcost = item.LastCost.ToString("F2", CultureInfo.InvariantCulture); // "F2" for two decimal places, always.
+
+                        csvLines.Add($"{pn},{lpn},{mat},{thk},{desc},{tsqi},{slen},{shgt},{lcost}");
+                    }
+                }
+                else
+                {
+                     Logger.DebugLog("SaveRawSheetData: dgvRawSheet.DataSource is not BindingList<RawSheetData>. Cannot get data to save.");
+                     // Should we still attempt to save an empty file or header only? Or just error out?
+                     // For now, if there's no data source, we'll just save the header if it was the only thing.
+                     // But if it *was* a binding list and somehow it's empty, that's fine.
+                }
+
+
+                string csvContent = string.Join(System.Environment.NewLine, csvLines) + System.Environment.NewLine; // Ensure trailing newline for last record
+                
+                string localPath = edmFile.GetLocalPath(edmFolder.ID);
+                Logger.DebugLog($"SaveRawSheetData: Writing CSV content to local PDM path: {localPath}");
+                File.WriteAllText(localPath, csvContent, Encoding.UTF8); // Use UTF-8 for writing
+
+                // Check in the file
+                // Comment for check-in: "Updated raw material data via Roeslein Add-in"
+                edmFile.UnlockFile((int)parentWinHandle, "Updated raw material data via Roeslein Add-in", 0); // 0 for no flags
+                Logger.DebugLog($"SaveRawSheetData: PDM file '{edmFile.Name}' unlocked (checked in). Save successful.");
+                MessageBox.Show("Raw sheet data saved successfully to PDM.", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+            }
+            catch (System.Runtime.InteropServices.COMException cex)
+            {
+                string errorMsg = GetEdmErrorString(cex.ErrorCode);
+                Logger.DebugLog($"SaveRawSheetData: PDM COM Exception: {cex.Message} (Code: {cex.ErrorCode}, PDM Msg: {errorMsg})\\nStackTrace: {cex.StackTrace}");
+                MessageBox.Show($"A PDM error occurred while saving raw material data: {errorMsg} (Code: {cex.ErrorCode})", "PDM Operation Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                // Attempt to undo checkout if file was locked
+                if (edmFile != null && edmFile.IsLocked)
+                {
+                    try { edmFile.UndoLockFile((int)parentWinHandle, false); Logger.DebugLog("SaveRawSheetData: Checkout undone due to PDM error."); }
+                    catch (Exception undoEx) { Logger.DebugLog($"SaveRawSheetData: Failed to undo checkout: {undoEx.Message}"); }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"SaveRawSheetData: General Exception: {ex.Message}\\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show($"An error occurred while saving raw material data: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                if (edmFile != null && edmFile.IsLocked)
+                {
+                    try { edmFile.UndoLockFile((int)parentWinHandle, false); Logger.DebugLog("SaveRawSheetData: Checkout undone due to general error."); }
+                    catch (Exception undoEx) { Logger.DebugLog($"SaveRawSheetData: Failed to undo checkout: {undoEx.Message}"); }
+                }
+            }
+        }
+
+        private string QuoteCsvField(string field)
+        {
+            if (string.IsNullOrEmpty(field)) return "\"\""; // Represent empty as ""
+            // If field contains comma, quote, or newline, then quote it
+            if (field.Contains(",") || field.Contains("\"") || field.Contains("\\n") || field.Contains("\\r"))
+            {
+                return $"\"{field.Replace("\"", "\"\"")}\""; // Escape quotes by doubling them
+            }
+            return field;
+        }
+
+        private void dgvRawSheet_CellValidated(object sender, DataGridViewCellEventArgs e)
+        {
+            if (dgvRawSheet.Columns[e.ColumnIndex].Name == "LastCost")
+            {
+                var cell = dgvRawSheet[e.ColumnIndex, e.RowIndex];
+                if (cell.Value != null)
+                {
+                    // Try to parse the current text value of the cell.
+                    // This handles cases where the user types something that isn't yet a decimal.
+                    if (decimal.TryParse(cell.Value.ToString().Replace("$", "").Replace("£", "").Replace("Â", ""), NumberStyles.Any, CultureInfo.CurrentCulture, out decimal validatedCost))
+                    {
+                        // Set the cell's Value to the decimal.
+                        // This allows the DataGridView's DefaultCellStyle.Format = "c" to work correctly
+                        // for display purposes, even if the underlying DataSource value is already a decimal.
+                        // This is crucial for visual update after manual edit.
+                        cell.Value = validatedCost; 
+                    }
+                    // else: If parsing fails, leave it as is. The save logic will handle TryParse again.
+                    // Or, you could provide immediate feedback or clear the cell.
+                }
+            }
+        }
+        
+        // Helper to get parent window handle for PDM operations
+        private long GetParentWindowHandle()
+        {
+            if (swApp != null)
+            {
+                try
+                {
+                    // Check if swApp.Frame() returns an object and then try to cast/call GetHWnd()
+                    object frameObj = swApp.Frame();
+                    if (frameObj is SolidWorks.Interop.sldworks.IFrame swFrame)
+                    {
+                        return (long)swFrame.GetHWnd();
+                    }
+                    Logger.DebugLog("GetParentWindowHandle: swApp.Frame() did not return an IFrame object or was null.");
+                }
+                catch (Exception ex)
+                {
+                    Logger.DebugLog($"GetParentWindowHandle: Error getting SolidWorks frame HWnd: {ex.Message}");
+                }
+            }
+            // Fallback to desktop or current process main window if SW app handle is not available
+            // This might not be ideal for PDM dialogs but is better than 0.
+            try
+            {
+                // Using 'this.Handle' from the Form itself as a fallback
+                if (this.IsHandleCreated) return (long)this.Handle;
+            } catch (Exception ex) {
+                 Logger.DebugLog($"GetParentWindowHandle: Error getting form handle: {ex.Message}");
+            }
+            Logger.DebugLog("GetParentWindowHandle: Returning 0 as no valid window handle found.");
+            return 0; // Default or error case
+        }
+        
+        // Helper to get PDM error string
+        private string GetEdmErrorString(int hResult)
+        {
+            if (pdmVault == null) return "PDM vault not available.";
+            try
+            {
+                // Corrected signature for IEdmVault5.GetErrorString
+                // void GetErrorString (int hresult, out string bstrErrorString, out string bstrMostRecentExternallyReferencedFile);
+                string errorString;
+                string mostRecentFile; // This will be populated by PDM if relevant
+                pdmVault.GetErrorString(hResult, out errorString, out mostRecentFile); 
+                
+                if (!string.IsNullOrEmpty(mostRecentFile))
+                {
+                     return $"{errorString} (Related file: {mostRecentFile})";
+                }
+                return errorString ?? "Unknown PDM error.";
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"GetEdmErrorString: Exception while trying to get PDM error string for HRESULT {hResult}: {ex.Message}");
+                return $"PDM Error HRESULT: {hResult} (Could not retrieve detailed message)";
+            }
+        }
+
+        // --- Event Handlers for General Settings Tab and Form --- 
+
         private void btnOK_Click(object sender, EventArgs e)
         {
-            SaveSettings();
-            SavePropertyMappings();
-            SaveMaterialMappings();
-            SaveThicknessMappings();
+            Logger.DebugLog("btnOK_Click: Saving all settings.");
+            SaveGeneralSettings();
+            SavePropertyMappings(); // Will call Settings.SavePropertyMappings
+            SaveMaterialMappings(); // Will call Settings.SaveMaterialMappings
+            SaveThicknessMappings(); // Will call Settings.SaveThicknessMappings
+            // SaveRawSheetData(); // This is handled by its own button on the Raw Material tab
+            // SavePropertyStandardsData(); // TODO: Implement when dgvPropertyStandards is finalized
 
-            // Reconfigure logger after saving settings
-            var settings = Settings.LoadSettings();
+            // Reconfigure logger after saving settings (from backup)
+            var settings = Settings.LoadSettings(); // Reload to get the potentially updated file paths for logger
             if (settings != null)
             {
                 Logger.Instance.SetSettingsEnabled(settings.LoggingEnabled);
@@ -449,7 +991,12 @@ namespace RoesleinAddIn
         {
             using (var fbd = new FolderBrowserDialog())
             {
-                if (fbd.ShowDialog() == DialogResult.OK)
+                // Set initial path if txtHotFolder has a valid directory
+                if (!string.IsNullOrWhiteSpace(txtHotFolder.Text) && Directory.Exists(txtHotFolder.Text))
+                {
+                    fbd.SelectedPath = txtHotFolder.Text;
+                }
+                if (fbd.ShowDialog(this) == DialogResult.OK) // Pass 'this' for proper parent window
                 {
                     txtHotFolder.Text = fbd.SelectedPath;
                 }
@@ -458,6 +1005,7 @@ namespace RoesleinAddIn
 
         private void btnUseDefaultHotFolder_Click(object sender, EventArgs e)
         {
+            // Default from Settings.cs constructor
             txtHotFolder.Text = @"\\roeslein.com\locations$\RoesleinFabrication\Connex-Metamation Hot Folder\DXFs From PDM";
         }
 
@@ -470,9 +1018,9 @@ namespace RoesleinAddIn
                 {
                     fbd.SelectedPath = txtLogFile.Text;
                 }
-                if (fbd.ShowDialog() == DialogResult.OK)
+                if (fbd.ShowDialog(this) == DialogResult.OK)
                 {
-                    txtLogFile.Text = fbd.SelectedPath;
+                    txtLogFile.Text = fbd.SelectedPath; 
                 }
             }
         }
@@ -496,44 +1044,11 @@ namespace RoesleinAddIn
                 {
                     fbd.SelectedPath = txtDebugLogFile.Text;
                 }
-                if (fbd.ShowDialog() == DialogResult.OK)
+                if (fbd.ShowDialog(this) == DialogResult.OK)
                 {
                     txtDebugLogFile.Text = fbd.SelectedPath;
                 }
             }
-        }
-
-        private void btnSaveMappings_Click(object sender, EventArgs e)
-        {
-            SavePropertyMappings();
-        }
-
-        private void btnSaveMappingsMaterial_Click(object sender, EventArgs e)
-        {
-            SaveMaterialMappings();
-        }
-
-        private void btnSaveThickness_Click(object sender, EventArgs e)
-        {
-            SaveThicknessMappings();
-        }
-
-        private void btnAddNewRow_Click(object sender, EventArgs e)
-        {
-            int newRowNumber = dgvPropertyMappings.Rows.Count + 1;
-            dgvPropertyMappings.Rows.Add(newRowNumber, "", "");
-        }
-
-        private void BtnAddNewRowMaterial_Click(object sender, EventArgs e)
-        {
-            int newRowNumber = dgvMaterialMapping.Rows.Count + 1;
-            dgvMaterialMapping.Rows.Add(newRowNumber, "", "");
-        }
-
-        private void BtnAddNewThickness_Click(object sender, EventArgs e)
-        {
-            int newRowNumber = dgvThicknessMapping.Rows.Count + 1;
-            dgvThicknessMapping.Rows.Add(newRowNumber, "", "");
         }
 
         private void BtnBrowseDrawingTemplate_Click(object sender, EventArgs e)
@@ -548,93 +1063,263 @@ namespace RoesleinAddIn
                     dialog.InitialDirectory = Path.GetDirectoryName(txtDrawingTemplate.Text);
                     dialog.FileName = Path.GetFileName(txtDrawingTemplate.Text);
                 }
-                if (dialog.ShowDialog() == DialogResult.OK)
+                if (dialog.ShowDialog(this) == DialogResult.OK)
                 {
                     txtDrawingTemplate.Text = dialog.FileName;
                 }
             }
         }
+        
+        // --- Methods for dgvPropertyMappings (DXF Property Mappings on General Settings Tab) ---
+        // These save/add methods are for the dgvPropertyMappings on the General tab.
 
-        // Context menu event handlers
-        private void DgvPropertyMappings_MouseDown(object sender, MouseEventArgs e)
+        private void SavePropertyMappings() // Corresponds to btnSaveMappings_Click in backup
         {
-            if (e.Button == MouseButtons.Right)
+            if (dgvPropertyMappings == null) return;
+            try
             {
-                var hitTestInfo = dgvPropertyMappings.HitTest(e.X, e.Y);
-                if (hitTestInfo.RowIndex >= 0 && hitTestInfo.RowIndex < dgvPropertyMappings.RowCount)
+                var mappings = new List<PropertyMapping>();
+                foreach (DataGridViewRow row in dgvPropertyMappings.Rows)
                 {
-                    dgvPropertyMappings.ClearSelection();
-                    dgvPropertyMappings.Rows[hitTestInfo.RowIndex].Selected = true;
-                    dgvContextMenu.Show(dgvPropertyMappings, e.Location);
+                    // Ensure row is not the new row placeholder if AllowUserToAddRows is true at some point
+                    if (row.IsNewRow) continue; 
+
+                    // Check for nulls before accessing Value, especially for potentially empty new rows
+                    string dxfPropName = row.Cells["DxfPropertyName"].Value?.ToString();
+                    string swCustProp = row.Cells["SwCustomProperty"].Value?.ToString();
+                    string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
+
+                    if (!string.IsNullOrWhiteSpace(dxfPropName) && !string.IsNullOrWhiteSpace(swCustProp) && int.TryParse(rowNumStr, out int rowNum))
+                    {
+                        mappings.Add(new PropertyMapping
+                        {
+                            RowNumber = rowNum,
+                            DxfPropertyName = dxfPropName,
+                            SwCustomProperty = swCustProp
+                        });
+                    }
                 }
+                Settings.SavePropertyMappings(mappings); // Static method in Settings.cs
+                Logger.DebugLog("Property mappings saved.");
+                // MessageBox.Show("Property mappings saved.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"Error saving property mappings: {ex.Message}");
+                MessageBox.Show($"Error saving property mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void DgvMaterialMappings_MouseDown(object sender, MouseEventArgs e)
+        private void btnSavePropertyMappings_Click(object sender, EventArgs e)
         {
-            if (e.Button == MouseButtons.Right)
+            SavePropertyMappings();
+        }
+
+        private void btnAddNewPropertyRow_Click(object sender, EventArgs e) // Corresponds to btnAddNewRow_Click in backup
+        {
+            if (dgvPropertyMappings == null) return;
+            // Calculate next row number
+            int newRowNumber = 1;
+            if (dgvPropertyMappings.Rows.Count > 0)
             {
-                var hitTestInfo = dgvMaterialMapping.HitTest(e.X, e.Y);
-                if (hitTestInfo.RowIndex >= 0 && hitTestInfo.RowIndex < dgvMaterialMapping.RowCount)
+                // Get the max row number from existing rows, excluding the new row placeholder if present
+                newRowNumber = dgvPropertyMappings.Rows.Cast<DataGridViewRow>()
+                                .Where(r => !r.IsNewRow && r.Cells["RowNumber"].Value != null)
+                                .Max(r => Convert.ToInt32(r.Cells["RowNumber"].Value)) + 1;
+            }
+            dgvPropertyMappings.Rows.Add(newRowNumber, "", "");
+        }
+
+        // --- Methods for dgvMaterialMapping (on Material Mappings Tab) ---
+        private void SaveMaterialMappings() 
+        {
+            if (dgvMaterialMapping == null) return;
+            try
+            {
+                var mappings = new List<MaterialMapping>();
+                foreach (DataGridViewRow row in dgvMaterialMapping.Rows)
                 {
-                    dgvMaterialMapping.ClearSelection();
-                    dgvMaterialMapping.Rows[hitTestInfo.RowIndex].Selected = true;
-                    dgvMaterialContextMenu.Show(dgvMaterialMapping, e.Location);
+                    if (row.IsNewRow) continue;
+                    string swMat = row.Cells["SwMaterial"].Value?.ToString();
+                    string dxfMat = row.Cells["DxfMaterial"].Value?.ToString();
+                    string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
+
+                    if (!string.IsNullOrWhiteSpace(swMat) && !string.IsNullOrWhiteSpace(dxfMat) && int.TryParse(rowNumStr, out int rowNum))
+                    {
+                        mappings.Add(new MaterialMapping
+                        {
+                            RowNumber = rowNum,
+                            SwMaterial = swMat,
+                            DxfMaterial = dxfMat
+                        });
+                    }
                 }
+                Settings.SaveMaterialMappings(mappings);
+                Logger.DebugLog("Material mappings saved.");
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"Error saving material mappings: {ex.Message}");
+                MessageBox.Show($"Error saving material mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void DgvThicknessMappings_MouseDown(object sender, MouseEventArgs e)
+        // --- Methods for dgvThicknessMapping (on Thickness Mappings Tab) ---
+        private void SaveThicknessMappings()
         {
-            if (e.Button == MouseButtons.Right)
+            if (dgvThicknessMapping == null) return;
+            try
             {
-                var hitTestInfo = dgvThicknessMapping.HitTest(e.X, e.Y);
-                if (hitTestInfo.RowIndex >= 0 && hitTestInfo.RowIndex < dgvThicknessMapping.RowCount)
+                var mappings = new List<ThicknessMapping>();
+                foreach (DataGridViewRow row in dgvThicknessMapping.Rows)
                 {
-                    dgvThicknessMapping.ClearSelection();
-                    dgvThicknessMapping.Rows[hitTestInfo.RowIndex].Selected = true;
-                    dgvThicknessContextMenu.Show(dgvThicknessMapping, e.Location);
+                    if (row.IsNewRow) continue;
+                    string swThick = row.Cells["SwThickness"].Value?.ToString();
+                    string dxfThick = row.Cells["DxfThickness"].Value?.ToString();
+                    string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
+
+                    if (!string.IsNullOrWhiteSpace(swThick) && !string.IsNullOrWhiteSpace(dxfThick) && int.TryParse(rowNumStr, out int rowNum))
+                    {
+                        mappings.Add(new ThicknessMapping // Ensure ThicknessMapping class is defined as expected
+                        {
+                            RowNumber = rowNum,
+                            SwThickness = swThick, // These are strings in ThicknessMapping class from backup
+                            DxfThickness = dxfThick
+                        });
+                    }
                 }
+                Settings.SaveThicknessMappings(mappings); // Static method in Settings.cs
+                Logger.DebugLog("Thickness mappings saved.");
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"Error saving thickness mappings: {ex.Message}");
+                MessageBox.Show($"Error saving thickness mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void DgvDeleteMenuItem_Click(object sender, EventArgs e)
+        // --- Context Menu Handlers (Example for Property Mappings, adapt for others) ---
+        // You would need to add DgvPropertyMappingsDeleteMenuItem_Click, DgvMaterialMappingDeleteMenuItem_Click etc.
+        // and wire them up in InitializeContextMenus() if you want delete functionality.
+        // Example:
+        // private void DgvPropertyMappingsDeleteMenuItem_Click(object sender, EventArgs e)
+        // {
+        //     if (dgvPropertyMappings.SelectedRows.Count > 0)
+        //     {
+        //         var selectedRow = dgvPropertyMappings.SelectedRows[0];
+        //         if (!selectedRow.IsNewRow)
+        //         {
+        //             dgvPropertyMappings.Rows.Remove(selectedRow);
+        //             SavePropertyMappings(); // Save after delete
+        //         }
+        //     }
+        // }
+
+        // Placeholders for MouseDown events for context menus (from InitializeContextMenus)
+        // private void DgvPropertyMappings_MouseDown(object sender, MouseEventArgs e) { /* see backup */ }
+        // private void DgvMaterialMappings_MouseDown(object sender, MouseEventArgs e) { /* see backup */ }
+        // private void DgvThicknessMappings_MouseDown(object sender, MouseEventArgs e) { /* see backup */ }
+
+
+        // --- Methods for dgvMaterialMapping (on Material Mappings Tab) ---
+        private void BtnAddNewRowMaterial_Click(object sender, EventArgs e)
         {
-            if (dgvPropertyMappings.SelectedRows.Count > 0)
+            if (dgvMaterialMapping == null) return;
+            int newRowNumber = 1;
+            if (dgvMaterialMapping.Rows.Count > 0)
             {
-                var selectedRow = dgvPropertyMappings.SelectedRows[0];
-                if (!selectedRow.IsNewRow)
-                {
-                    dgvPropertyMappings.Rows.Remove(selectedRow);
-                    SavePropertyMappings();
-                }
+                newRowNumber = dgvMaterialMapping.Rows.Cast<DataGridViewRow>()
+                                .Where(r => !r.IsNewRow && r.Cells["RowNumber"].Value != null)
+                                .Max(r => Convert.ToInt32(r.Cells["RowNumber"].Value)) + 1;
             }
+            dgvMaterialMapping.Rows.Add(newRowNumber, "", "");
         }
 
-        private void DgvMaterialDeleteMenuItem_Click(object sender, EventArgs e)
+        private void btnSaveMappingsMaterial_Click(object sender, EventArgs e)
         {
-            if (dgvMaterialMapping.SelectedRows.Count > 0)
+            SaveMaterialMappings();
+            MessageBox.Show("Material mappings saved.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        
+        // --- Methods for dgvThicknessMapping (on Thickness Mappings Tab) ---
+        private void BtnAddNewThickness_Click(object sender, EventArgs e)
+        {
+            if (dgvThicknessMapping == null) return;
+            int newRowNumber = 1;
+            if (dgvThicknessMapping.Rows.Count > 0)
             {
-                var selectedRow = dgvMaterialMapping.SelectedRows[0];
-                if (!selectedRow.IsNewRow)
-                {
-                    dgvMaterialMapping.Rows.Remove(selectedRow);
-                    SaveMaterialMappings();
-                }
+                newRowNumber = dgvThicknessMapping.Rows.Cast<DataGridViewRow>()
+                                .Where(r => !r.IsNewRow && r.Cells["RowNumber"].Value != null)
+                                .Max(r => Convert.ToInt32(r.Cells["RowNumber"].Value)) + 1;
             }
+            dgvThicknessMapping.Rows.Add(newRowNumber, "", "");
         }
 
-        private void DgvThicknessDeleteMenuItem_Click(object sender, EventArgs e)
+        private void btnSaveThickness_Click(object sender, EventArgs e)
         {
-            if (dgvThicknessMapping.SelectedRows.Count > 0)
-            {
-                var selectedRow = dgvThicknessMapping.SelectedRows[0];
-                if (!selectedRow.IsNewRow)
-                {
-                    dgvThicknessMapping.Rows.Remove(selectedRow);
-                    SaveThicknessMappings();
-                }
-            }
+            SaveThicknessMappings();
+            MessageBox.Show("Thickness mappings saved.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
+
+        // --- Methods for dgvPropertyStandards (Standards Settings Tab) ---
+        private void btnSaveFileProp_Click(object sender, EventArgs e)
+        {
+            SavePropertyStandardsData();
+        }
+
+        private void SavePropertyStandardsData()
+        {
+            // This method will save the data from dgvPropertyStandards.
+            // The actual implementation depends heavily on:
+            // 1. The data class for a property standard (e.g., PropertyStandardSetting).
+            // 2. How these settings are stored (e.g., in Settings.cs, separate XML, etc.).
+            // 3. The columns defined in dgvPropertyStandards.
+
+            if (dgvPropertyStandards == null)
+            {
+                Logger.DebugLog("SavePropertyStandardsData: dgvPropertyStandards is null.");
+                return;
+            }
+            Logger.DebugLog("Attempting to save dgvPropertyStandards data - (Placeholder Implementation).");
+
+            // Example (needs to be adapted):
+            // var standardsToSave = new List<PropertyStandardSetting>();
+            // foreach (DataGridViewRow row in dgvPropertyStandards.Rows)
+            // {
+            //     if (row.IsNewRow) continue;
+            //     standardsToSave.Add(new PropertyStandardSetting
+            //     {
+            //         PropertyName = row.Cells["PropertyName"].Value?.ToString(),
+            //         StandardValue = row.Cells["StandardValue"].Value?.ToString(),
+            //         IsEnabled = Convert.ToBoolean(row.Cells["IsEnabled"].Value ?? false),
+            //         DataType = row.Cells["DataType"].Value?.ToString(),
+            //     });
+            // }
+            // Settings.SavePropertyStandards(standardsToSave); // Assuming a static save method
+
+            MessageBox.Show("Save Property Standards - functionality is a placeholder.", "Placeholder", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+
+    // The data classes (PropertyMapping, MaterialMapping, ThicknessMapping) are assumed to be defined
+    // as they were in your original project structure (e.g., inside or alongside Settings.cs).
+    // The example classes I put at the end of the file previously were illustrative.
+    // You need your actual:
+    // public class PropertyMapping { public int RowNumber {get;set;} public string DxfPropertyName { get; set; } public string SwCustomProperty { get; set; } }
+    // public class MaterialMapping { public int RowNumber {get;set;} public string SwMaterial { get; set; } public string DxfMaterial { get; set; } }
+    // public class ThicknessMapping { public int RowNumber {get;set;} public string SwThickness { get; set; } public string DxfThickness { get; set; } }
+    // public class Settings { ... your full Settings class from backup ... }
+
+    public class RawSheetData
+    {
+        public string PartNumber { get; set; }
+        public string LegacyPartNumber { get; set; }
+        public string Material { get; set; }
+        public decimal Thickness { get; set; }
+        public string Description { get; set; }
+        public decimal TotalSQInch { get; set; }
+        public decimal SheetLengthInch { get; set; }
+        public decimal SheetHeightInch { get; set; }
+        public decimal LastCost { get; set; }
     }
 }

@@ -5,7 +5,6 @@ using Microsoft.Win32;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using RoesleinAddIn;
 
 namespace RoesleinAddIn
 {
@@ -52,10 +51,6 @@ namespace RoesleinAddIn
         [System.Xml.Serialization.XmlIgnore]
         public static Dictionary<double, double> ThicknessMappings { get; set; } = new Dictionary<double, double>();
         
-        // PropertyStandards list - to be saved/loaded separately
-        [System.Xml.Serialization.XmlIgnore] // Exclude from main settings XML
-        public List<PropertyStandardSetting> PropertyStandards { get; set; }
-        
         private const string RegistryKeyPath = @"Software\Roeslein\SolidWorksAddIn";
         private static readonly string DefaultSettingsPath = Path.Combine(
             System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData),
@@ -64,10 +59,6 @@ namespace RoesleinAddIn
         private static readonly string DefaultLogPath = Path.Combine(
             System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData),
             @"Roeslein\Logs\RoesleinAddIn.log");
-
-        private static readonly string DefaultPropertyStandardsPath = Path.Combine(
-            System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData),
-            @"Roeslein\Settings\PropertyStandardsSettings.xml");
 
         public Settings()
         {
@@ -105,9 +96,6 @@ namespace RoesleinAddIn
             this.PropertyMappings = new List<PropertyMapping>();
             this.MaterialMappings = new List<MaterialMapping>();
             ThicknessMapping = new Dictionary<double, double>();
-
-            // Initialize new PropertyStandards list
-            PropertyStandards = new List<PropertyStandardSetting>();
         }
 
         [System.Xml.Serialization.XmlIgnore]
@@ -529,87 +517,6 @@ namespace RoesleinAddIn
             {
                 // Handle exceptions
             }
-        }
-
-        // --- Methods for PropertyStandards (similar to PropertyMappings) ---
-        public static void SavePropertyStandards(List<PropertyStandardSetting> standards)
-        {
-            try
-            {
-                string directory = Path.GetDirectoryName(DefaultPropertyStandardsPath);
-                if (!Directory.Exists(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-
-                using (FileStream stream = new FileStream(DefaultPropertyStandardsPath, FileMode.Create))
-                {
-                    XmlSerializer serializer = new XmlSerializer(typeof(List<PropertyStandardSetting>));
-                    serializer.Serialize(stream, standards);
-                }
-            }
-            catch (Exception ex)
-            {
-                // Log or handle the exception appropriately
-                Debug.WriteLine($"Error saving property standards: {ex.Message}");
-            }
-        }
-
-        public static List<PropertyStandardSetting> LoadPropertyStandards()
-        {
-            List<PropertyStandardSetting> standards = new List<PropertyStandardSetting>();
-            if (File.Exists(DefaultPropertyStandardsPath))
-            {
-                try
-                {
-                    using (FileStream stream = new FileStream(DefaultPropertyStandardsPath, FileMode.Open))
-                    {
-                        XmlSerializer serializer = new XmlSerializer(typeof(List<PropertyStandardSetting>));
-                        standards = (List<PropertyStandardSetting>)serializer.Deserialize(stream);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"Error loading property standards: {ex.Message}");
-                    standards = new List<PropertyStandardSetting>(); 
-                }
-            }
-            
-            // Populate with defaults if the file didn't exist or was empty
-            if (standards == null || standards.Count == 0) // Ensure standards is not null before checking Count
-            {
-                if (standards == null) standards = new List<PropertyStandardSetting>(); // Initialize if null
-                LoadDefaultPropertyStandardsStatic(standards); // Uncommented and call the static helper
-            }
-            return standards;
-        }
-
-        // Example static default loader (can be called from LoadPropertyStandards)
-        private static void LoadDefaultPropertyStandardsStatic(List<PropertyStandardSetting> standardsList)
-        {
-            standardsList.Clear(); 
-            int idCounter = 1;
-            // The defaults you provided earlier, with Use Default Value unchecked for Part Number, Description, Revision
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Part Number", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Description", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Revision", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Status", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Shop Route", "FAB", true, false)); 
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Spare Part", "No", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "MFG Stocked Item", "No", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, true, "Weight", "$PRP:SW-Mass", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, true, "Material", "$PRPMODEL:\"SW-Material\"", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, true, "Sheet Metal Thickness", "$PRPSHEET:\"Thickness\"", true, true));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Vendor", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Vendor Part Number", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Raw Material Number", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Unit of Measurement", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Raw Mat Amount", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "legacy Part Number", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Legacy Unit of Measure", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Legacy Raw Mat Amount", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "NC Punch Programs", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "NC Punch Sheet Size", "", true, false));
         }
     }
 

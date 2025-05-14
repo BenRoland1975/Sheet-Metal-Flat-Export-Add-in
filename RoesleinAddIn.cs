@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Drawing;
 using RoesleinAddIn;
+using EPDM.Interop.epdm;
 
 namespace RoesleinAddIn
 {
@@ -33,6 +34,7 @@ namespace RoesleinAddIn
         private const int CMD_SETTINGS_ID = 1;
         private const int CMD_PROCESS_ID = 2;
         private const int CMD_BOM_ID = 3;
+        private const int CMD_APPLY_PROPS_ID = 4;
 
         // Resources
         private string addinPath;
@@ -42,6 +44,11 @@ namespace RoesleinAddIn
         private SheetMetalProcessor processor;
         private BomProcessor bomProcessor;
         private SettingsFormV2 settingsForm;
+
+        // PDM Vault Object
+        private IEdmVault8 pdmVault;
+
+        private PropertyStandardManager propertyStandardManager;
         #endregion
 
         #region COM Registration
@@ -134,6 +141,10 @@ namespace RoesleinAddIn
                 // Create processors
                 processor = new SheetMetalProcessor(swApp);
                 bomProcessor = new BomProcessor(swApp);
+                propertyStandardManager = new PropertyStandardManager(swApp, pdmVault);
+
+                // Attempt to connect to PDM Vault for the active document
+                TryConnectToPdmVaultForActiveDoc();
 
                 // Add the CommandManager
                 AddCommandMgr();
@@ -222,6 +233,7 @@ namespace RoesleinAddIn
             swApp = null;
             processor = null;
             bomProcessor = null;
+            propertyStandardManager = null;
 
             // Force garbage collection
             GC.Collect();
@@ -296,8 +308,6 @@ namespace RoesleinAddIn
                     CheckIconsExist(sourceIconPath);
 
                     // Create magenta-background image strips for SolidWorks
-                    // Pass BOTH the source path (for reading individual icons) 
-                    // AND the userGeneratedResourcesPath (for writing the combined strips)
                     try
                     {
                         WriteToLog("Creating magenta-background image strips...");
@@ -312,84 +322,86 @@ namespace RoesleinAddIn
 
                     // Define strip icon paths FROM THE USER-WRITABLE LOCATION
                     string[] iconList = new string[] {
-                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_20x20.bmp"), // Small icons
-                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_32x32.bmp"), // Medium icons 
-                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_40x40.bmp")  // Large icons
+                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_20x20.bmp"),
+                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_32x32.bmp"),
+                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_40x40.bmp")
                     };
 
-                    // Verify image strips were created in the user-writable location
+                    // Verify image strips were created
                     foreach (string stripPathInUserDir in iconList)
                     {
                         WriteToLog($"Image strip exists in user dir: {Path.GetFileName(stripPathInUserDir)} = {File.Exists(stripPathInUserDir)}");
                     }
 
-                    // Set the main icon list for the command group
-                    WriteToLog("Setting icon lists...");
                     cmdGroup.IconList = iconList;
                     cmdGroup.MainIconList = iconList;
 
                     const int cmdItemType = (int)(swCommandItemType_e.swMenuItem | swCommandItemType_e.swToolbarItem);
 
-                    // Create commands in the DESIRED order
-                    WriteToLog("Creating commands in desired order...");
+                    // Create commands in the correct order
+                    // 1. Assembly Export DXF (position 1)
+                    cmdGroup.AddCommandItem2(
+                        "Export Assembly Sheet Metal",
+                        -1,
+                        "Produce Sheet Metal Flat Patterns from an Assembly",
+                        "Export sheet metal parts from assembly to DXF",
+                        0,
+                        "Export_DXF",
+                        "Enable_Export_DXF",
+                        CMD_EXPORT_ID,
+                        cmdItemType);
 
-                    // 1. Assembly Export DXF (leftmost in toolbar)
-                    bool item1Added = cmdGroup.AddCommandItem2(
-    "Export Assembly Sheet Metal",
-    -1,
-    "Produce Sheet Metal Flat Patterns from an Assembly",
-    "Export sheet metal parts from assembly to DXF",
-    0,  // Index in the icon strip (0 = leftmost image)
-    "Export_DXF",
-    "Enable_Export_DXF",
-    CMD_EXPORT_ID,
-    cmdItemType) == 0;
-                    WriteToLog($"Added Export DXF command item: {item1Added}");
+                    // 2. Single Part Export (position 2)
+                    cmdGroup.AddCommandItem2(
+                        "Export Single Part",
+                        -1,
+                        "Produce Sheet Metal Flat Pattern from a single part file",
+                        "Export single sheet metal part to DXF",
+                        1,
+                        "Process_Part",
+                        "Enable_Process_Part",
+                        CMD_PROCESS_ID,
+                        cmdItemType);
 
-                    // 2. Single Part Export (second from left in toolbar)
-                    bool item2Added = cmdGroup.AddCommandItem2(
-    "Export Single Part",
-    -1,
-    "Produce Sheet Metal Flat Pattern from a single part file",
-    "Export single sheet metal part to DXF",
-    1,  // Index in the icon strip (1 = second image from left)
-    "Process_Part",
-    "Enable_Process_Part",
-    CMD_PROCESS_ID,
-    cmdItemType) == 0;
-                    WriteToLog($"Added Process Single Part command item: {item2Added}");
+                    // 3. Export BOM (position 3)
+                    cmdGroup.AddCommandItem2(
+                        "Export BOM",
+                        -1,
+                        "Export Bill of Materials from Assembly",
+                        "Export BOM to Excel",
+                        2,
+                        "Export_BOM",
+                        "Enable_BOM",
+                        CMD_BOM_ID,
+                        cmdItemType);
 
-                    // 3. Export BOM (third from left in toolbar)
-                    bool item4Added = cmdGroup.AddCommandItem2(
-    "Export BOM",
-    -1,
-    "Export Bill of Materials from Assembly",
-    "Export BOM to Excel",
-    2,  // Index in the icon strip (2 = third image from left)
-    "Export_BOM",
-    "Enable_BOM",
-    CMD_BOM_ID,
-    cmdItemType) == 0;
-                    WriteToLog($"Added Export BOM command item: {item4Added}");
+                    // 4. Apply Property Standards (position 4)
+                    cmdGroup.AddCommandItem2(
+                        "Apply Property Standards",
+                        -1,
+                        "Apply defined file property standards to the active document",
+                        "Apply Property Standards",
+                        3,
+                        "ApplyPropertyStandards",
+                        "EnableApplyPropertyStandards",
+                        CMD_APPLY_PROPS_ID,
+                        cmdItemType);
 
-                    // 4. Settings (rightmost in toolbar)
-                    bool item3Added = cmdGroup.AddCommandItem2(
-    "Settings",
-    -1,
-    "Connex Add-in Settings",
-    "Configure Connex add-in settings",
-    3,  // Index in the icon strip (3 = fourth image from left)
-    "Show_Settings",
-    "Enable_Settings",
-    CMD_SETTINGS_ID,
-    cmdItemType) == 0;
-                    WriteToLog($"Added Settings command item: {item3Added}");
+                    // 5. Settings (position 5 - last)
+                    cmdGroup.AddCommandItem2(
+                        "Settings",
+                        -1,
+                        "Connex Add-in Settings",
+                        "Configure Connex add-in settings",
+                        4,
+                        "Show_Settings",
+                        "Enable_Settings",
+                        CMD_SETTINGS_ID,
+                        cmdItemType);
 
                     cmdGroup.HasToolbar = true;
                     cmdGroup.HasMenu = true;
-
-                    bool activateResult = cmdGroup.Activate();
-                    WriteToLog($"Command group activation result: {activateResult}");
+                    cmdGroup.Activate();
 
                     WriteToLog("=== AddCommandMgr Completed Successfully ===");
                 }
@@ -434,26 +446,31 @@ namespace RoesleinAddIn
             try
             {
                 string[] iconFiles = {
-            // Produce Assembly icons
-            "Produce Assy 20x20.bmp",
-            "Produce Assy 32x32.bmp",
-            "Produce Assy 40x40.bmp",
-            
-            // Produce Single Part icons
-            "Produce Single Part 20x20.bmp",
-            "Produce Single Part 32x32.bmp",
-            "Produce Single Part 40x40.bmp",
-            
-            // Settings icons
-            "Settings 20x20.bmp",
-            "Settings 32x32.bmp",
-            "Settings 40x40.bmp",
-            
-            // Export BOM icons
-            "Export BOM 20x20.bmp",
-            "Export BOM 32x32.bmp",
-            "Export BOM 40x40.bmp"
-        };
+                    // 1. Assembly Export icons
+                    "Produce Assy 20x20.bmp",
+                    "Produce Assy 32x32.bmp",
+                    "Produce Assy 40x40.bmp",
+                    
+                    // 2. Single Part Export icons
+                    "Produce Single Part 20x20.bmp",
+                    "Produce Single Part 32x32.bmp",
+                    "Produce Single Part 40x40.bmp",
+                    
+                    // 3. Export BOM icons
+                    "Export BOM 20x20.bmp",
+                    "Export BOM 32x32.bmp",
+                    "Export BOM 40x40.bmp",
+
+                    // 4. Property Standards icons
+                    "Property Standards 20x20.bmp",
+                    "Property Standards 32x32.bmp",
+                    "Property Standards 40x40.bmp",
+                    
+                    // 5. Settings icons (last)
+                    "Settings 20x20.bmp",
+                    "Settings 32x32.bmp",
+                    "Settings 40x40.bmp"
+                };
 
                 WriteToLog("Checking icon files:");
                 foreach (string file in iconFiles)
@@ -480,24 +497,27 @@ namespace RoesleinAddIn
                 string[] smallIconFiles = {
                     Path.Combine(iconPath, "Produce Assy 20x20.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 20x20.bmp"),
-                    Path.Combine(iconPath, "Settings 20x20.bmp"),
-                    Path.Combine(iconPath, "Export BOM 20x20.bmp")
+                    Path.Combine(iconPath, "Export BOM 20x20.bmp"),
+                    Path.Combine(iconPath, "Property Standards 20x20.bmp"),
+                    Path.Combine(iconPath, "Settings 20x20.bmp")
                 };
 
                 // Medium icons strip (32x32)
                 string[] mediumIconFiles = {
                     Path.Combine(iconPath, "Produce Assy 32x32.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 32x32.bmp"),
-                    Path.Combine(iconPath, "Settings 32x32.bmp"),
-                    Path.Combine(iconPath, "Export BOM 32x32.bmp")
+                    Path.Combine(iconPath, "Export BOM 32x32.bmp"),
+                    Path.Combine(iconPath, "Property Standards 32x32.bmp"),
+                    Path.Combine(iconPath, "Settings 32x32.bmp")
                 };
 
                 // Large icons strip (40x40)
                 string[] largeIconFiles = {
                     Path.Combine(iconPath, "Produce Assy 40x40.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 40x40.bmp"),
-                    Path.Combine(iconPath, "Settings 40x40.bmp"),
-                    Path.Combine(iconPath, "Export BOM 40x40.bmp")
+                    Path.Combine(iconPath, "Export BOM 40x40.bmp"),
+                    Path.Combine(iconPath, "Property Standards 40x40.bmp"),
+                    Path.Combine(iconPath, "Settings 40x40.bmp")
                 };
 
                 // Create the image strips
@@ -690,40 +710,40 @@ namespace RoesleinAddIn
         }
 
         /// <summary>
-        /// Show Settings command
+        /// Callback for the Settings command.
         /// </summary>
         public void Show_Settings()
         {
-            WriteToLog("Show_Settings called");
-
             try
             {
+                WriteToLog("Settings command invoked.");
                 if (settingsForm == null || settingsForm.IsDisposed)
                 {
-                    settingsForm = new SettingsFormV2();
-                    
-                    // Set version number if control exists
-                    if (settingsForm.Controls.Find("lblVersionNumber", true).Length > 0)
+                    // Ensure PDM vault is attempted to connect if not already
+                    if (this.pdmVault == null)
                     {
-                        Label lblVersionNumber = (Label)settingsForm.Controls.Find("lblVersionNumber", true)[0];
-                        lblVersionNumber.Text = "Version: " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
+                         TryConnectToPdmVaultForActiveDoc(); // Attempt to connect if not already connected
                     }
                     
-                    // Set copyright information if control exists
-                    if (settingsForm.Controls.Find("lblCopyright", true).Length > 0)
-                    {
-                        Label lblCopyright = (Label)settingsForm.Controls.Find("lblCopyright", true)[0];
-                        lblCopyright.Text = "Copyright © " + DateTime.Now.Year + " Roeslein & Associates, Inc.";
-                    }
+                    // Pass the ISldWorks instance (swApp) and the IEdmVault5 instance (pdmVault)
+                    // IEdmVault8 can be directly used where IEdmVault5 is expected, or explicitly cast.
+                    settingsForm = new SettingsFormV2(this.swApp, this.pdmVault as IEdmVault5);
                 }
-
-                settingsForm.Show();
+                settingsForm.ShowDialog();
             }
             catch (Exception ex)
             {
-                WriteToLog($"Error in Show_Settings: {ex.Message}");
-                MessageBox.Show($"Error showing settings: {ex.Message}", "Roeslein Add-in",
-                               MessageBoxButtons.OK, MessageBoxIcon.Error);
+                WriteToLog($"Error displaying settings form: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                if (swApp != null)
+                {
+                    swApp.SendMsgToUser2($"An error occurred while opening settings: {ex.Message}", 
+                        (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
+                }
+                else
+                {
+                    System.Windows.Forms.MessageBox.Show($"An error occurred while opening settings: {ex.Message}", "Error", 
+                        System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error);
+                }
             }
         }
 
@@ -832,6 +852,47 @@ namespace RoesleinAddIn
                 return 0;
             }
         }
+
+        /// <summary>
+        /// Callback for the Apply Property Standards command.
+        /// </summary>
+        public void ApplyPropertyStandards()
+        {
+            try
+            {
+                WriteToLog("ApplyPropertyStandards command invoked.");
+                if (propertyStandardManager == null)
+                {
+                    // Should be initialized in ConnectToSW, but as a fallback:
+                    propertyStandardManager = new PropertyStandardManager(swApp, pdmVault as IEdmVault5); 
+                }
+                propertyStandardManager.ApplyStandardsToActiveDocument();
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in ApplyPropertyStandards: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                swApp.SendMsgToUser2($"An unexpected error occurred: {ex.Message}", (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
+            }
+        }
+
+        /// <summary>
+        /// Enable method for the Apply Property Standards command.
+        /// </summary>
+        public int EnableApplyPropertyStandards()
+        {
+            ModelDoc2 activeDoc = swApp.ActiveDoc as ModelDoc2;
+            if (activeDoc != null)
+            {
+                swDocumentTypes_e docType = (swDocumentTypes_e)activeDoc.GetType();
+                if (docType == swDocumentTypes_e.swDocPART || 
+                    docType == swDocumentTypes_e.swDocASSEMBLY || 
+                    docType == swDocumentTypes_e.swDocDRAWING)
+                {
+                    return 1; // Enabled
+                }
+            }
+            return 0; // Disabled
+        }
         #endregion
 
         #region Logging
@@ -855,6 +916,85 @@ namespace RoesleinAddIn
             catch
             {
                 // Silent fail - we don't want logging errors to cause crashes
+            }
+        }
+        #endregion
+
+        #region PDM Integration
+        private void TryConnectToPdmVaultForActiveDoc()
+        {
+            if (swApp == null)
+            {
+                WriteToLog("PDM: SolidWorks application not available. Cannot connect to PDM vault.");
+                return;
+            }
+
+            ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+            if (swModel == null)
+            {
+                WriteToLog("PDM: No active SolidWorks document. PDM connection not attempted for a specific file.");
+                return;
+            }
+
+            string filePath = swModel.GetPathName();
+            if (string.IsNullOrEmpty(filePath))
+            {
+                WriteToLog("PDM: Active SolidWorks document is not saved. PDM connection not attempted for this file.");
+                return;
+            }
+
+            WriteToLog($"PDM: Attempting to connect to vault for file: '{filePath}'");
+            try
+            {
+                // Instantiate EdmVault5 class, which is the CoClass for IEdmVault5 and can provide other interfaces.
+                IEdmVault5 vaultObject = new EdmVault5(); 
+                
+                string vaultNameForFile = vaultObject.GetVaultNameFromPath(filePath);
+
+                if (!string.IsNullOrEmpty(vaultNameForFile))
+                {
+                    WriteToLog($"PDM: File '{filePath}' is in vault view for vault: '{vaultNameForFile}'. Attempting to log in.");
+                    
+                    vaultObject.LoginAuto(vaultNameForFile, 0); 
+
+                    if (vaultObject.IsLoggedIn)
+                    {
+                        // Successfully logged in using IEdmVault5.
+                        // Now, try to get the IEdmVault8 interface from this same logged-in object.
+                        this.pdmVault = vaultObject as IEdmVault8; 
+
+                        if (this.pdmVault != null)
+                        {
+                            // Successfully got IEdmVault8
+                            WriteToLog($"PDM: Successfully connected to vault: {this.pdmVault.Name} (using IEdmVault8 features, Root Path: {this.pdmVault.RootFolderPath})");
+                        }
+                        else
+                        {
+                            // Could not get IEdmVault8. this.pdmVault will be null.
+                            WriteToLog($"PDM: Logged into vault '{vaultNameForFile}' (as IEdmVault5). Could not obtain IEdmVault8 interface. Vault Name: {vaultObject.Name}. Basic PDM operations using IEdmVault5 might still be possible using 'vaultObject'.");
+                        }
+                    }
+                    else
+                    {
+                        WriteToLog($"PDM: Failed to auto-login to vault '{vaultNameForFile}'. Ensure PDM client is logged in.");
+                        this.pdmVault = null;
+                    }
+                }
+                else
+                {
+                    WriteToLog($"PDM: File '{filePath}' does not appear to be in a PDM vault view.");
+                    this.pdmVault = null;
+                }
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                WriteToLog($"PDM: COM Exception during PDM connection for '{filePath}'. HRESULT: {comEx.ErrorCode:X}, Message: {comEx.Message}. Ensure PDM interops are correctly registered and version compatible.");
+                this.pdmVault = null;
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"PDM: General exception during PDM connection for '{filePath}': {ex.Message}");
+                this.pdmVault = null;
             }
         }
         #endregion

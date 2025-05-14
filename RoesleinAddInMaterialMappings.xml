@@ -1,0 +1,118 @@
+<?xml version="1.0"?>
+<ArrayOfMaterialMapping xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <MaterialMapping>
+    <SwMaterial>ASTM A1008 Steel- Cold Rolled Sheet</SwMaterial>
+    <DxfMaterial>ASTM A1008 Steel- Cold Rolled Sheet</DxfMaterial>
+    <RowNumber>1</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>AISI 304 Stainless Steel Sheet</SwMaterial>
+    <DxfMaterial>AISI 304 Stainless Steel Sheet</DxfMaterial>
+    <RowNumber>2</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>ASTM A36 Steel- Hot Rolled Sheet</SwMaterial>
+    <DxfMaterial>ASTM A36 Steel- Hot Rolled Sheet</DxfMaterial>
+    <RowNumber>3</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>ASTM A572 Steel- Hot Rolled plate</SwMaterial>
+    <DxfMaterial>ASTM A572 Steel- Hot Rolled plate</DxfMaterial>
+    <RowNumber>4</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 14GA, HR</SwMaterial>
+    <DxfMaterial>ASTM A1008 Steel- Cold Rolled Sheet</DxfMaterial>
+    <RowNumber>5</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 12GA, CR</SwMaterial>
+    <DxfMaterial>ASTM A1008 Steel- Cold Rolled Sheet</DxfMaterial>
+    <RowNumber>6</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 16GA, CR</SwMaterial>
+    <DxfMaterial>ASTM A1008 Steel- Cold Rolled Sheet</DxfMaterial>
+    <RowNumber>7</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 18GA, CR</SwMaterial>
+    <DxfMaterial>ASTM A1008 Steel- Cold Rolled Sheet</DxfMaterial>
+    <RowNumber>8</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 10GA, HR</SwMaterial>
+    <DxfMaterial>ASTM A1008 Steel- Cold Rolled Sheet</DxfMaterial>
+    <RowNumber>9</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>PLATE, .19 HR</SwMaterial>
+    <DxfMaterial>ASTM A572 Steel- Hot Rolled plate</DxfMaterial>
+    <RowNumber>10</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>PLATE, .25 HR</SwMaterial>
+    <DxfMaterial>ASTM A572 Steel- Hot Rolled plate</DxfMaterial>
+    <RowNumber>11</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>PLATE, .375 HR</SwMaterial>
+    <DxfMaterial>ASTM A572 Steel- Hot Rolled plate</DxfMaterial>
+    <RowNumber>12</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>PLATE, .5 HR</SwMaterial>
+    <DxfMaterial>ASTM A572 Steel- Hot Rolled plate</DxfMaterial>
+    <RowNumber>13</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>PLATE, .75 HR</SwMaterial>
+    <DxfMaterial>ASTM A572 Steel- Hot Rolled plate</DxfMaterial>
+    <RowNumber>14</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>PLATE, 1.00 HR</SwMaterial>
+    <DxfMaterial>ASTM A572 Steel- Hot Rolled plate</DxfMaterial>
+    <RowNumber>15</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 12GA, SS</SwMaterial>
+    <DxfMaterial>AISI 304 Stainless Steel Sheet</DxfMaterial>
+    <RowNumber>16</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 14GA, SS</SwMaterial>
+    <DxfMaterial>AISI 304 Stainless Steel Sheet</DxfMaterial>
+    <RowNumber>17</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 16GA, SS</SwMaterial>
+    <DxfMaterial>AISI 304 Stainless Steel Sheet</DxfMaterial>
+    <RowNumber>18</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 18GA, SS</SwMaterial>
+    <DxfMaterial>AISI 304 Stainless Steel Sheet</DxfMaterial>
+    <RowNumber>19</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 20GA, SS</SwMaterial>
+    <DxfMaterial>AISI 304 Stainless Steel Sheet</DxfMaterial>
+    <RowNumber>20</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Sheet, 7GA, SS</SwMaterial>
+    <DxfMaterial>AISI 304 Stainless Steel Sheet</DxfMaterial>
+    <RowNumber>21</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Cold Roll Steel 1018</SwMaterial>
+    <DxfMaterial>ASTM A1008 Steel- Cold Rolled Sheet</DxfMaterial>
+    <RowNumber>22</RowNumber>
+  </MaterialMapping>
+  <MaterialMapping>
+    <SwMaterial>Plain Carbon Steel</SwMaterial>
+    <DxfMaterial>ASTM A1008 Steel- Cold Rolled Sheet</DxfMaterial>
+    <RowNumber>23</RowNumber>
+  </MaterialMapping>
+</ArrayOfMaterialMapping>

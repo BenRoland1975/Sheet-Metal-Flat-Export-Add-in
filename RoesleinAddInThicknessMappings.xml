@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<ArrayOfThicknessMapping xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ThicknessMapping>
+    <SwThickness>0.1196</SwThickness>
+    <DxfThickness>0.12</DxfThickness>
+    <RowNumber>1</RowNumber>
+  </ThicknessMapping>
+  <ThicknessMapping>
+    <SwThickness>0.0897</SwThickness>
+    <DxfThickness>0.09</DxfThickness>
+    <RowNumber>2</RowNumber>
+  </ThicknessMapping>
+  <ThicknessMapping>
+    <SwThickness>0.0598</SwThickness>
+    <DxfThickness>0.06</DxfThickness>
+    <RowNumber>3</RowNumber>
+  </ThicknessMapping>
+  <ThicknessMapping>
+    <SwThickness>0.0478</SwThickness>
+    <DxfThickness>0.048</DxfThickness>
+    <RowNumber>4</RowNumber>
+  </ThicknessMapping>
+  <ThicknessMapping>
+    <SwThickness>0.12</SwThickness>
+    <DxfThickness>.012</DxfThickness>
+    <RowNumber>5</RowNumber>
+  </ThicknessMapping>
+</ArrayOfThicknessMapping>

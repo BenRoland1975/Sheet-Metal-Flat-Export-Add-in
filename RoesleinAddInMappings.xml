@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<ArrayOfPropertyMapping xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <PropertyMapping>
+    <DxfPropertyName>Part Number</DxfPropertyName>
+    <SwCustomProperty>Part Number</SwCustomProperty>
+    <RowNumber>1</RowNumber>
+  </PropertyMapping>
+  <PropertyMapping>
+    <DxfPropertyName>Description</DxfPropertyName>
+    <SwCustomProperty>Description</SwCustomProperty>
+    <RowNumber>2</RowNumber>
+  </PropertyMapping>
+  <PropertyMapping>
+    <DxfPropertyName>Revision</DxfPropertyName>
+    <SwCustomProperty>Revision</SwCustomProperty>
+    <RowNumber>3</RowNumber>
+  </PropertyMapping>
+  <PropertyMapping>
+    <DxfPropertyName>Material</DxfPropertyName>
+    <SwCustomProperty>Material</SwCustomProperty>
+    <RowNumber>4</RowNumber>
+  </PropertyMapping>
+  <PropertyMapping>
+    <DxfPropertyName>Thickness</DxfPropertyName>
+    <SwCustomProperty>Sheet Metal Thickness</SwCustomProperty>
+    <RowNumber>5</RowNumber>
+  </PropertyMapping>
+  <PropertyMapping>
+    <DxfPropertyName>Shop Route</DxfPropertyName>
+    <SwCustomProperty>Shop Route</SwCustomProperty>
+    <RowNumber>6</RowNumber>
+  </PropertyMapping>
+</ArrayOfPropertyMapping>

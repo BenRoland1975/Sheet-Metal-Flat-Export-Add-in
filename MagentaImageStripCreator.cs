@@ -30,24 +30,27 @@ namespace RoesleinAddIn
 
                 // Source icon paths will use sourceIndividualIconPath
                 string[] smallIcons = {
-                    Path.Combine(sourceIndividualIconPath, "Produce Assy 20x20.bmp"),
-                    Path.Combine(sourceIndividualIconPath, "Produce Single Part 20x20.bmp"),
-                    Path.Combine(sourceIndividualIconPath, "Export BOM 20x20.bmp"), 
-                    Path.Combine(sourceIndividualIconPath, "Settings 20x20.bmp")     
+                    Path.Combine(sourceIndividualIconPath, "Produce Assy 20x20.bmp"),          // 1st
+                    Path.Combine(sourceIndividualIconPath, "Produce Single Part 20x20.bmp"),   // 2nd
+                    Path.Combine(sourceIndividualIconPath, "Export BOM 20x20.bmp"),            // 3rd
+                    Path.Combine(sourceIndividualIconPath, "FileProp 20x20.bmp"),              // 4th
+                    Path.Combine(sourceIndividualIconPath, "Settings 20x20.bmp")               // 5th (last)
                 };
 
                 string[] mediumIcons = {
-                    Path.Combine(sourceIndividualIconPath, "Produce Assy 32x32.bmp"),
-                    Path.Combine(sourceIndividualIconPath, "Produce Single Part 32x32.bmp"),
-                    Path.Combine(sourceIndividualIconPath, "Export BOM 32x32.bmp"), 
-                    Path.Combine(sourceIndividualIconPath, "Settings 32x32.bmp")     
+                    Path.Combine(sourceIndividualIconPath, "Produce Assy 32x32.bmp"),          // 1st
+                    Path.Combine(sourceIndividualIconPath, "Produce Single Part 32x32.bmp"),   // 2nd
+                    Path.Combine(sourceIndividualIconPath, "Export BOM 32x32.bmp"),            // 3rd
+                    Path.Combine(sourceIndividualIconPath, "FileProp 32x32.bmp"),              // 4th
+                    Path.Combine(sourceIndividualIconPath, "Settings 32x32.bmp")               // 5th (last)
                 };
 
                 string[] largeIcons = {
-                    Path.Combine(sourceIndividualIconPath, "Produce Assy 40x40.bmp"),
-                    Path.Combine(sourceIndividualIconPath, "Produce Single Part 40x40.bmp"),
-                    Path.Combine(sourceIndividualIconPath, "Export BOM 40x40.bmp"), 
-                    Path.Combine(sourceIndividualIconPath, "Settings 40x40.bmp")     
+                    Path.Combine(sourceIndividualIconPath, "Produce Assy 40x40.bmp"),          // 1st
+                    Path.Combine(sourceIndividualIconPath, "Produce Single Part 40x40.bmp"),   // 2nd
+                    Path.Combine(sourceIndividualIconPath, "Export BOM 40x40.bmp"),            // 3rd
+                    Path.Combine(sourceIndividualIconPath, "FileProp 40x40.bmp"),              // 4th
+                    Path.Combine(sourceIndividualIconPath, "Settings 40x40.bmp")               // 5th (last)
                 };
 
                 // Create the image strips

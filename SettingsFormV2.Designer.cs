@@ -70,6 +70,17 @@
             this.btnSaveThickness = new System.Windows.Forms.Button();
             this.dgvThicknessMapping = new System.Windows.Forms.DataGridView();
             this.lblThicknessCrossRefernceTable = new System.Windows.Forms.Label();
+            this.tpStandardsSettings = new System.Windows.Forms.TabPage();
+            this.lblDefautFileProp = new System.Windows.Forms.Label();
+            this.BtnAddNewFileProp = new System.Windows.Forms.Button();
+            this.btnSaveFileProp = new System.Windows.Forms.Button();
+            this.dgvPropertyStandards = new System.Windows.Forms.DataGridView();
+            this.tpRawMaterial = new System.Windows.Forms.TabPage();
+            this.lblRawSheet = new System.Windows.Forms.Label();
+            this.BtnAddNewRawSheet = new System.Windows.Forms.Button();
+            this.btnSaveRawSheet = new System.Windows.Forms.Button();
+            this.dgvRawLinear = new System.Windows.Forms.DataGridView();
+            this.dgvRawSheet = new System.Windows.Forms.DataGridView();
             this.btnCancel = new System.Windows.Forms.Button();
             this.btnOK = new System.Windows.Forms.Button();
             this.lblRosleinVersonLabel = new System.Windows.Forms.Label();
@@ -83,6 +94,11 @@
             ((System.ComponentModel.ISupportInitialize)(this.dgvMaterialMapping)).BeginInit();
             this.ThicknessMappings.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvThicknessMapping)).BeginInit();
+            this.tpStandardsSettings.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvPropertyStandards)).BeginInit();
+            this.tpRawMaterial.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvRawLinear)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvRawSheet)).BeginInit();
             this.SuspendLayout();
             // 
             // tabControl1
@@ -90,6 +106,8 @@
             this.tabControl1.Controls.Add(this.GeneralSettings);
             this.tabControl1.Controls.Add(this.MaterialMappings);
             this.tabControl1.Controls.Add(this.ThicknessMappings);
+            this.tabControl1.Controls.Add(this.tpStandardsSettings);
+            this.tabControl1.Controls.Add(this.tpRawMaterial);
             this.tabControl1.Dock = System.Windows.Forms.DockStyle.Top;
             this.tabControl1.Location = new System.Drawing.Point(0, 0);
             this.tabControl1.Name = "tabControl1";
@@ -528,6 +546,116 @@
             this.lblThicknessCrossRefernceTable.Text = "Thickness Cross Refernce Table";
             this.lblThicknessCrossRefernceTable.TextAlign = System.Drawing.ContentAlignment.TopRight;
             // 
+            // tpStandardsSettings
+            // 
+            this.tpStandardsSettings.Controls.Add(this.lblDefautFileProp);
+            this.tpStandardsSettings.Controls.Add(this.BtnAddNewFileProp);
+            this.tpStandardsSettings.Controls.Add(this.btnSaveFileProp);
+            this.tpStandardsSettings.Controls.Add(this.dgvPropertyStandards);
+            this.tpStandardsSettings.Location = new System.Drawing.Point(4, 22);
+            this.tpStandardsSettings.Name = "tpStandardsSettings";
+            this.tpStandardsSettings.Padding = new System.Windows.Forms.Padding(3);
+            this.tpStandardsSettings.Size = new System.Drawing.Size(792, 474);
+            this.tpStandardsSettings.TabIndex = 3;
+            this.tpStandardsSettings.Text = "Standards Settings";
+            this.tpStandardsSettings.UseVisualStyleBackColor = true;
+            // 
+            // lblDefautFileProp
+            // 
+            this.lblDefautFileProp.AutoSize = true;
+            this.lblDefautFileProp.Location = new System.Drawing.Point(13, 30);
+            this.lblDefautFileProp.Name = "lblDefautFileProp";
+            this.lblDefautFileProp.Size = new System.Drawing.Size(113, 13);
+            this.lblDefautFileProp.TabIndex = 31;
+            this.lblDefautFileProp.Text = "Default File Properties:";
+            // 
+            // BtnAddNewFileProp
+            // 
+            this.BtnAddNewFileProp.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
+            this.BtnAddNewFileProp.Location = new System.Drawing.Point(13, 407);
+            this.BtnAddNewFileProp.Name = "BtnAddNewFileProp";
+            this.BtnAddNewFileProp.Size = new System.Drawing.Size(120, 23);
+            this.BtnAddNewFileProp.TabIndex = 30;
+            this.BtnAddNewFileProp.Text = "Add New Row";
+            this.BtnAddNewFileProp.UseVisualStyleBackColor = true;
+            // 
+            // btnSaveFileProp
+            // 
+            this.btnSaveFileProp.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
+            this.btnSaveFileProp.Location = new System.Drawing.Point(664, 407);
+            this.btnSaveFileProp.Name = "btnSaveFileProp";
+            this.btnSaveFileProp.Size = new System.Drawing.Size(120, 23);
+            this.btnSaveFileProp.TabIndex = 29;
+            this.btnSaveFileProp.Text = "Save File Property";
+            this.btnSaveFileProp.UseVisualStyleBackColor = true;
+            // 
+            // dgvPropertyStandards
+            // 
+            this.dgvPropertyStandards.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
+            this.dgvPropertyStandards.Location = new System.Drawing.Point(12, 49);
+            this.dgvPropertyStandards.Name = "dgvPropertyStandards";
+            this.dgvPropertyStandards.Size = new System.Drawing.Size(772, 352);
+            this.dgvPropertyStandards.TabIndex = 0;
+            // 
+            // tpRawMaterial
+            // 
+            this.tpRawMaterial.Controls.Add(this.lblRawSheet);
+            this.tpRawMaterial.Controls.Add(this.BtnAddNewRawSheet);
+            this.tpRawMaterial.Controls.Add(this.btnSaveRawSheet);
+            this.tpRawMaterial.Controls.Add(this.dgvRawLinear);
+            this.tpRawMaterial.Controls.Add(this.dgvRawSheet);
+            this.tpRawMaterial.Location = new System.Drawing.Point(4, 22);
+            this.tpRawMaterial.Name = "tpRawMaterial";
+            this.tpRawMaterial.Size = new System.Drawing.Size(792, 474);
+            this.tpRawMaterial.TabIndex = 4;
+            this.tpRawMaterial.Text = "Raw Material";
+            this.tpRawMaterial.UseVisualStyleBackColor = true;
+            // 
+            // lblRawSheet
+            // 
+            this.lblRawSheet.AutoSize = true;
+            this.lblRawSheet.Location = new System.Drawing.Point(13, 4);
+            this.lblRawSheet.Name = "lblRawSheet";
+            this.lblRawSheet.Size = new System.Drawing.Size(208, 13);
+            this.lblRawSheet.TabIndex = 33;
+            this.lblRawSheet.Text = "Sheet Metal Raw Material Cross Ref Table";
+            // 
+            // BtnAddNewRawSheet
+            // 
+            this.BtnAddNewRawSheet.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
+            this.BtnAddNewRawSheet.Location = new System.Drawing.Point(13, 252);
+            this.BtnAddNewRawSheet.Name = "BtnAddNewRawSheet";
+            this.BtnAddNewRawSheet.Size = new System.Drawing.Size(120, 23);
+            this.BtnAddNewRawSheet.TabIndex = 32;
+            this.BtnAddNewRawSheet.Text = "Add New Row";
+            this.BtnAddNewRawSheet.UseVisualStyleBackColor = true;
+            // 
+            // btnSaveRawSheet
+            // 
+            this.btnSaveRawSheet.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
+            this.btnSaveRawSheet.Location = new System.Drawing.Point(664, 252);
+            this.btnSaveRawSheet.Name = "btnSaveRawSheet";
+            this.btnSaveRawSheet.Size = new System.Drawing.Size(120, 23);
+            this.btnSaveRawSheet.TabIndex = 31;
+            this.btnSaveRawSheet.Text = "Save Sheet Info";
+            this.btnSaveRawSheet.UseVisualStyleBackColor = true;
+            // 
+            // dgvRawLinear
+            // 
+            this.dgvRawLinear.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
+            this.dgvRawLinear.Location = new System.Drawing.Point(12, 285);
+            this.dgvRawLinear.Name = "dgvRawLinear";
+            this.dgvRawLinear.Size = new System.Drawing.Size(772, 175);
+            this.dgvRawLinear.TabIndex = 1;
+            // 
+            // dgvRawSheet
+            // 
+            this.dgvRawSheet.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
+            this.dgvRawSheet.Location = new System.Drawing.Point(12, 26);
+            this.dgvRawSheet.Name = "dgvRawSheet";
+            this.dgvRawSheet.Size = new System.Drawing.Size(772, 220);
+            this.dgvRawSheet.TabIndex = 0;
+            // 
             // btnCancel
             // 
             this.btnCancel.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
@@ -602,6 +730,13 @@
             this.ThicknessMappings.ResumeLayout(false);
             this.ThicknessMappings.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvThicknessMapping)).EndInit();
+            this.tpStandardsSettings.ResumeLayout(false);
+            this.tpStandardsSettings.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvPropertyStandards)).EndInit();
+            this.tpRawMaterial.ResumeLayout(false);
+            this.tpRawMaterial.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvRawLinear)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.dgvRawSheet)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -655,5 +790,16 @@
         private System.Windows.Forms.Label lblRosleinVersonLabel;
         private System.Windows.Forms.Label lblVersionNumber;
         private System.Windows.Forms.Label lblCopyright;
+        private System.Windows.Forms.TabPage tpStandardsSettings;
+        private System.Windows.Forms.DataGridView dgvPropertyStandards;
+        private System.Windows.Forms.Button BtnAddNewFileProp;
+        private System.Windows.Forms.Button btnSaveFileProp;
+        private System.Windows.Forms.Label lblDefautFileProp;
+        private System.Windows.Forms.TabPage tpRawMaterial;
+        private System.Windows.Forms.DataGridView dgvRawLinear;
+        private System.Windows.Forms.DataGridView dgvRawSheet;
+        private System.Windows.Forms.Button BtnAddNewRawSheet;
+        private System.Windows.Forms.Button btnSaveRawSheet;
+        private System.Windows.Forms.Label lblRawSheet;
     }
 }
