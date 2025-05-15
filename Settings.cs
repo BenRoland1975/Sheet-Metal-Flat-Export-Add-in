@@ -5,10 +5,37 @@ using Microsoft.Win32;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using RoesleinAddIn;
+using System.Windows.Forms;
 
 namespace RoesleinAddIn
 {
+    // THIS IS THE INTENDED SINGLE DEFINITION
+    public class PropertyStandardSetting
+    {
+        public bool UseDefaultValue { get; set; }
+        public string PropertyName { get; set; }
+        public string DefaultValueExpr { get; set; }
+        public bool IsCustomProperty { get; set; } // Should map to IsCustomPropertyTarget in PropertyStandardManager
+        public bool IsConfigSpecific { get; set; } // Should map to IsConfigurationSpecificTarget in PropertyStandardManager
+        public bool UseOnPartFiles { get; set; }
+        public bool UseOnAssemblyFiles { get; set; }
+        public bool UseOnDrawingFiles { get; set; }
+
+        // Default constructor
+        public PropertyStandardSetting()
+        {
+            // Sensible defaults for a new row in the settings grid
+            UseDefaultValue = false;
+            PropertyName = "New Property";
+            DefaultValueExpr = "";
+            IsCustomProperty = true;
+            IsConfigSpecific = true;
+            UseOnPartFiles = true;
+            UseOnAssemblyFiles = false;
+            UseOnDrawingFiles = false;
+        }
+    }
+
     /// <summary>
     /// Settings class for the Roeslein SolidWorks Add-In
     /// </summary>
@@ -115,6 +142,8 @@ namespace RoesleinAddIn
         
         [System.Xml.Serialization.XmlIgnore]
         public List<MaterialMapping> MaterialMappings { get; set; }
+
+        public List<RawMaterial> RawMaterials { get; set; } = new List<RawMaterial>();
 
         /// <summary>
         /// Saves settings to both XML file and registry
@@ -588,36 +617,61 @@ namespace RoesleinAddIn
         private static void LoadDefaultPropertyStandardsStatic(List<PropertyStandardSetting> standardsList)
         {
             standardsList.Clear(); 
-            int idCounter = 1;
-            // The defaults you provided earlier, with Use Default Value unchecked for Part Number, Description, Revision
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Part Number", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Description", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Revision", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Status", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Shop Route", "FAB", true, false)); 
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Spare Part", "No", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "MFG Stocked Item", "No", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, true, "Weight", "$PRP:SW-Mass", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, true, "Material", "$PRPMODEL:\"SW-Material\"", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, true, "Sheet Metal Thickness", "$PRPSHEET:\"Thickness\"", true, true));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Vendor", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Vendor Part Number", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Raw Material Number", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Unit of Measurement", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Raw Mat Amount", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "legacy Part Number", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Legacy Unit of Measure", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "Legacy Raw Mat Amount", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "NC Punch Programs", "", true, false));
-            standardsList.Add(new PropertyStandardSetting(idCounter++, false, "NC Punch Sheet Size", "", true, false));
+            // int idCounter = 1; // No longer needed as constructor doesn't take ID
+            
+            // Use object initializer syntax with the parameterless constructor
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Part Number",           UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Description",           UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Revision",              UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Status",                UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Shop Route",            UseDefaultValue = false, DefaultValueExpr = "FAB",                             IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true }); // Assuming FAB is the intent for Shop Route default
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Spare Part",            UseDefaultValue = false, DefaultValueExpr = "No",                              IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true }); // Assuming No is the intent
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "MFG Stocked Item",      UseDefaultValue = false, DefaultValueExpr = "No",                              IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });// Assuming No is the intent
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Weight",                UseDefaultValue = true,  DefaultValueExpr = "$PRP:SW-Mass",                 IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Material",              UseDefaultValue = true,  DefaultValueExpr = "$PRPMODEL:\"SW-Material\"",        IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Sheet Metal Thickness", UseDefaultValue = true,  DefaultValueExpr = "$PRPSHEET:\"Thickness\"",          IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Vendor",                UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Vendor Part Number",    UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Raw Material Number",   UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Unit of Measurement",   UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Raw Mat Amount",        UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "legacy Part Number",    UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Legacy Unit of Measure",UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Legacy Raw Mat Amount", UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "NC Punch Programs",     UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "NC Punch Sheet Size",   UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "Raw Material Description", UseDefaultValue = false, DefaultValueExpr = "", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true, UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
+            standardsList.Add(new PropertyStandardSetting { PropertyName = "legacy Part Description",  UseDefaultValue = false, DefaultValueExpr = "", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true, UseOnAssemblyFiles = false, UseOnDrawingFiles = false });
         }
-    }
 
-    [Serializable]
-    public class ThicknessMapping
-    {
-        public string SwThickness { get; set; }
-        public string DxfThickness { get; set; }
-        public int RowNumber { get; set; }
+        public static List<RawMaterial> LoadRawMaterial()
+        {
+            try
+            {
+                var settings = LoadSettings();
+                if (settings != null)
+                {
+                    return settings.RawMaterials;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading raw materials: {ex.Message}");
+            }
+            return new List<RawMaterial>();
+        }
+
+        public class RawMaterial
+        {
+            public string PartNumber { get; set; }
+            public string LegacyPartNumber { get; set; }
+            public string Material { get; set; }
+            public double Thickness { get; set; }
+            public string Description { get; set; }
+            public double TotalSqInch { get; set; }
+            public double SheetLength { get; set; }
+            public double SheetHeight { get; set; }
+            public decimal LastCost { get; set; }
+        }
     }
 } 

@@ -1,5 +1,7 @@
 using System;
 using System.Windows.Forms;
+using SolidWorks.Interop.sldworks;
+using EPDM.Interop.epdm;
 
 namespace RoesleinAddIn
 {
@@ -16,8 +18,8 @@ namespace RoesleinAddIn
             
             try
             {
-                // Use the original SettingsForm until we can fix SettingsFormV2
-                Application.Run(new SettingsForm());
+                // For testing the settings form in standalone mode, pass null for SolidWorks and PDM instances
+                Application.Run(new SettingsFormV2(null, null));
                 
                 // For testing just the raw materials functionality
                 // Application.Run(new TestRawMaterials());

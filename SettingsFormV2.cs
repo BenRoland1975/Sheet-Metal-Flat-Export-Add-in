@@ -439,36 +439,43 @@ namespace RoesleinAddIn
         {
             if (dgvPropertyStandards == null) { Logger.DebugLog("LoadPropertyStandardsData: dgvPropertyStandards is null."); return; }
 
-            // This will eventually call Settings.LoadPropertyStandards() or similar to load from XML.
-            // For now, populate with defaults from screenshots.
-            var defaultStandards = new List<PropertyStandardSetting>
-            {
-                new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Part Number",           DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Description",           DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Revision",              DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Status",                DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false }, // As per screenshot values
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Shop Route",            DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Spare Part",            DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "MFG Stocked Item",      DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Weight",                DefaultValueExpr = "\"SW-Mass@${PARTNUMBER}.SLDPRT\"", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Material",              DefaultValueExpr = "\"SW-Material@${PARTNUMBER}.SLDPRT\"", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Sheet Metal Thickness", DefaultValueExpr = "\"Thickness@${PARTNUMBER}.SLDPRT\"", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Vendor",                DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Vendor Part Number",    DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Raw Material Number",   DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Unit of Measurement",   DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Raw Mat Amount",        DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = false, UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                // Additional rows from second screenshot
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Legacy Part Number",    DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Legacy Unit of Measure",DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Legacy Raw Mat Amount", DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "NC Punch Programs",     DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "NC Punch Sheet Size",   DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-                new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Bens Test Prop",        DefaultValueExpr = "Test Default Property",           IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
-            };
+            List<PropertyStandardSetting> standards = Settings.LoadPropertyStandards(); // Load from XML first
 
-            dgvPropertyStandards.DataSource = new BindingList<PropertyStandardSetting>(defaultStandards);
-            Logger.DebugLog($"Loaded {defaultStandards.Count} default property standards into dgvPropertyStandards.");
+            if (standards == null || standards.Count == 0)
+            {
+                Logger.DebugLog("No property standards found in XML or XML missing/corrupt. Loading default standards.");
+                // If XML is empty or not found, populate with defaults
+                standards = new List<PropertyStandardSetting>
+                {
+                    new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Part Number",           DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Description",           DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Revision",              DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Status",                DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Shop Route",            DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Spare Part",            DefaultValueExpr = "0",                               IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "MFG Stocked Item",      DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Weight",                DefaultValueExpr = "$PRP:\"SW-Mass\"",                 IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                    new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Material",              DefaultValueExpr = "$PRPMODEL:\"SW-Material\"",        IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Sheet Metal Thickness", DefaultValueExpr = "$PRPSHEET:\"Thickness\"",          IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Vendor",                DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Vendor Part Number",    DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Raw Material Number",   DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Unit of Measurement",   DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Raw Mat Amount",        DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "legacy Part Number",    DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Legacy Unit of Measure",DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Legacy Raw Mat Amount", DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "NC Punch Programs",     DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "NC Punch Sheet Size",   DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "Raw Material Description", DefaultValueExpr = "", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true, UseOnAssemblyFiles = false, UseOnDrawingFiles = false },
+                    new PropertyStandardSetting { UseDefaultValue = false, PropertyName = "legacy Part Description",  DefaultValueExpr = "", IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true, UseOnAssemblyFiles = false, UseOnDrawingFiles = false }
+                };
+                // Optionally, save these defaults immediately if the XML was missing/empty
+                // Settings.SavePropertyStandards(standards);
+            }
+
+            dgvPropertyStandards.DataSource = new BindingList<PropertyStandardSetting>(standards);
+            Logger.DebugLog($"Loaded {standards.Count} property standards into dgvPropertyStandards.");
         }
 
         private void BtnAddNewFileProp_Click(object sender, EventArgs e)
@@ -488,64 +495,138 @@ namespace RoesleinAddIn
             }
         }
 
-        // Define the data class for dgvPropertyStandards
-        public class PropertyStandardSetting
-        {
-            public bool UseDefaultValue { get; set; }
-            public string PropertyName { get; set; }
-            public string DefaultValueExpr { get; set; }
-            public bool IsCustomProperty { get; set; }
-            public bool IsConfigSpecific { get; set; }
-            public bool UseOnPartFiles { get; set; }
-            public bool UseOnAssemblyFiles { get; set; }
-            public bool UseOnDrawingFiles { get; set; }
-        }
-
         // +++ Methods for dgvRawSheet +++
         private void InitializeRawSheetGrid()
         {
-            if (dgvRawSheet == null) 
+            Logger.DebugLog("InitializeRawSheetGrid started.");
+            if (dgvRawSheet == null)
             {
-                Logger.DebugLog("dgvRawSheet is null. Cannot initialize.");
+                Logger.DebugLog("InitializeRawSheetGrid: dgvRawSheet is null. Aborting initialization.");
                 return;
             }
 
+            dgvRawSheet.AutoGenerateColumns = false;
+            dgvRawSheet.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None; // Allow manual/programmatic sizing
+            dgvRawSheet.AllowUserToResizeColumns = true; // Allow user to resize
+            dgvRawSheet.ScrollBars = ScrollBars.Both; // Enable both scrollbars
+
+            // Define columns if not already defined in the designer
+            // Clear existing columns first to avoid duplication if this method is called multiple times
             dgvRawSheet.Columns.Clear();
-            dgvRawSheet.AutoGenerateColumns = false; // Important for manual column definition
 
-            // Define columns based on RawSheetData properties
-            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "PartNumber", HeaderText = "PartNumber", DataPropertyName = "PartNumber", AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
-            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "LegacyPartNumber", HeaderText = "Legacy Part Number", DataPropertyName = "LegacyPartNumber", AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
-            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "Material", HeaderText = "Material", DataPropertyName = "Material", AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
-            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "Thickness", HeaderText = "Thickness", DataPropertyName = "Thickness", DefaultCellStyle = { Format = "N4" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
-            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "Description", HeaderText = "Description", DataPropertyName = "Description", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
-            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "TotalSQInch", HeaderText = "Total SQ Inch", DataPropertyName = "TotalSQInch", DefaultCellStyle = { Format = "N2" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
-            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "SheetLengthInch", HeaderText = "Sheet Length Inch", DataPropertyName = "SheetLengthInch", DefaultCellStyle = { Format = "N2" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
-            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "SheetHeightInch", HeaderText = "Sheet Height Inch", DataPropertyName = "SheetHeightInch", DefaultCellStyle = { Format = "N2" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
-            dgvRawSheet.Columns.Add(new DataGridViewTextBoxColumn { Name = "LastCost", HeaderText = "Last Cost", DataPropertyName = "LastCost", DefaultCellStyle = { Format = "c" }, AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells });
+            // PartNumber
+            var partNumberCol = new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "PartNumber",
+                HeaderText = "Part Number",
+                Name = "PartNumber",
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells, // Adjust based on content
+                MinimumWidth = 100 // Example minimum width
+            };
+            dgvRawSheet.Columns.Add(partNumberCol);
+
+            // LegacyPartNumber
+            var legacyPartNumberCol = new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "LegacyPartNumber",
+                HeaderText = "Legacy Part Number",
+                Name = "LegacyPartNumber",
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells,
+                MinimumWidth = 100
+            };
+            dgvRawSheet.Columns.Add(legacyPartNumberCol);
+
+            // Material
+            var materialCol = new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "Material",
+                HeaderText = "Material",
+                Name = "Material",
+                Width = 200, // Set desired width
+                MinimumWidth = 150 // Ensure it's at least this wide
+            };
+            dgvRawSheet.Columns.Add(materialCol);
+
+            // Thickness
+            var thicknessCol = new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "Thickness",
+                HeaderText = "Thickness (in)",
+                Name = "Thickness",
+                DefaultCellStyle = new DataGridViewCellStyle { Format = "N4" }, // Format as number with 4 decimal places
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells,
+                MinimumWidth = 80
+            };
+            dgvRawSheet.Columns.Add(thicknessCol);
+
+            // Description
+            var descriptionCol = new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "Description",
+                HeaderText = "Description",
+                Name = "Description",
+                Width = 250, // Set desired width
+                MinimumWidth = 200 // Ensure it's at least this wide
+            };
+            dgvRawSheet.Columns.Add(descriptionCol);
+
+            // TotalSQInch
+            var totalSqInchCol = new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "TotalSQInch",
+                HeaderText = "Total SQ Inch",
+                Name = "TotalSQInch",
+                DefaultCellStyle = new DataGridViewCellStyle { Format = "N2" },
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells,
+                MinimumWidth = 80
+            };
+            dgvRawSheet.Columns.Add(totalSqInchCol);
+
+            // SheetLengthInch
+            var sheetLengthCol = new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "SheetLengthInch",
+                HeaderText = "Sheet Length (in)",
+                Name = "SheetLengthInch",
+                DefaultCellStyle = new DataGridViewCellStyle { Format = "N2" },
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells,
+                MinimumWidth = 80
+            };
+            dgvRawSheet.Columns.Add(sheetLengthCol);
+
+            // SheetHeightInch
+            var sheetHeightCol = new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "SheetHeightInch",
+                HeaderText = "Sheet Height (in)",
+                Name = "SheetHeightInch",
+                DefaultCellStyle = new DataGridViewCellStyle { Format = "N2" },
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells,
+                MinimumWidth = 80
+            };
+            dgvRawSheet.Columns.Add(sheetHeightCol);
+
+            // LastCost
+            var lastCostCol = new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "LastCost",
+                HeaderText = "Last Cost",
+                Name = "LastCost",
+                DefaultCellStyle = new DataGridViewCellStyle { Format = "C2" }, // Format as currency
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells,
+                MinimumWidth = 80
+            };
+            dgvRawSheet.Columns.Add(lastCostCol);
             
-            dgvRawSheet.AllowUserToAddRows = false; // Using a button instead
-            dgvRawSheet.AllowUserToDeleteRows = true; // Or handle via context menu if preferred
-            dgvRawSheet.RowHeadersVisible = true;
-            dgvRawSheet.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            // Add context menu for adding/deleting rows (example)
+            var contextMenu = new ContextMenuStrip();
+            var addNewMenuItem = new ToolStripMenuItem("Add New Row");
+            addNewMenuItem.Click += BtnAddNewRawSheet_Click; // Use existing handler
+            contextMenu.Items.Add(addNewMenuItem);
+            // Add more items like "Delete Selected Row(s)" if needed
+            dgvRawSheet.ContextMenuStrip = contextMenu;
 
-            // Wire up event handlers previously developed
-            if (BtnAddNewRawSheet != null) // Ensure button exists
-            {
-                BtnAddNewRawSheet.Click -= BtnAddNewRawSheet_Click; // Prevent multiple subscriptions
-                BtnAddNewRawSheet.Click += BtnAddNewRawSheet_Click;
-            }
-            else { Logger.DebugLog("BtnAddNewRawSheet is null, cannot attach click handler."); }
-
-            if (btnSaveRawSheet != null) // Ensure button exists
-            {
-                btnSaveRawSheet.Click -= BtnSaveRawSheet_Click; // Prevent multiple subscriptions
-                btnSaveRawSheet.Click += BtnSaveRawSheet_Click;
-            }
-            else { Logger.DebugLog("btnSaveRawSheet is null, cannot attach click handler."); }
-
-            dgvRawSheet.CellValidated -= dgvRawSheet_CellValidated; // Prevent multiple subscriptions
-            dgvRawSheet.CellValidated += dgvRawSheet_CellValidated;
+            Logger.DebugLog("InitializeRawSheetGrid completed.");
         }
 
         private void LoadRawSheetData()
@@ -959,14 +1040,60 @@ namespace RoesleinAddIn
         {
             Logger.DebugLog("btnOK_Click: Saving all settings.");
             SaveGeneralSettings();
-            SavePropertyMappings(); // Will call Settings.SavePropertyMappings
-            SaveMaterialMappings(); // Will call Settings.SaveMaterialMappings
-            SaveThicknessMappings(); // Will call Settings.SaveThicknessMappings
-            // SaveRawSheetData(); // This is handled by its own button on the Raw Material tab
-            // SavePropertyStandardsData(); // TODO: Implement when dgvPropertyStandards is finalized
+            SavePropertyMappings();
+            SaveMaterialMappings();
+            SaveThicknessMappings();
+            SavePropertyStandardsData();
 
-            // Reconfigure logger after saving settings (from backup)
-            var settings = Settings.LoadSettings(); // Reload to get the potentially updated file paths for logger
+            // --- BEGIN: Added logic to transfer RawSheetData to currentGeneralSettings.RawMaterials ---
+            if (this.currentGeneralSettings != null && dgvRawSheet.DataSource is BindingList<RawSheetData> rawSheetDataList)
+            {
+                this.currentGeneralSettings.RawMaterials = new List<Settings.RawMaterial>(); // Clear existing
+                foreach (RawSheetData sheetData in rawSheetDataList)
+                {
+                    // Convert RawSheetData (from CSV, uses decimal) to Settings.RawMaterial (for XML, uses double for some fields)
+                    this.currentGeneralSettings.RawMaterials.Add(new Settings.RawMaterial
+                    {
+                        PartNumber = sheetData.PartNumber,
+                        LegacyPartNumber = sheetData.LegacyPartNumber,
+                        Material = sheetData.Material,
+                        // Thickness in Settings.RawMaterial is double, RawSheetData.Thickness is decimal
+                        Thickness = Convert.ToDouble(sheetData.Thickness), 
+                        Description = sheetData.Description,
+                        // TotalSqInch in Settings.RawMaterial is double, RawSheetData.TotalSQInch is decimal
+                        TotalSqInch = Convert.ToDouble(sheetData.TotalSQInch),
+                        // SheetLength in Settings.RawMaterial is double, RawSheetData.SheetLengthInch is decimal
+                        SheetLength = Convert.ToDouble(sheetData.SheetLengthInch),
+                        // SheetHeight in Settings.RawMaterial is double, RawSheetData.SheetHeightInch is decimal
+                        SheetHeight = Convert.ToDouble(sheetData.SheetHeightInch),
+                        LastCost = sheetData.LastCost // LastCost is decimal in both
+                    });
+                }
+                Logger.DebugLog($"Transferred {this.currentGeneralSettings.RawMaterials.Count} entries from dgvRawSheet to currentGeneralSettings.RawMaterials.");
+                
+                // Now that currentGeneralSettings.RawMaterials is populated, 
+                // SaveSettings() called within SaveGeneralSettings() OR called explicitly here
+                // will serialize this list into the RoesleinAddInSettings.xml
+                // If SaveGeneralSettings() already calls currentGeneralSettings.SaveSettings(), this is fine.
+                // If not, we might need an explicit call:
+                if (!this.currentGeneralSettings.SaveSettings()) // Ensure settings (including RawMaterials) are saved to XML
+                {
+                     Logger.Warning("btnOK_Click: Failed to save settings to XML after updating RawMaterials.");
+                     MessageBox.Show("Failed to save updated raw material list to the main settings file. Please check logs.", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    Logger.Info("btnOK_Click: Successfully saved settings, including updated RawMaterials, to XML.");
+                }
+            }
+            else
+            {
+                Logger.Warning("btnOK_Click: Could not transfer RawSheetData. currentGeneralSettings is null or dgvRawSheet.DataSource is not BindingList<RawSheetData>.");
+            }
+            // --- END: Added logic ---
+
+            // Reconfigure logger after saving settings
+            var settings = Settings.LoadSettings(); 
             if (settings != null)
             {
                 Logger.Instance.SetSettingsEnabled(settings.LoggingEnabled);
@@ -1269,35 +1396,37 @@ namespace RoesleinAddIn
 
         private void SavePropertyStandardsData()
         {
-            // This method will save the data from dgvPropertyStandards.
-            // The actual implementation depends heavily on:
-            // 1. The data class for a property standard (e.g., PropertyStandardSetting).
-            // 2. How these settings are stored (e.g., in Settings.cs, separate XML, etc.).
-            // 3. The columns defined in dgvPropertyStandards.
-
             if (dgvPropertyStandards == null)
             {
-                Logger.DebugLog("SavePropertyStandardsData: dgvPropertyStandards is null.");
+                Logger.DebugLog("SavePropertyStandardsData: dgvPropertyStandards is null. Cannot save.");
+                MessageBox.Show("Cannot save property standards: Grid is not available.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
-            Logger.DebugLog("Attempting to save dgvPropertyStandards data - (Placeholder Implementation).");
 
-            // Example (needs to be adapted):
-            // var standardsToSave = new List<PropertyStandardSetting>();
-            // foreach (DataGridViewRow row in dgvPropertyStandards.Rows)
-            // {
-            //     if (row.IsNewRow) continue;
-            //     standardsToSave.Add(new PropertyStandardSetting
-            //     {
-            //         PropertyName = row.Cells["PropertyName"].Value?.ToString(),
-            //         StandardValue = row.Cells["StandardValue"].Value?.ToString(),
-            //         IsEnabled = Convert.ToBoolean(row.Cells["IsEnabled"].Value ?? false),
-            //         DataType = row.Cells["DataType"].Value?.ToString(),
-            //     });
-            // }
-            // Settings.SavePropertyStandards(standardsToSave); // Assuming a static save method
+            try
+            {
+                // Ensure any pending edits are committed to the DataSource
+                dgvPropertyStandards.EndEdit(); 
 
-            MessageBox.Show("Save Property Standards - functionality is a placeholder.", "Placeholder", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (dgvPropertyStandards.DataSource is BindingList<PropertyStandardSetting> standardsList)
+                {
+                    // The BindingList itself contains the current state of the data in the grid.
+                    // So, we can directly pass this list to the static save method.
+                    Settings.SavePropertyStandards(standardsList.ToList()); // Pass a copy if SavePropertyStandards modifies the list, or if BindingList itself is not desired for saving.
+                    Logger.Info("Property standards saved successfully.");
+                    MessageBox.Show("Property standards saved successfully.", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    Logger.Warning("SavePropertyStandardsData: dgvPropertyStandards.DataSource is not a BindingList<PropertyStandardSetting>. Cannot save.");
+                    MessageBox.Show("Cannot save property standards: Data source is not correctly configured.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Error saving property standards", ex);
+                MessageBox.Show($"An error occurred while saving property standards: {ex.Message}", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
     }
 

@@ -6,6 +6,7 @@ using SolidWorks.Interop.swconst;
 using EPDM.Interop.epdm;
 using System.Diagnostics;
 using System.IO;
+using System.Globalization;
 
 namespace RoesleinAddIn
 {
@@ -33,6 +34,12 @@ namespace RoesleinAddIn
         private bool cutListCheckPerformed = false;
         private bool cutListFound = false;
         private bool cutListAutoUpdateEnabled = false;
+
+        // Raw Material processing statistics
+        private bool rawMaterialProcessingAttempted = false;
+        private bool rawMaterialMatchFound = false;
+        private bool rawMaterialPropertiesUpdated = false;
+        private string rawMaterialMessage = "";
         
         public PropertyStandardManager(ISldWorks swApp, IEdmVault5 pdmVault)
         {
@@ -43,6 +50,27 @@ namespace RoesleinAddIn
             // Load property standards separately as they are in their own file
             // We might load this list on demand in the Apply method instead, depending on usage.
             // For now, let's assume we load it here or pass it in.
+            propertiesUpdatedCount = 0;
+            propertiesSkippedCount = 0;
+            
+            // Reset material mapping stats
+            isSheetMetalPart = false;
+            materialMappingPerformed = false;
+            originalMaterial = "";
+            mappedMaterial = "";
+            materialMappingSuccess = false;
+            materialIsMissing = false;
+            
+            // Reset cut list check stats
+            cutListCheckPerformed = false;
+            cutListFound = false;
+            cutListAutoUpdateEnabled = false;
+
+            // Reset Raw Material stats
+            rawMaterialProcessingAttempted = false;
+            rawMaterialMatchFound = false;
+            rawMaterialPropertiesUpdated = false;
+            rawMaterialMessage = "";
         }
 
         /// <summary>
@@ -68,6 +96,12 @@ namespace RoesleinAddIn
             cutListCheckPerformed = false;
             cutListFound = false;
             cutListAutoUpdateEnabled = false;
+            
+            // Reset Raw Material stats
+            rawMaterialProcessingAttempted = false;
+            rawMaterialMatchFound = false;
+            rawMaterialPropertiesUpdated = false;
+            rawMaterialMessage = "";
             
             ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
             if (swModel == null)
@@ -168,12 +202,34 @@ namespace RoesleinAddIn
                         }
                         else
                         {
-                            completionMsg += $" automatic update was enabled.";
+                            completionMsg += $" automatic update was reviewed/set.";
                         }
                     }
                     else
                     {
                         completionMsg += $"\nNo cut list was found. Please add a cut list to this sheet metal part.";
+                    }
+                }
+
+                // Add Raw Material processing info if it was attempted
+                if (rawMaterialProcessingAttempted)
+                {
+                    completionMsg += $"\n\nRaw Material Matching:";
+                    if (!string.IsNullOrEmpty(rawMaterialMessage))
+                    {
+                        completionMsg += $"\n{rawMaterialMessage}";
+                    }
+                    else if (rawMaterialMatchFound && rawMaterialPropertiesUpdated)
+                    {
+                        completionMsg += $"\nSuccessfully matched raw material and updated properties.";
+                    }
+                    else if (rawMaterialMatchFound && !rawMaterialPropertiesUpdated)
+                    {
+                        completionMsg += $"\nFound a raw material match, but failed to update properties.";
+                    }
+                    else
+                    {
+                        completionMsg += $"\nNo matching raw material found or processing issue occurred.";
                     }
                 }
                 
@@ -304,7 +360,8 @@ namespace RoesleinAddIn
         {
             try
             {
-                if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
+                int docType = swModel.GetType();
+                if (docType != (int)swDocumentTypes_e.swDocPART)
                 {
                     return false;
                 }
@@ -460,13 +517,6 @@ namespace RoesleinAddIn
                 // If we get here, all approaches failed
                 Logger.Error($"All methods to set material '{materialName}' failed. Current material is '{swModel.MaterialIdName}'");
                 
-                // Provide a user message about manually changing the material
-                swApp.SendMsgToUser2(
-                    $"Unable to automatically update material to '{materialName}'.\n" +
-                    $"Please right-click the part in the feature tree and select 'Edit Material'.",
-                    (int)swMessageBoxIcon_e.swMbWarning, 
-                    (int)swMessageBoxBtn_e.swMbOk);
-                
                 return false;
             }
             catch (Exception ex)
@@ -524,15 +574,15 @@ namespace RoesleinAddIn
                 }
 
                 // Set correct expressions for key properties
-                string defaultExpr = standard.DefaultValueOrExpression;
+                string defaultExpr = standard.DefaultValueExpr;
 
                 // Apply to Custom tab if checked
-                if (standard.IsCustomPropertyTarget)
+                if (standard.IsCustomProperty)
                 {
                     ApplyOrUpdateProperty(swModel.Extension.CustomPropertyManager[""], standard, defaultExpr, "Custom");
                 }
                 // Apply to Config tab if checked
-                if (standard.IsConfigurationSpecificTarget)
+                if (standard.IsConfigSpecific)
                 {
                     if (activeConfig != null)
                     {
@@ -566,7 +616,7 @@ namespace RoesleinAddIn
                 {
                     foreach (string propName in allPropertyNames)
                     {
-                        Logger.Info($"DEBUG: Found existing property in {tabName}: '{propName}'");
+                        // Logger.Info($"DEBUG: Found existing property in {tabName}: '{propName}'"); // Removed to reduce log spam
                         if (string.Equals(propName, standard.PropertyName, StringComparison.OrdinalIgnoreCase))
                         {
                             manualPropertyCheck = true;
@@ -579,7 +629,7 @@ namespace RoesleinAddIn
                 int getResult = propMgr.Get5(standard.PropertyName, true, out string existingValue, out string resolvedValue, out bool wasResolved);
                 
                 // Detailed API result debugging
-                Logger.Info($"DEBUG: Get5 API returned: code={getResult}, existingValue='{existingValue}', resolvedValue='{resolvedValue}', wasResolved={wasResolved}, manualPropertyCheck={manualPropertyCheck}");
+                // Logger.Info($"DEBUG: Get5 API returned: code={getResult}, existingValue='{existingValue}', resolvedValue='{resolvedValue}', wasResolved={wasResolved}, manualPropertyCheck={manualPropertyCheck}");
                 
                 // According to SolidWorks API docs - 0 means property exists, 1 means it doesn't
                 bool propertyExists = (getResult == 0 || manualPropertyCheck);
@@ -591,14 +641,14 @@ namespace RoesleinAddIn
                 string formattedExpression = FormatPropertyExpression(standard.PropertyName, defaultExpr, docType);
 
                 // CASE 1: Property exists AND "Use Default Value" is checked - UPDATE it
-                if (propertyExists && standard.IsRequired)
+                if (propertyExists && standard.UseDefaultValue)
                 {
                     shouldSetValue = true;
                     valueToAdd = formattedExpression;
                     Logger.Info($"Property '{standard.PropertyName}' exists and has value '{existingValue}'. Overwriting with '{valueToAdd}' because Use Default Value is checked in {tabName} tab.");
                 }
                 // CASE 2: Property exists AND "Use Default Value" is NOT checked - LEAVE IT ALONE
-                else if (propertyExists && !standard.IsRequired)
+                else if (propertyExists && !standard.UseDefaultValue)
                 {
                     shouldSetValue = false;
                     Logger.Info($"Property '{standard.PropertyName}' exists and has value '{existingValue}'. Not changing (Use Default Value not checked) in {tabName} tab.");
@@ -625,7 +675,7 @@ namespace RoesleinAddIn
                             valueToAdd,
                             (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
 
-                        Logger.Info($"DEBUG: Add3 API returned: code={addResult}");
+                        // Logger.Info($"DEBUG: Add3 API returned: code={addResult}");
 
                         if (addResult == 0)
                         {
@@ -877,6 +927,469 @@ namespace RoesleinAddIn
         }
 
         /// <summary>
+        /// Reads cut list data and matches raw material for sheet metal parts
+        /// </summary>
+        private bool ProcessCutListAndRawMaterial(ModelDoc2 swModel)
+        {
+            rawMaterialProcessingAttempted = true;
+            rawMaterialMatchFound = false;
+            rawMaterialPropertiesUpdated = false;
+            rawMaterialMessage = ""; // Reset message
+
+            try
+            {
+                if (!isSheetMetalPart || !cutListFound)
+                {
+                    Logger.Info("Not a sheet metal part with a found cut list, skipping raw material processing.");
+                    rawMaterialMessage = "Skipped: Not a sheet metal part or no cut list found.";
+                    return false;
+                }
+
+                Logger.Info("Reading cut list data for raw material matching...");
+
+                double boundingBoxLength = 0;
+                double boundingBoxWidth = 0;
+                double sheetMetalThickness = 0;
+                string partMaterial = ""; // Renamed to avoid conflict
+
+                Feature swFeat = (Feature)swModel.FirstFeature();
+                Feature cutListItemFeature = null;
+
+                // Find the SolidBodyFolder first, then look for CutListFeat under it.
+                while (swFeat != null)
+                {
+                    if (swFeat.GetTypeName2() == "SolidBodyFolder")
+                    {
+                        Logger.Info($"Found SolidBodyFolder: {swFeat.Name}");
+                        // Now iterate sub-features of the SolidBodyFolder to find the cut list item feature
+                        Feature subFeat = swFeat.IGetFirstSubFeature() as Feature;
+                        while (subFeat != null)
+                        {
+                            // Common type names for cut list items are "CutListFeat", "WeldMemberFeat", "SheetMetalPart" (if specific)
+                            // The log line below is critical for diagnosis.
+                            Logger.Info($"Checking sub-feature under SolidBodyFolder '{swFeat.Name}': Name='{subFeat.Name}', Type='{subFeat.GetTypeName2()}'");
+                            if (subFeat.GetTypeName2() == "CutListFolder") // Adjust this type name if necessary based on logs
+                            {
+                                cutListItemFeature = subFeat;
+                                Logger.Info($"Found expected CutListFolder: {cutListItemFeature.Name}");
+                                break; 
+                            }
+                            subFeat = subFeat.IGetNextSubFeature() as Feature;
+                        }
+                        break; // Stop searching for SolidBodyFolder
+                    }
+                    swFeat = (Feature)swFeat.GetNextFeature();
+                }
+
+                if (cutListItemFeature == null)
+                {
+                    Logger.Warning("Could not find a 'CutListFolder' feature under SolidBodyFolder.");
+                    rawMaterialMessage = "Could not find cut list item feature (e.g., CutListFolder).";
+                    return false;
+                }
+
+                // Get the custom property manager for the cut list item feature
+                CustomPropertyManager cutListPropMgr = cutListItemFeature.CustomPropertyManager;
+                
+                if (cutListPropMgr == null)
+                {
+                    Logger.Warning($"Could not get CustomPropertyManager for cut list item feature: {cutListItemFeature.Name}");
+                    rawMaterialMessage = $"Could not access properties for cut list item: {cutListItemFeature.Name}.";
+                    return false;
+                }
+
+                string resolvedValue;
+                bool wasResolved;
+
+                // Bounding Box Length
+                int res = cutListPropMgr.Get5("Bounding Box Length", true, out _, out resolvedValue, out wasResolved);
+                if ((res == 0 || res == 2) && wasResolved && double.TryParse(resolvedValue, out boundingBoxLength)) // Accept res == 2 if wasResolved is true
+                {
+                    Logger.Info($"Found Bounding Box Length: {boundingBoxLength}");
+                }
+                else 
+                {
+                    Logger.Warning($"Failed to get Bounding Box Length or parse value. Get5 result: {res}, Resolved: {wasResolved}, Value: '{resolvedValue}'");
+                    boundingBoxLength = 0; // Ensure zero if not parsed
+                }
+
+                // Bounding Box Width
+                res = cutListPropMgr.Get5("Bounding Box Width", true, out _, out resolvedValue, out wasResolved);
+                if ((res == 0 || res == 2) && wasResolved && double.TryParse(resolvedValue, out boundingBoxWidth)) // Accept res == 2 if wasResolved is true
+                {
+                    Logger.Info($"Found Bounding Box Width: {boundingBoxWidth}");
+                }
+                 else 
+                {
+                    Logger.Warning($"Failed to get Bounding Box Width or parse value. Get5 result: {res}, Resolved: {wasResolved}, Value: '{resolvedValue}'");
+                    boundingBoxWidth = 0; // Ensure zero if not parsed
+                }
+
+                // Sheet Metal Thickness - This is often a direct property of the sheet metal feature or a cut-list property
+                // Try to get "Sheet Metal Thickness" first, as seen in user's screenshot
+                res = cutListPropMgr.Get5("Sheet Metal Thickness", true, out _, out resolvedValue, out wasResolved);
+                if ((res == 0 || res == 2) && wasResolved && double.TryParse(resolvedValue, NumberStyles.Any, CultureInfo.InvariantCulture, out sheetMetalThickness))
+                {
+                    Logger.Info($"Found 'Sheet Metal Thickness' from cut list: {sheetMetalThickness} (assuming document units, e.g., inches)");
+                }
+                else 
+                {
+                    Logger.Warning($"Failed to get 'Sheet Metal Thickness' from cut list. Get5 result: {res}, Resolved: {wasResolved}, Value: '{resolvedValue}'. Trying part's sheet metal feature as fallback.");
+                    sheetMetalThickness = 0; // Ensure zero before trying fallback
+                    if (isSheetMetalPart)
+                    {
+                        Feature smFeat = swModel.FirstFeature() as Feature;
+                        while(smFeat != null)
+                        {
+                            if (smFeat.GetTypeName2() == "SheetMetal")
+                            {
+                                SheetMetalFeatureData smData = smFeat.GetDefinition() as SheetMetalFeatureData;
+                                if (smData != null)
+                                {
+                                    double thicknessInMeters = smData.Thickness;
+                                    sheetMetalThickness = thicknessInMeters * 39.3701; // Convert meters to inches
+                                    Logger.Info($"Found Sheet Metal Thickness from SM feature: {thicknessInMeters} meters, converted to {sheetMetalThickness} inches.");
+                                    break;
+                                }
+                            }
+                            smFeat = smFeat.GetNextFeature() as Feature;
+                        }
+                    }
+                }
+                
+                // Material - from the part itself
+                partMaterial = GetPartMaterial(swModel); // This method already logs
+                if (string.IsNullOrEmpty(partMaterial)) 
+                {
+                    Logger.Warning("Part material is empty.");
+                    // partMaterial remains empty or null
+                } else {
+                     Logger.Info($"Found Part Material: {partMaterial}");
+                }
+
+                // Check if all necessary data was retrieved
+                if (boundingBoxLength == 0 || boundingBoxWidth == 0 || sheetMetalThickness == 0 || string.IsNullOrEmpty(partMaterial))
+                {
+                    Logger.Warning("Could not find all required cut list data (Length, Width, Thickness, Material).");
+                    rawMaterialMessage = "Incomplete cut list data (Length, Width, Thickness, or Material missing/zero).";
+                    // Log current values for debugging
+                    Logger.Info($"Debug - Length: {boundingBoxLength}, Width: {boundingBoxWidth}, Thickness: {sheetMetalThickness}, Material: '{partMaterial}'");
+                    return false;
+                }
+
+                // Now match with raw material table
+                var rawMaterialSettingsMatch = FindRawMaterialMatch( // Renamed to avoid confusion with class RawMaterialMatch
+                    partMaterial,
+                    sheetMetalThickness,
+                    boundingBoxLength,
+                    boundingBoxWidth);
+
+                if (rawMaterialSettingsMatch != null)
+                {
+                    rawMaterialMatchFound = true;
+                    Logger.Info($"Found matching raw material: PN='{rawMaterialSettingsMatch.PartNumber}'");
+
+                    // Calculate Bounding Box Area
+                    double boundingBoxArea = 0;
+                    if (boundingBoxLength > 0 && boundingBoxWidth > 0) // Ensure dimensions are valid
+                    {
+                        boundingBoxArea = boundingBoxLength * boundingBoxWidth;
+                        Logger.Info($"Calculated Bounding Box Area: {boundingBoxArea} sq. inches");
+                    }
+                    else
+                    {
+                        Logger.Warning("Bounding box length or width is zero, area cannot be calculated accurately.");
+                    }
+
+                    string rawMaterialPN = rawMaterialSettingsMatch.PartNumber;
+                    string unitOfMeasureValue = "SI"; // Changed from SQ IN to SI
+                    string areaValue = boundingBoxArea.ToString("F2", CultureInfo.InvariantCulture); // Format to 2 decimal places
+                    string rawMaterialDescription = rawMaterialSettingsMatch.Description ?? ""; // Get description, ensure not null
+
+                    List<CustomPropertyManager> propManagersToUpdate = new List<CustomPropertyManager>();
+
+                    // Add summary properties manager
+                    CustomPropertyManager summaryPropMgr = swModel.Extension.CustomPropertyManager[""];
+                    if (summaryPropMgr != null)
+                    {
+                        propManagersToUpdate.Add(summaryPropMgr);
+                        Logger.Info("Added Summary CustomPropertyManager for updates.");
+                    }
+                    else
+                    {
+                        Logger.Warning("Could not get Summary CustomPropertyManager.");
+                    }
+
+                    // Get all configuration names
+                    string[] configNames = (string[])swModel.GetConfigurationNames();
+                    if (configNames != null)
+                    {
+                        foreach (string configName in configNames)
+                        {
+                            if (string.IsNullOrEmpty(configName)) continue;
+                            CustomPropertyManager configPropMgr = swModel.Extension.CustomPropertyManager[configName];
+                            if (configPropMgr != null)
+                            {
+                                propManagersToUpdate.Add(configPropMgr);
+                                Logger.Info($"Added CustomPropertyManager for configuration '{configName}' for updates.");
+                            }
+                            else
+                            {
+                                Logger.Warning($"Could not get CustomPropertyManager for configuration: {configName}");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Logger.Warning("Could not retrieve configuration names.");
+                    }
+                    
+                    int successCount = 0;
+                    int attemptCount = 0;
+
+                    foreach (CustomPropertyManager propMgr in propManagersToUpdate)
+                    {
+                        // Determine the target name for logging
+                        string currentConfigNameForMgr = ""; // Default to summary
+                        bool isSummaryManager = true; // Assume summary unless found in specific configs
+
+                        if (propMgr != summaryPropMgr) // If it's not the explicitly stored summaryPropMgr
+                        {
+                            // Try to find which config this manager belongs to. 
+                            // This is a bit indirect; a cleaner way would be to store pairs of (configName, propMgr)
+                            // For now, iterate configNames again to identify it for logging.
+                            if (configNames != null) {
+                                foreach (string cn in configNames) {
+                                    if (propMgr == swModel.Extension.CustomPropertyManager[cn]) {
+                                        currentConfigNameForMgr = cn;
+                                        isSummaryManager = false;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        // If after checks, currentConfigNameForMgr is still empty, it implies it's the summaryPropMgr or couldn't be matched.
+                        // The summaryPropMgr should have been caught by propMgr == summaryPropMgr directly.
+                        // If propMgr != summaryPropMgr but currentConfigNameForMgr is still empty, it's an edge case or error.
+
+                        string logTargetName;
+                        if (isSummaryManager) {
+                            logTargetName = "Summary Tab";
+                        }
+                        else if (!string.IsNullOrEmpty(currentConfigNameForMgr)) {
+                            logTargetName = $"Configuration '{currentConfigNameForMgr}'";
+                        }
+                        else {
+                            // Fallback if a specific config manager couldn't be named (should ideally not happen with current loop structure)
+                            logTargetName = "Unknown Specific Configuration"; 
+                            Logger.Warning("Could not determine specific configuration name for a CustomPropertyManager instance during logging.");
+                        }
+
+                        Logger.Info($"Attempting to update properties for: {logTargetName}");
+
+                        // 1. Raw Material Number
+                        attemptCount++;
+                        int addResultPN = propMgr.Add3(
+                            "Raw Material Number", // Changed name
+                            (int)swCustomInfoType_e.swCustomInfoText,
+                            rawMaterialPN,
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                        if (addResultPN == 0) successCount++; else Logger.Warning($"Failed to set 'Raw Material Number' for {logTargetName}. Result: {addResultPN}");
+
+                        // 2. Unit of Measurement
+                        attemptCount++;
+                        int addResultUOM = propMgr.Add3(
+                            "Unit of Measurement", // Changed name
+                            (int)swCustomInfoType_e.swCustomInfoText,
+                            unitOfMeasureValue,
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                        if (addResultUOM == 0) successCount++; else Logger.Warning($"Failed to set 'Unit of Measurement' for {logTargetName}. Result: {addResultUOM}");
+
+                        // 3. legacy Part Number
+                        attemptCount++;
+                        int addResultLegacyPN = propMgr.Add3(
+                            "legacy Part Number",
+                            (int)swCustomInfoType_e.swCustomInfoText,
+                            rawMaterialPN,
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                        if (addResultLegacyPN == 0) successCount++; else Logger.Warning($"Failed to set 'legacy Part Number' for {logTargetName}. Result: {addResultLegacyPN}");
+
+                        // 4. Legacy Unit of Measure
+                        attemptCount++;
+                        int addResultLegacyUOM = propMgr.Add3(
+                            "Legacy Unit of Measure",
+                            (int)swCustomInfoType_e.swCustomInfoText,
+                            unitOfMeasureValue,
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                        if (addResultLegacyUOM == 0) successCount++; else Logger.Warning($"Failed to set 'Legacy Unit of Measure' for {logTargetName}. Result: {addResultLegacyUOM}");
+
+                        // 5. Raw Mat Amount
+                        attemptCount++;
+                        int addResultRawAmount = propMgr.Add3(
+                            "Raw Mat Amount",
+                            (int)swCustomInfoType_e.swCustomInfoText,
+                            areaValue,
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                        if (addResultRawAmount == 0) successCount++; else Logger.Warning($"Failed to set 'Raw Mat Amount' for {logTargetName}. Result: {addResultRawAmount}");
+
+                        // 6. Legacy Raw Mat Amount
+                        attemptCount++;
+                        int addResultLegacyRawAmount = propMgr.Add3(
+                            "Legacy Raw Mat Amount",
+                            (int)swCustomInfoType_e.swCustomInfoText,
+                            areaValue,
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                        if (addResultLegacyRawAmount == 0) successCount++; else Logger.Warning($"Failed to set 'Legacy Raw Mat Amount' for {logTargetName}. Result: {addResultLegacyRawAmount}");
+
+                        // 7. Raw Material Description
+                        attemptCount++;
+                        int addResultRawDesc = propMgr.Add3(
+                            "Raw Material Description",
+                            (int)swCustomInfoType_e.swCustomInfoText,
+                            rawMaterialDescription,
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                        if (addResultRawDesc == 0) successCount++; else Logger.Warning($"Failed to set 'Raw Material Description' for {logTargetName}. Result: {addResultRawDesc}");
+
+                        // 8. legacy Part Description
+                        attemptCount++;
+                        int addResultLegacyDesc = propMgr.Add3(
+                            "legacy Part Description",
+                            (int)swCustomInfoType_e.swCustomInfoText,
+                            rawMaterialDescription,
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                        if (addResultLegacyDesc == 0) successCount++; else Logger.Warning($"Failed to set 'legacy Part Description' for {logTargetName}. Result: {addResultLegacyDesc}");
+                    }
+
+                    if (attemptCount > 0 && successCount == attemptCount)
+                    {
+                        Logger.Info($"Successfully updated all {successCount}/{attemptCount} raw material related properties across applicable property managers.");
+                        rawMaterialPropertiesUpdated = true;
+                        rawMaterialMessage = $"Raw Material PN {rawMaterialPN} (UOM: {unitOfMeasureValue}, Area: {areaValue}, Desc: {rawMaterialDescription}) applied to all configurations.";
+                        return true;
+                    }
+                    else if (successCount > 0)
+                    {
+                         Logger.Warning($"Partially updated raw material properties: {successCount} out of {attemptCount} succeeded across applicable property managers.");
+                         rawMaterialPropertiesUpdated = true; // Still true if some succeeded
+                         rawMaterialMessage = $"Partially applied Raw Material PN {rawMaterialPN}. Check logs for details.";
+                         return false; // Return false as not all operations were successful
+                    }
+                    else
+                    {
+                        Logger.Warning($"Failed to update any raw material properties across applicable property managers. Success: {successCount}/{attemptCount}");
+                        rawMaterialMessage = $"Found match ({rawMaterialPN}), but failed to write any properties. Check logs.";
+                        return false;
+                    }
+                }
+                else
+                {
+                    rawMaterialMatchFound = false; // Explicitly set
+                    Logger.Warning("No matching raw material found in table.");
+                    rawMaterialMessage = $"No matching raw material found for: Mat='{partMaterial}', Thk='{sheetMetalThickness}', Size='{boundingBoxLength}x{boundingBoxWidth}'.";
+                    // User message for no match is good, but handled by rawMaterialMessage now.
+                    // swApp.SendMsgToUser2(...); // This can be removed if the summary message is sufficient
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in ProcessCutListAndRawMaterial: {ex.Message}");
+                rawMaterialMessage = $"Error during raw material processing: {ex.Message}";
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Finds matching raw material from the settings table
+        /// </summary>
+        private RawMaterialMatch FindRawMaterialMatch(string material, double thickness, double length, double width)
+        {
+            try
+            {
+                // Get raw material data from settings
+                if (this.currentSettings == null || this.currentSettings.RawMaterials == null || this.currentSettings.RawMaterials.Count == 0)
+                {
+                    Logger.Error("No raw materials defined in currentSettings or settings could not be loaded. Raw material matching cannot proceed.");
+                    return null;
+                }
+                var rawMaterials = this.currentSettings.RawMaterials;
+
+                // Define a tolerance for thickness matching
+                const double thicknessTolerance = 0.005;
+                Logger.Info($"Using thickness tolerance for matching: +/- {thicknessTolerance}");
+
+                // Match material (case insensitive)
+                // Ensure the 'material' parameter (from part) is normalized before comparison
+                string normalizedPartMaterial = material;
+                if (material.Contains("|"))
+                {
+                    string[] parts = material.Split('|');
+                    if (parts.Length >= 2)
+                    {
+                        normalizedPartMaterial = parts[1].Trim();
+                        Logger.Info($"FindRawMaterialMatch: Normalized part material from '{material}' to '{normalizedPartMaterial}' for matching.");
+                    }
+                }
+
+                var matches = rawMaterials.Where(rm =>
+                    string.Equals(rm.Material.Trim(), normalizedPartMaterial, StringComparison.OrdinalIgnoreCase) &&
+                    // Match thickness (with tolerance for floating point comparison)
+                    Math.Abs(rm.Thickness - thickness) < thicknessTolerance &&
+                    // Ensure our part fits within the sheet dimensions
+                    rm.SheetLength >= length &&
+                    rm.SheetHeight >= width
+                ).ToList();
+
+                if (matches.Count == 0)
+                {
+                    Logger.Info($"No raw material match found for: Material='{material}', Thickness='{thickness}', Length='{length}', Width='{width}' with tolerance {thicknessTolerance}.");
+                    return null;
+                }
+                
+                Logger.Info($"Found {matches.Count} potential raw material matches before ordering.");
+
+                // If we have multiple matches, get the smallest sheet that fits our part
+                var bestMatch = matches
+                    .OrderBy(m => m.SheetLength * m.SheetHeight) // Order by sheet area
+                    .FirstOrDefault();
+
+                // Convert Settings.RawMaterial to RawMaterialMatch
+                if (bestMatch != null)
+                {
+                    return new RawMaterialMatch
+                    {
+                        PartNumber = bestMatch.PartNumber,
+                        Material = bestMatch.Material,
+                        Thickness = bestMatch.Thickness,
+                        SheetLength = bestMatch.SheetLength,
+                        SheetHeight = bestMatch.SheetHeight,
+                        Description = bestMatch.Description
+                    };
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in FindRawMaterialMatch: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Internal class for raw material matching results
+        /// </summary>
+        private class RawMaterialMatch
+        {
+            public string PartNumber { get; set; }
+            public string Material { get; set; }
+            public double Thickness { get; set; }
+            public double SheetLength { get; set; }
+            public double SheetHeight { get; set; }
+            public string Description { get; set; }
+        }
+
+        /// <summary>
         /// Ensures the part has a sheet metal cut list that's set to update automatically
         /// </summary>
         private bool EnsureSheetMetalCutList(ModelDoc2 swModel)
@@ -889,15 +1402,15 @@ namespace RoesleinAddIn
                     return false;
                 }
 
-                PartDoc partDoc = (PartDoc)swModel;
+                // PartDoc partDoc = (PartDoc)swModel; // Not strictly needed here if using swModel.FeatureManager
                 
                 Logger.Info("Checking for sheet metal cut list...");
                 
                 // First, check if this is a sheet metal part at all
-                bool isSheetMetal = IsSheetMetalPart(swModel);
-                isSheetMetalPart = isSheetMetal;
+                // bool isSheetMetal = IsSheetMetalPart(swModel); // isSheetMetalPart class member is set by IsSheetMetalPart
+                this.isSheetMetalPart = IsSheetMetalPart(swModel);
                 
-                if (!isSheetMetal)
+                if (!this.isSheetMetalPart)
                 {
                     Logger.Info("Not a sheet metal part, skipping cut list check");
                     return false;
@@ -908,7 +1421,7 @@ namespace RoesleinAddIn
                 
                 // Look for the SolidBodyFolder feature
                 Feature swFeat = (Feature)swModel.FirstFeature();
-                cutListFound = false;
+                this.cutListFound = false; // Initialize class member
                 
                 while (swFeat != null)
                 {
@@ -917,7 +1430,7 @@ namespace RoesleinAddIn
                     if (typeName == "SolidBodyFolder")
                     {
                         // Found the SolidBodyFolder
-                        cutListFound = true;
+                        this.cutListFound = true;
                         Logger.Info("Found SolidBodyFolder feature");
                         
                         // Get the specific feature
@@ -927,13 +1440,13 @@ namespace RoesleinAddIn
                         {
                             // Check current settings
                             bool isAuto = swBodyFolder.GetAutomaticCutList();
-                            cutListAutoUpdateEnabled = isAuto;
+                            // cutListAutoUpdateEnabled = isAuto; // This is a class member, ensure it's set if needed for reporting
                             Logger.Info($"Automatic cut list is currently: {(isAuto ? "Enabled" : "Disabled")}");
                             
                             // Set to automatic
                             swBodyFolder.SetAutomaticCutList(true);
                             swBodyFolder.SetAutomaticUpdate(true);
-                            cutListAutoUpdateEnabled = true;
+                            // cutListAutoUpdateEnabled = true; // Update class member for reporting
                             Logger.Info("Set cut list to automatic update");
                         }
                         else
@@ -941,14 +1454,14 @@ namespace RoesleinAddIn
                             Logger.Warning("Found SolidBodyFolder but couldn't get BodyFolder interface");
                         }
                         
-                        break;
+                        break; // Found the folder, exit loop
                     }
                     
                     // Move to next feature
                     swFeat = (Feature)swFeat.GetNextFeature();
                 }
                 
-                if (!cutListFound)
+                if (!this.cutListFound)
                 {
                     Logger.Warning("SolidBodyFolder not found. Attempting to create cut list...");
                     
@@ -956,7 +1469,8 @@ namespace RoesleinAddIn
                     {
                         // SolidWorks doesn't have a direct InsertCutList method on PartDoc
                         // Instead we need to use the Insert > Cut-List menu command via the API
-                        
+                        PartDoc partDoc = (PartDoc)swModel; // Needed for GetBodies2
+
                         // First, try to select the bodies in the part
                         // Use swModel.Extension, not partDoc.Extension
                         bool selectResult = false;
@@ -1012,12 +1526,14 @@ namespace RoesleinAddIn
                                     
                                     if (typeName == "SolidBodyFolder")
                                     {
+                                        this.cutListFound = true; // Mark as found
                                         BodyFolder swBodyFolder = newFeat.GetSpecificFeature2() as BodyFolder;
                                         
                                         if (swBodyFolder != null)
                                         {
                                             swBodyFolder.SetAutomaticCutList(true);
                                             swBodyFolder.SetAutomaticUpdate(true);
+                                            // cutListAutoUpdateEnabled = true; // Update class member for reporting
                                             Logger.Info("Set automatic cut list on new cut list");
                                         }
                                         
@@ -1026,25 +1542,69 @@ namespace RoesleinAddIn
                                     
                                     newFeat = (Feature)newFeat.GetNextFeature();
                                 }
-                                
-                                return true;
                             }
                             else
                             {
                                 Logger.Warning("Failed to run cut list command");
+                                // cutListFound remains false
                             }
                         }
-                        
-                        return false;
+                        // If selectResult is false, cutListFound remains false
                     }
                     catch (Exception ex)
                     {
                         Logger.Error($"Error creating cut list: {ex.Message}");
-                        return false;
+                        // cutListFound remains false
+                    }
+                }
+
+                // After all attempts to find or create:
+                if (this.cutListFound)
+                {
+                    // If a cut list exists (either pre-existing or newly created and configured)
+                    // then process it for raw material.
+                    // ProcessCutListAndRawMaterial itself checks for isSheetMetalPart and cutListFound.
+                    // ProcessCutListAndRawMaterial(swModel); // This call is REMOVED - it's redundant
+                    
+                    // Update cutListAutoUpdateEnabled based on the final state if needed for reporting
+                    // This requires re-fetching the BodyFolder if it was newly created or re-checking.
+                    // For simplicity, the existing logging inside the find/create blocks handles immediate status.
+                    // The class member cutListAutoUpdateEnabled might need more careful handling if its state
+                    // post-creation is critical for the summary message and not just logged during setup.
+                    // The original code set it inside the find/create blocks too.
+                    // Let's assume the ApplyStandardsToActiveDocument completion message will primarily rely on `cutListFound`.
+                }
+                else
+                {
+                    if (this.isSheetMetalPart) // Only log this specific warning if we expected a cutlist
+                    {
+                         Logger.Warning("Sheet metal part: Cut list could not be found or created. Raw material processing skipped.");
                     }
                 }
                 
-                return true;
+                // The return value of EnsureSheetMetalCutList now primarily indicates if the conditions
+                // for attempting raw material processing (isSheetMetalPart and cutListFound) are met.
+                // The actual success of ProcessCutListAndRawMaterial is tracked by its own flags.
+                bool canAttemptRawMaterialProcessing = this.isSheetMetalPart && this.cutListFound;
+
+                if (canAttemptRawMaterialProcessing)
+                {
+                    // Log that we are now actually calling it.
+                    Logger.Info("EnsureSheetMetalCutList: Conditions met. Proceeding to ProcessCutListAndRawMaterial.");
+                    ProcessCutListAndRawMaterial(swModel);
+                    // The status flags (rawMaterialProcessingAttempted, rawMaterialMatchFound, etc.)
+                    // will be set by ProcessCutListAndRawMaterial.
+                }
+                else
+                {
+                     Logger.Info("Skipping ProcessCutListAndRawMaterial due to isSheetMetalPart=false or cutListFound=false.");
+                     // Ensure rawMaterialProcessingAttempted reflects this if not already false.
+                     // However, ApplyStandardsToActiveDocument calls CheckAndMapMaterial, then EnsureSheetMetalCutList (which then calls ProcessCutListAndRawMaterial)
+                     // So `rawMaterialProcessingAttempted` will be set by ProcessCutListAndRawMaterial itself if called.
+                     // If ProcessCutListAndRawMaterial is not called, rawMaterialProcessingAttempted remains false from its reset.
+                }
+
+                return canAttemptRawMaterialProcessing; // Return if processing could be attempted.
             }
             catch (Exception ex)
             {

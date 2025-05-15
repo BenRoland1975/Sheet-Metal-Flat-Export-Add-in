@@ -79,6 +79,7 @@
     </Compile>
     <Compile Include="BomProcessor.cs" />
     <Compile Include="MagentaImageStripCreator.cs" />
+    <Compile Include="Mappings.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Properties\Resources.Designer.cs">
       <AutoGen>True</AutoGen>
@@ -86,17 +87,10 @@
       <DependentUpon>Resources.resx</DependentUpon>
     </Compile>
     <Compile Include="PropertyStandardManager.cs" />
-    <Compile Include="PropertyStandardSetting.cs" />
     <Compile Include="RoesleinAddIn.cs" />
     <Compile Include="Settings.cs" />
     <Compile Include="Logger.cs" />
     <Compile Include="ImageConverter.cs" />
-    <Compile Include="SettingsForm-OLD.cs">
-      <SubType>Form</SubType>
-    </Compile>
-    <Compile Include="SettingsForm-OLD.Designer.cs">
-      <DependentUpon>SettingsForm-OLD.cs</DependentUpon>
-    </Compile>
     <Compile Include="SettingsFormV2.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -171,9 +165,6 @@
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
-    </EmbeddedResource>
-    <EmbeddedResource Include="SettingsForm-OLD.resx">
-      <DependentUpon>SettingsForm-OLD.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="SettingsFormV2.resx">
       <DependentUpon>SettingsFormV2.cs</DependentUpon>
