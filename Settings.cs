@@ -6,6 +6,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Windows.Forms;
+using EPDM.Interop.epdm;
+using SolidWorks.Interop.sldworks;
+using System.Globalization; // Added for parsing
 
 namespace RoesleinAddIn
 {
@@ -71,6 +74,13 @@ namespace RoesleinAddIn
         public string DrawingTemplatePath { get; set; }
         public bool CheckForLaser { get; set; }
         
+        // Property Standard Manager specific settings
+        public int MaxRecursionDepth { get; set; }
+        public bool ForceApplyStandards { get; set; }
+        public string DefaultMaterialName { get; set; }
+        public string DefaultMaterialDatabase { get; set; }
+        public double ThicknessToleranceInches { get; set; }
+        
         // Mark instance dictionary with XmlIgnore to prevent serialization errors
         [System.Xml.Serialization.XmlIgnore]
         public Dictionary<double, double> ThicknessMapping { get; set; }
@@ -79,9 +89,11 @@ namespace RoesleinAddIn
         [System.Xml.Serialization.XmlIgnore]
         public static Dictionary<double, double> ThicknessMappings { get; set; } = new Dictionary<double, double>();
         
-        // PropertyStandards list - to be saved/loaded separately
         [System.Xml.Serialization.XmlIgnore] // Exclude from main settings XML
         public List<PropertyStandardSetting> PropertyStandards { get; set; }
+
+        [System.Xml.Serialization.XmlIgnore] // Exclude from main settings XML, loaded from PDM shared settings
+        public string SettingsVersion { get; set; }
         
         private const string RegistryKeyPath = @"Software\Roeslein\SolidWorksAddIn";
         private static readonly string DefaultSettingsPath = Path.Combine(
@@ -92,9 +104,31 @@ namespace RoesleinAddIn
             System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData),
             @"Roeslein\Logs\RoesleinAddIn.log");
 
-        private static readonly string DefaultPropertyStandardsPath = Path.Combine(
-            System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData),
-            @"Roeslein\Settings\PropertyStandardsSettings.xml");
+        // Deprecated - PropertyStandards will be loaded from PdmPropertyStandardsAndVersionPath
+        // private static readonly string DefaultPropertyStandardsPath = Path.Combine(
+        // System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData),
+        //    @"Roeslein\Settings\PropertyStandardsSettings.xml");
+
+        private static readonly string PdmPropertyStandardsAndVersionPath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\PropertyStandardsAndVersion.xml"; // ADJUST THIS PATH AS NEEDED
+        
+        // To be set by the add-in connection logic
+        [System.Xml.Serialization.XmlIgnore]
+        public static ISldWorks SwAppForPDM { get; set; } // Static reference to SwApp
+        [System.Xml.Serialization.XmlIgnore]
+        public static IEdmVault5 PdmVaultForSettings { get; set; } // Static reference to the vault
+
+        public static void SetGlobalVaultForSettings(IEdmVault5 vault)
+        {
+            PdmVaultForSettings = vault;
+            if (vault == null)
+            {
+                Logger.Info("SetGlobalVaultForSettings: Global PDM vault for settings has been set to NULL.");
+            }
+            else
+            {
+                Logger.Info($"SetGlobalVaultForSettings: Global PDM vault for settings has been updated. LoggedIn: {vault.IsLoggedIn}, Name: {vault.Name}");
+            }
+        }
 
         public Settings()
         {
@@ -135,6 +169,14 @@ namespace RoesleinAddIn
 
             // Initialize new PropertyStandards list
             PropertyStandards = new List<PropertyStandardSetting>();
+            SettingsVersion = "25.1"; // Default version if not loaded
+
+            // Initialize Property Standard Manager specific settings with defaults
+            MaxRecursionDepth = 10; // Default recursion depth
+            ForceApplyStandards = false; // Default for forcing standards application
+            DefaultMaterialName = "AISI 1020 Steel"; // Example default material
+            DefaultMaterialDatabase = "SolidWorks Materials"; // Example default DB
+            ThicknessToleranceInches = 0.005; // Default tolerance
         }
 
         [System.Xml.Serialization.XmlIgnore]
@@ -226,7 +268,7 @@ namespace RoesleinAddIn
                 else
                 {
                     // If XML doesn't exist, create a new settings object
-                    settings = new Settings();
+                    settings = new Settings(); // This will set default SettingsVersion and empty PropertyStandards
 
                     // Try to get critical settings from registry
                     using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RegistryKeyPath))
@@ -248,13 +290,13 @@ namespace RoesleinAddIn
                             object loggingEnabled = key.GetValue("LoggingEnabled");
                             if (loggingEnabled != null)
                             {
-                                settings.LoggingEnabled = Convert.ToInt32(loggingEnabled) == 1;
+                                settings.LoggingEnabled = Convert.ToBoolean(loggingEnabled);
                             }
-
+                            
                             object debugLoggingEnabled = key.GetValue("DebugLoggingEnabled");
                             if (debugLoggingEnabled != null)
                             {
-                                settings.DebugLoggingEnabled = Convert.ToInt32(debugLoggingEnabled) == 1;
+                                settings.DebugLoggingEnabled = Convert.ToBoolean(debugLoggingEnabled);
                             }
 
                             object logFilePath = key.GetValue("LogFilePath");
@@ -262,54 +304,309 @@ namespace RoesleinAddIn
                             {
                                 settings.LogFilePath = logFilePath.ToString();
                             }
-
-                            object debugLogFilePath = key.GetValue("DebugLogFilePath");
-                            if (debugLogFilePath != null)
+                            
+                            object debugLogFilePathRegistry = key.GetValue("DebugLogFilePath");
+                            if (debugLogFilePathRegistry != null)
                             {
-                                settings.DebugLogFilePath = debugLogFilePath.ToString();
+                                settings.DebugLogFilePath = debugLogFilePathRegistry.ToString();
                             }
-
-                            object templatePath = key.GetValue("DrawingTemplatePath");
-                            if (templatePath != null)
+                            
+                            object drawingTemplatePath = key.GetValue("DrawingTemplatePath");
+                            if (drawingTemplatePath != null)
                             {
-                                settings.DrawingTemplatePath = templatePath.ToString();
+                                settings.DrawingTemplatePath = drawingTemplatePath.ToString();
                             }
                         }
                     }
-                }
-                
-                // Initialize or update instance ThicknessMapping from static ThicknessMappings
-                if (settings != null)
-                {
-                    // Make sure the instance has a dictionary
-                    if (settings.ThicknessMapping == null)
-                    {
-                        settings.ThicknessMapping = new Dictionary<double, double>();
-                    }
-                    
-                    // If the static dictionary has mappings, copy to instance
-                    if (ThicknessMappings != null && ThicknessMappings.Count > 0)
-                    {
-                        settings.ThicknessMapping.Clear();
-                        foreach (var mapping in ThicknessMappings)
-                        {
-                            settings.ThicknessMapping[mapping.Key] = mapping.Value;
-                        }
-                    }
+                    // Save the newly created settings (with registry fallbacks) to establish the local XML
+                    settings.SaveSettings();
                 }
             }
-            catch (Exception ex) // Catch specific exception
+            catch (Exception ex)
             {
-                // Log the exception that occurred during settings load
-                Debug.WriteLine($"[DEBUG] CRITICAL ERROR loading settings: {ex.Message}\nStackTrace: {ex.StackTrace}");
-                // Attempt to use the main logger, but be cautious as it might also fail
-                try { Logger.Error("Failed to load application settings.", ex); } catch { }
-                
-                // If any error occurs, return a new settings object with defaults
+                // Log error, create new settings object with defaults
+                Logger.Error("Error loading settings from XML/Registry", ex);
+                settings = new Settings();
+            }
+            
+            // Ensure settings object exists
+            if (settings == null)
+            {
+                Logger.Warning("Settings object was null after XML/Registry load attempts. Creating new default settings.");
                 settings = new Settings();
             }
 
-            return settings ?? new Settings();
+            // Load PDM shared data (PropertyStandards and SettingsVersion)
+            // Pass the static PdmVaultForSettings
+            settings.LoadPdmSharedData(PdmVaultForSettings); 
+
+            // Load other non-serialized lists if necessary (e.g., from their own files or defaults)
+            // PropertyMappings and MaterialMappings are already handled by their static Load methods
+            // if they are called elsewhere (e.g., in SettingsFormV2)
+            // settings.PropertyMappings = LoadPropertyMappings(); // Example if they were instance properties
+            // settings.MaterialMappings = LoadMaterialMappings(); // Example
+
+            // Load Thickness Mappings (static, but might be initialized here too)
+            LoadThicknessMappings(); // This loads into the static ThicknessMappings dictionary
+
+            return settings;
+        }
+
+        private void LoadPdmSharedData(IEdmVault5 vault)
+        {
+            PdmSharedSettings sharedData = null;
+            
+            if (vault == null || !vault.IsLoggedIn)
+            {
+                Logger.Warning("LoadPdmSharedData: PDM vault is not available or not logged in. Using local defaults/creating new.");
+                sharedData = new PdmSharedSettings(); // Use defaults
+                // Potentially try to load from a local cache if PDM is unavailable, or just use defaults.
+                // For now, we'll just proceed with defaults which might then be populated by LoadDefaultPropertyStandardsStatic.
+            }
+            else
+            {
+                try
+                {
+                    IEdmFolder5 pdmFolder = null;
+                    IEdmFile5 pdmFile = vault.GetFileFromPath(PdmPropertyStandardsAndVersionPath, out pdmFolder);
+
+                    if (pdmFile != null)
+                    {
+                        // Get the latest version of the file
+                        // The 0 for ParentWndHandle means no UI will be shown on errors by GetFileCopy itself
+                        pdmFile.GetFileCopy(0, pdmFile.CurrentVersion, PdmPropertyStandardsAndVersionPath); // ParentWndHandle is int, 0 is fine.
+                        Logger.Info($"Retrieved latest version ({pdmFile.CurrentVersion}) of PDM shared settings file: {PdmPropertyStandardsAndVersionPath}");
+                    }
+                    else
+                    {
+                        Logger.Warning($"PDM shared settings file does not exist in vault at: '{PdmPropertyStandardsAndVersionPath}'. Will attempt to create it on next save if settings are modified.");
+                        // File doesn't exist in PDM, so proceed with defaults. It will be created on first save via SettingsForm.
+                    }
+                }
+                catch (System.Runtime.InteropServices.COMException comEx)
+                {
+                    Logger.Error($"PDM COMException during GetFileFromPath or GetFileCopy for '{PdmPropertyStandardsAndVersionPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})", comEx);
+                    // Fallback to defaults if PDM access fails.
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error during PDM file retrieval for '{PdmPropertyStandardsAndVersionPath}': {ex.Message}", ex);
+                    // Fallback to defaults.
+                }
+            }
+
+            // Proceed with deserialization attempt regardless of PDM success (might be using local copy or defaults)
+            if (File.Exists(PdmPropertyStandardsAndVersionPath))
+            {
+                try
+                {
+                    XmlSerializer serializer = new XmlSerializer(typeof(PdmSharedSettings));
+                    using (FileStream stream = new FileStream(PdmPropertyStandardsAndVersionPath, FileMode.Open, FileAccess.Read)) // Open with Read access
+                    {
+                        sharedData = (PdmSharedSettings)serializer.Deserialize(stream);
+                    }
+                    Logger.Info($"Successfully deserialized shared settings from: {PdmPropertyStandardsAndVersionPath}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error deserializing shared settings from '{PdmPropertyStandardsAndVersionPath}': {ex.Message}", ex);
+                    sharedData = new PdmSharedSettings(); 
+                }
+            }
+            else
+            {
+                Logger.Warning($"Local shared settings file not found after PDM ops: '{PdmPropertyStandardsAndVersionPath}'. Using default values.");
+                sharedData = new PdmSharedSettings(); 
+            }
+
+            this.SettingsVersion = sharedData.SettingsVersion ?? "25.1"; 
+            this.PropertyStandards = sharedData.PropertyStandards ?? new List<PropertyStandardSetting>();
+
+            if (this.PropertyStandards.Count == 0)
+            {
+                Logger.Info("No property standards found in PDM shared settings or local file. Loading hardcoded default standards into current instance.");
+                LoadDefaultPropertyStandardsStatic(this.PropertyStandards); 
+            }
+        }
+        
+        public static bool SavePdmSharedSettings(IEdmVault5 vault, string settingsVersion, List<PropertyStandardSetting> standards)
+        {
+            if (vault == null || !vault.IsLoggedIn)
+            {
+                Logger.Error("SavePdmSharedSettings: PDM vault is not available or not logged in. Cannot save shared settings to PDM.");
+                // Optionally, save to a local cache or inform user appropriately.
+                return false;
+            }
+
+            IEdmFile5 pdmFile = null;
+            IEdmFolder5 pdmFolder = null;
+            bool wasCheckedOutByThisOperation = false;
+            long parentWndHandle = GetSolidWorksWindowHandle();
+            string currentPdmUserName = null;
+
+            // Get current PDM user name
+            try
+            {
+                IEdmVault7 vault7 = vault as IEdmVault7; // Try to cast to IEdmVault7 or higher
+                if (vault7 != null)
+                {
+                    IEdmUserMgr5 userMgr = vault7.CreateUtility(EdmUtility.EdmUtil_UserMgr) as IEdmUserMgr5;
+                    if (userMgr != null)
+                    {
+                        IEdmUser5 pdmUser = userMgr.GetLoggedInUser();
+                        if (pdmUser != null)
+                        {
+                            currentPdmUserName = pdmUser.Name;
+                            Logger.Info($"SavePdmSharedSettings: Current PDM User: {currentPdmUserName}");
+                        }
+                        else { Logger.Warning("SavePdmSharedSettings: Could not retrieve IEdmUser5 object for current PDM user."); }
+                    }
+                    else { Logger.Warning("SavePdmSharedSettings: Could not create IEdmUserMgr5 utility from vault7."); }
+                }
+                else
+                {
+                    // Removed the direct call to vault.GetLoggedInUser() as it's not on IEdmVault5
+                    Logger.Warning("SavePdmSharedSettings: Could not cast pdmVault to IEdmVault7 (or newer). Unable to get PDM user name via CreateUtility.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"SavePdmSharedSettings: Error getting current PDM user name: {ex.Message}");
+            }
+
+
+            try
+            {
+                pdmFile = vault.GetFileFromPath(PdmPropertyStandardsAndVersionPath, out pdmFolder);
+
+                if (pdmFile == null)
+                {
+                    // File doesn't exist, so it will be added on check-in.
+                    // We need to ensure the local directory exists to write the file before adding.
+                    string directory = Path.GetDirectoryName(PdmPropertyStandardsAndVersionPath);
+                    if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                    {
+                        Directory.CreateDirectory(directory);
+                    }
+                    Logger.Info($"PDM shared settings file does not exist in vault. It will be created locally at '{PdmPropertyStandardsAndVersionPath}' and added.");
+                    // No need to checkout if file doesn't exist in PDM yet.
+                }
+                else
+                {
+                    // File exists, check it out
+                    if (!pdmFile.IsLocked)
+                    {
+                        // parentWndHandle needs to be int for LockFile
+                        pdmFile.LockFile(pdmFolder.ID, (int)parentWndHandle, (int)EdmLockFlag.EdmLock_Simple);
+                        wasCheckedOutByThisOperation = true;
+                        Logger.Info($"Checked out PDM shared settings file: {PdmPropertyStandardsAndVersionPath}");
+                    }
+                    // else if (pdmFile.IsLockedByMe) // CS1061: IEdmFile5 has no IsLockedByMe
+                    else if (pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && pdmFile.LockedByUser.Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Info($"PDM shared settings file '{PdmPropertyStandardsAndVersionPath}' is already locked by the current user ('{currentPdmUserName}').");
+                    }
+                    else
+                    {
+                        string lockedByUserName = pdmFile.IsLocked ? pdmFile.LockedByUser.Name : "Unknown User";
+                        Logger.Error($"PDM shared settings file '{PdmPropertyStandardsAndVersionPath}' is locked by another user: {lockedByUserName}. Current user: '{currentPdmUserName ?? "Unknown"}'. Cannot save.");
+                        MessageBox.Show($"Settings file '{PdmPropertyStandardsAndVersionPath}' is locked by user '{lockedByUserName}'. Cannot save changes.", "File Locked", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return false;
+                    }
+                }
+                
+                // Serialize and write the file locally (PDM GetFileCopy on load should have put it in the right place)
+                PdmSharedSettings sharedData = new PdmSharedSettings
+                {
+                    SettingsVersion = settingsVersion,
+                    PropertyStandards = standards ?? new List<PropertyStandardSetting>()
+                };
+
+                XmlSerializer serializer = new XmlSerializer(typeof(PdmSharedSettings));
+                using (FileStream stream = new FileStream(PdmPropertyStandardsAndVersionPath, FileMode.Create, FileAccess.Write)) // Create/Overwrite with Write access
+                {
+                    serializer.Serialize(stream, sharedData);
+                }
+                Logger.Info($"Successfully wrote shared settings to local file: {PdmPropertyStandardsAndVersionPath}");
+
+                // Check in the file
+                if (pdmFile == null && pdmFolder != null) // File was newly created locally and needs to be added to PDM
+                {
+                     // parentWndHandle needs to be int for AddFile
+                     pdmFolder.AddFile((int)parentWndHandle, PdmPropertyStandardsAndVersionPath, "Added initial property standards and version file.");
+                     Logger.Info($"Added new shared settings file to PDM: {PdmPropertyStandardsAndVersionPath}");
+                     // After adding, get the file object to check it in if AddFile doesn't do it automatically or if further check-in comments are desired.
+                     // This step might need refinement based on EPDM API specifics for AddFile + CheckIn.
+                     // For now, we assume AddFile makes it available. If it needs explicit check-in:
+                     pdmFile = vault.GetFileFromPath(PdmPropertyStandardsAndVersionPath, out pdmFolder); // Re-get the file
+                     if (pdmFile != null) {
+                         // parentWndHandle needs to be int for UnlockFile
+                         pdmFile.UnlockFile((int)parentWndHandle, "Initial check-in of property standards and version file.");
+                         Logger.Info($"Checked in newly added shared settings file: {PdmPropertyStandardsAndVersionPath}");
+                     }
+                }
+                // else if (pdmFile != null && pdmFile.IsLockedByMe)
+                else if (pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && pdmFile.LockedByUser.Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                {
+                    // parentWndHandle needs to be int for UnlockFile
+                    pdmFile.UnlockFile((int)parentWndHandle, "Updated property standards and version.");
+                    wasCheckedOutByThisOperation = false; // No longer checked out by this op
+                    Logger.Info($"Checked in PDM shared settings file: {PdmPropertyStandardsAndVersionPath}");
+                }
+                return true;
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                Logger.Error($"PDM COMException during save/checkout/checkin for '{PdmPropertyStandardsAndVersionPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})", comEx);
+                 MessageBox.Show($"A PDM error occurred while saving settings: {comEx.Message}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                // TODO: Potentially undo checkout if save failed and wasCheckedOutByThisOperation is true
+                // if (wasCheckedOutByThisOperation && pdmFile != null) pdmFile.UndoLockFile(parentWndHandle);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error saving PDM shared settings to '{PdmPropertyStandardsAndVersionPath}': {ex.Message}", ex);
+                MessageBox.Show($"An error occurred while saving settings: {ex.Message}", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                // TODO: Potentially undo checkout if save failed
+                // if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLockedByMe) pdmFile.UndoLockFile(parentWndHandle);
+                return false;
+            }
+            finally
+            {
+                // Ensure file is unlocked if an unexpected error occurred during write & PDM check-in wasn't reached,
+                // but only if this operation actually checked it out.
+                // if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLockedByMe)
+                if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && pdmFile.LockedByUser.Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        Logger.Warning($"Attempting to undo checkout for {PdmPropertyStandardsAndVersionPath} due to an error or incomplete save.");
+                        // parentWndHandle needs to be int for UndoLockFile
+                        pdmFile.UndoLockFile((int)parentWndHandle);
+                    }
+                    catch (Exception undoEx) { Logger.Error($"Failed to auto-undo PDM checkout: {undoEx.Message}"); }
+                }
+            }
+        }
+        
+        private static long GetSolidWorksWindowHandle()
+        {
+            try
+            {
+                if (SwAppForPDM != null)
+                {
+                    Frame swFrame = SwAppForPDM.Frame() as Frame;
+                    if (swFrame != null)
+                    {
+                        return (long)swFrame.GetHWnd();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"Error getting SolidWorks main window handle: {ex.Message}. Falling back to 0.");
+            }
+            return 0; // Fallback if SW window can't be obtained
         }
 
         public static void SavePropertyMappings(List<PropertyMapping> mappings)
@@ -561,65 +858,10 @@ namespace RoesleinAddIn
         }
 
         // --- Methods for PropertyStandards (similar to PropertyMappings) ---
-        public static void SavePropertyStandards(List<PropertyStandardSetting> standards)
-        {
-            try
-            {
-                string directory = Path.GetDirectoryName(DefaultPropertyStandardsPath);
-                if (!Directory.Exists(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-
-                using (FileStream stream = new FileStream(DefaultPropertyStandardsPath, FileMode.Create))
-                {
-                    XmlSerializer serializer = new XmlSerializer(typeof(List<PropertyStandardSetting>));
-                    serializer.Serialize(stream, standards);
-                }
-            }
-            catch (Exception ex)
-            {
-                // Log or handle the exception appropriately
-                Debug.WriteLine($"Error saving property standards: {ex.Message}");
-            }
-        }
-
-        public static List<PropertyStandardSetting> LoadPropertyStandards()
-        {
-            List<PropertyStandardSetting> standards = new List<PropertyStandardSetting>();
-            if (File.Exists(DefaultPropertyStandardsPath))
-            {
-                try
-                {
-                    using (FileStream stream = new FileStream(DefaultPropertyStandardsPath, FileMode.Open))
-                    {
-                        XmlSerializer serializer = new XmlSerializer(typeof(List<PropertyStandardSetting>));
-                        standards = (List<PropertyStandardSetting>)serializer.Deserialize(stream);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"Error loading property standards: {ex.Message}");
-                    standards = new List<PropertyStandardSetting>(); 
-                }
-            }
-            
-            // Populate with defaults if the file didn't exist or was empty
-            if (standards == null || standards.Count == 0) // Ensure standards is not null before checking Count
-            {
-                if (standards == null) standards = new List<PropertyStandardSetting>(); // Initialize if null
-                LoadDefaultPropertyStandardsStatic(standards); // Uncommented and call the static helper
-            }
-            return standards;
-        }
-
-        // Example static default loader (can be called from LoadPropertyStandards)
         private static void LoadDefaultPropertyStandardsStatic(List<PropertyStandardSetting> standardsList)
         {
-            standardsList.Clear(); 
-            // int idCounter = 1; // No longer needed as constructor doesn't take ID
-            
-            // Use object initializer syntax with the parameterless constructor
+            if (standardsList == null) standardsList = new List<PropertyStandardSetting>();
+            standardsList.Clear(); // Clear existing before adding defaults
             standardsList.Add(new PropertyStandardSetting { PropertyName = "Part Number",           UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
             standardsList.Add(new PropertyStandardSetting { PropertyName = "Description",           UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
             standardsList.Add(new PropertyStandardSetting { PropertyName = "Revision",              UseDefaultValue = false, DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true });
@@ -646,19 +888,87 @@ namespace RoesleinAddIn
 
         public static List<RawMaterial> LoadRawMaterial()
         {
+            // Updated to use the new PDM CSV loading logic
+            // The specific path should ideally be configurable or a constant.
+            string pdmCsvPath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\Raw Material SheetMetal.csv";
+            Logger.Info($"LoadRawMaterial (static) is now attempting to load from PDM CSV: {pdmCsvPath}");
+            List<RawMaterial> materials = LoadRawMaterialsFromPdmCsv(pdmCsvPath);
+
+            if (materials == null || materials.Count == 0)
+            {
+                Logger.Warning($"LoadRawMaterial (static) did not find any materials in PDM CSV: {pdmCsvPath}. Returning empty list.");
+                return new List<RawMaterial>(); // Return empty list instead of null
+            }
+            return materials;
+        }
+
+        public static List<RawMaterial> LoadRawMaterialsFromPdmCsv(string csvFilePath)
+        {
+            var rawMaterials = new List<RawMaterial>();
+            if (!File.Exists(csvFilePath))
+            {
+                Logger.Error($"Raw material CSV file not found at: {csvFilePath}");
+                return rawMaterials; // Return empty list, not null
+            }
+
             try
             {
-                var settings = LoadSettings();
-                if (settings != null)
+                var lines = File.ReadAllLines(csvFilePath);
+                if (lines.Length <= 1) // Header + at least one data row
                 {
-                    return settings.RawMaterials;
+                    Logger.Warning($"Raw material CSV file is empty or contains only a header: {csvFilePath}");
+                    return rawMaterials; // Return empty list
                 }
+
+                // Assuming the first line is the header
+                // "PartNumber,LegacyPartNumber,Material,Thickness,Description,TotalSqInch,SheetLength,SheetHeight,LastCost"
+                // We'll map by known property names of RawMaterial class for flexibility,
+                // but for this implementation, we'll assume a fixed order for simplicity matching the typical CSV export.
+                // A more robust solution would map columns by header names.
+
+                for (int i = 1; i < lines.Length; i++) // Skip header row
+                {
+                    var line = lines[i];
+                    if (string.IsNullOrWhiteSpace(line)) continue; // Skip empty lines
+
+                    var values = line.Split(',');
+
+                    if (values.Length < 9) // Ensure enough columns for critical data
+                    {
+                        Logger.Warning($"Skipping malformed line {i + 1} in CSV {csvFilePath}. Expected at least 9 columns, got {values.Length}. Line: {line}");
+                        continue;
+                    }
+
+                    try
+                    {
+                        var material = new RawMaterial
+                        {
+                            PartNumber = values[0].Trim(),
+                            LegacyPartNumber = values[1].Trim(),
+                            Material = values[2].Trim(),
+                            Thickness = double.TryParse(values[3].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out double thk) ? thk : 0.0,
+                            Description = values[4].Trim(),
+                            TotalSqInch = double.TryParse(values[5].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out double sqInch) ? sqInch : 0.0,
+                            Length = double.TryParse(values[6].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out double sLength) ? sLength : 0.0,
+                            Width = double.TryParse(values[7].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out double sHeight) ? sHeight : 0.0,
+                            LastCost = decimal.TryParse(values[8].Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out decimal cost) ? cost : 0.0m,
+                            UnitOfMeasure = "EA" // Default or determine from elsewhere if needed
+                        };
+                        rawMaterials.Add(material);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"Error parsing line {i + 1} in CSV {csvFilePath}: {line}. Error: {ex.Message}");
+                    }
+                }
+                Logger.Info($"Successfully loaded {rawMaterials.Count} raw materials from CSV: {csvFilePath}");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error loading raw materials: {ex.Message}");
+                Logger.Error($"Failed to read or parse raw material CSV file {csvFilePath}. Error: {ex.Message}");
+                // Return whatever was loaded before the error, or an empty list if the error was at the start.
             }
-            return new List<RawMaterial>();
+            return rawMaterials;
         }
 
         public class RawMaterial
@@ -669,9 +979,29 @@ namespace RoesleinAddIn
             public double Thickness { get; set; }
             public string Description { get; set; }
             public double TotalSqInch { get; set; }
-            public double SheetLength { get; set; }
-            public double SheetHeight { get; set; }
+            public double Length { get; set; }
+            public double Width { get; set; }
             public decimal LastCost { get; set; }
+            public string UnitOfMeasure { get; set; }
+
+            public RawMaterial() // Add a parameterless constructor for XML serialization if ever needed directly
+            {
+                UnitOfMeasure = "EA"; // Default
+            }
+        }
+    }
+
+    // New PdmSharedSettings class definition
+    [Serializable]
+    public class PdmSharedSettings
+    {
+        public string SettingsVersion { get; set; }
+        public List<PropertyStandardSetting> PropertyStandards { get; set; }
+
+        public PdmSharedSettings()
+        {
+            SettingsVersion = "25.1"; // Default if file doesn't exist or version is missing
+            PropertyStandards = new List<PropertyStandardSetting>();
         }
     }
 } 

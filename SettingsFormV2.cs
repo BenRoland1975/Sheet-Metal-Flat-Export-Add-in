@@ -439,12 +439,25 @@ namespace RoesleinAddIn
         {
             if (dgvPropertyStandards == null) { Logger.DebugLog("LoadPropertyStandardsData: dgvPropertyStandards is null."); return; }
 
-            List<PropertyStandardSetting> standards = Settings.LoadPropertyStandards(); // Load from XML first
+            // MODIFIED: Load from currentGeneralSettings instance after it's loaded
+            if (this.currentGeneralSettings == null)
+            {
+                Logger.Error("LoadPropertyStandardsData: currentGeneralSettings is null. Cannot load property standards. Ensure Settings.LoadSettings() was called and successful.");
+                // Optionally, load settings here if not already done, or show an error.
+                // this.currentGeneralSettings = Settings.LoadSettings(); // Example: Load if not already loaded
+                // if (this.currentGeneralSettings == null) { /* Handle error */ return; }
+                MessageBox.Show("Could not load property standards because general settings are not available.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                dgvPropertyStandards.DataSource = new BindingList<PropertyStandardSetting>(); // Show empty grid
+                return;
+            }
+
+            List<PropertyStandardSetting> standards = this.currentGeneralSettings.PropertyStandards;
 
             if (standards == null || standards.Count == 0)
             {
-                Logger.DebugLog("No property standards found in XML or XML missing/corrupt. Loading default standards.");
-                // If XML is empty or not found, populate with defaults
+                Logger.DebugLog("No property standards found in loaded settings (PDM/XML/Defaults). Populating with hardcoded defaults for the grid display.");
+                // If PropertyStandards list is empty after loading (e.g. from new PdmSharedSettings or failed load),
+                // populate with defaults for the UI. Settings.cs handles default population for the actual settings data.
                 standards = new List<PropertyStandardSetting>
                 {
                     new PropertyStandardSetting { UseDefaultValue = true,  PropertyName = "Part Number",           DefaultValueExpr = "",                                IsCustomProperty = true, IsConfigSpecific = true, UseOnPartFiles = true,  UseOnAssemblyFiles = true,  UseOnDrawingFiles = true },
@@ -911,6 +924,53 @@ namespace RoesleinAddIn
                 Logger.DebugLog($"SaveRawSheetData: Writing CSV content to local PDM path: {localPath}");
                 File.WriteAllText(localPath, csvContent, Encoding.UTF8); // Use UTF-8 for writing
 
+                // ---- START: Populate currentGeneralSettings.RawMaterials ----
+                if (this.currentGeneralSettings != null)
+                {
+                    this.currentGeneralSettings.RawMaterials = new List<Settings.RawMaterial>(); // Clear or initialize
+                    if (dgvRawSheet.DataSource is BindingList<RawSheetData> currentDataList)
+                    {
+                        Logger.DebugLog($"SaveRawSheetData: Populating currentGeneralSettings.RawMaterials with {currentDataList.Count} items.");
+                        foreach (RawSheetData csvItem in currentDataList)
+                        {
+                            try
+                            {
+                                var settingsItem = new Settings.RawMaterial
+                                {
+                                    PartNumber = csvItem.PartNumber,
+                                    LegacyPartNumber = csvItem.LegacyPartNumber,
+                                    Material = csvItem.Material,
+                                    Thickness = (double)csvItem.Thickness, // Convert decimal to double
+                                    Description = csvItem.Description,
+                                    TotalSqInch = (double)csvItem.TotalSQInch, // Convert decimal to double
+                                    Length = (double)csvItem.SheetLengthInch, // Corrected: Map SheetLengthInch to Length
+                                    Width = (double)csvItem.SheetHeightInch, // Corrected: Map SheetHeightInch to Width
+                                    LastCost = csvItem.LastCost // decimal to decimal
+                                    // UnitOfMeasure is now part of Settings.RawMaterial, ensure it's set if needed.
+                                    // If RawSheetData doesn't have it, Settings.RawMaterial constructor default will be used.
+                                };
+                                this.currentGeneralSettings.RawMaterials.Add(settingsItem);
+                            }
+                            catch (Exception exConv)
+                            {
+                                Logger.DebugLog($"SaveRawSheetData: Error converting RawSheetData item '{csvItem.PartNumber}' to Settings.RawMaterial: {exConv.Message}");
+                                // Optionally, decide if one bad row should stop all, or just skip this one.
+                            }
+                        }
+                        Logger.DebugLog($"SaveRawSheetData: Successfully populated currentGeneralSettings.RawMaterials with {this.currentGeneralSettings.RawMaterials.Count} items.");
+                    }
+                    else
+                    {
+                        Logger.DebugLog("SaveRawSheetData: dgvRawSheet.DataSource was not BindingList<RawSheetData> when attempting to populate currentGeneralSettings.RawMaterials.");
+                    }
+                }
+                else
+                {
+                    Logger.DebugLog("SaveRawSheetData: currentGeneralSettings was null. Cannot populate RawMaterials list in settings object.");
+                    // This would be a more critical error, as SaveSettings() would later fail or save an empty object if it relies on this.
+                }
+                // ---- END: Populate currentGeneralSettings.RawMaterials ----
+
                 // Check in the file
                 // Comment for check-in: "Updated raw material data via Roeslein Add-in"
                 edmFile.UnlockFile((int)parentWinHandle, "Updated raw material data via Roeslein Add-in", 0); // 0 for no flags
@@ -1043,7 +1103,7 @@ namespace RoesleinAddIn
             SavePropertyMappings();
             SaveMaterialMappings();
             SaveThicknessMappings();
-            SavePropertyStandardsData();
+            // SavePropertyStandardsData(); // Removed: This is handled by btnSaveFileProp_Click on its specific tab
 
             // --- BEGIN: Added logic to transfer RawSheetData to currentGeneralSettings.RawMaterials ---
             if (this.currentGeneralSettings != null && dgvRawSheet.DataSource is BindingList<RawSheetData> rawSheetDataList)
@@ -1063,10 +1123,11 @@ namespace RoesleinAddIn
                         // TotalSqInch in Settings.RawMaterial is double, RawSheetData.TotalSQInch is decimal
                         TotalSqInch = Convert.ToDouble(sheetData.TotalSQInch),
                         // SheetLength in Settings.RawMaterial is double, RawSheetData.SheetLengthInch is decimal
-                        SheetLength = Convert.ToDouble(sheetData.SheetLengthInch),
+                        Length = Convert.ToDouble(sheetData.SheetLengthInch), // Corrected: Map SheetLengthInch to Length
                         // SheetHeight in Settings.RawMaterial is double, RawSheetData.SheetHeightInch is decimal
-                        SheetHeight = Convert.ToDouble(sheetData.SheetHeightInch),
+                        Width = Convert.ToDouble(sheetData.SheetHeightInch), // Corrected: Map SheetHeightInch to Width
                         LastCost = sheetData.LastCost // LastCost is decimal in both
+                        // UnitOfMeasure will use the default from Settings.RawMaterial constructor if not set here explicitly
                     });
                 }
                 Logger.DebugLog($"Transferred {this.currentGeneralSettings.RawMaterials.Count} entries from dgvRawSheet to currentGeneralSettings.RawMaterials.");
@@ -1403,18 +1464,53 @@ namespace RoesleinAddIn
                 return;
             }
 
+            // Added null checks for pdmVault and currentGeneralSettings before proceeding
+            if (this.pdmVault == null)
+            {
+                Logger.Error("SavePropertyStandardsData: pdmVault is null. Cannot save PDM shared settings.");
+                MessageBox.Show("PDM Vault connection is not available. Cannot save property standards to PDM.", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (this.currentGeneralSettings == null)
+            {
+                Logger.Error("SavePropertyStandardsData: currentGeneralSettings is null. Cannot get SettingsVersion to save PDM shared settings.");
+                MessageBox.Show("General settings are not loaded. Cannot determine settings version to save property standards.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
             try
             {
                 // Ensure any pending edits are committed to the DataSource
-                dgvPropertyStandards.EndEdit(); 
+                dgvPropertyStandards.EndEdit();
 
-                if (dgvPropertyStandards.DataSource is BindingList<PropertyStandardSetting> standardsList)
+                if (dgvPropertyStandards.DataSource is BindingList<PropertyStandardSetting> standardsListBinding)
                 {
-                    // The BindingList itself contains the current state of the data in the grid.
-                    // So, we can directly pass this list to the static save method.
-                    Settings.SavePropertyStandards(standardsList.ToList()); // Pass a copy if SavePropertyStandards modifies the list, or if BindingList itself is not desired for saving.
-                    Logger.Info("Property standards saved successfully.");
-                    MessageBox.Show("Property standards saved successfully.", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    List<PropertyStandardSetting> standardsToSave = standardsListBinding.ToList();
+                    string currentVersion = this.currentGeneralSettings.SettingsVersion;
+
+                    if (string.IsNullOrEmpty(currentVersion))
+                    {
+                        Logger.Warning("SavePropertyStandardsData: SettingsVersion is empty in currentGeneralSettings. Using default '25.1' for saving.");
+                        currentVersion = "25.1"; // Fallback, though LoadSettings should provide one.
+                    }
+
+                    // MODIFIED: Call the new static save method in Settings.cs
+                    bool saveSuccess = Settings.SavePdmSharedSettings(this.pdmVault, currentVersion, standardsToSave);
+
+                    if (saveSuccess)
+                    {
+                        Logger.Info("Property standards saved successfully to PDM.");
+                        MessageBox.Show("Property standards saved successfully to PDM.", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        // After saving to PDM, update the currentGeneralSettings instance to reflect changes
+                        this.currentGeneralSettings.PropertyStandards = standardsToSave;
+                        this.currentGeneralSettings.SettingsVersion = currentVersion; // Ensure version is also consistent
+                    }
+                    else
+                    {
+                        Logger.Error("Failed to save property standards to PDM (SavePdmSharedSettings returned false).");
+                        MessageBox.Show("Failed to save property standards to PDM. Please check logs for details.", "PDM Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
                 }
                 else
                 {

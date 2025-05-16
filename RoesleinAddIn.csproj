@@ -38,6 +38,10 @@
     <ApplicationIcon>Resources\RoesleinConnex_freestyle_bold.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <Reference Include="EPDM.Interop.epdm">
+      <HintPath>..\..\..\..\..\Program Files\Solidworks 2023\SOLIDWORKS PDM\EPDM.Interop.epdm.dll</HintPath>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </Reference>
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="SolidWorks.Interop.sldworks">
       <HintPath>SolidWorksReferences\SolidWorks.Interop.sldworks.dll</HintPath>
@@ -54,10 +58,6 @@
     </Reference>
     <Reference Include="SolidWorks.Interop.swpublished">
       <HintPath>SolidWorksReferences\SolidWorks.Interop.swpublished.dll</HintPath>
-      <EmbedInteropTypes>False</EmbedInteropTypes>
-    </Reference>
-    <Reference Include="EPDM.Interop.epdm">
-      <HintPath>SolidWorksReferences\EPDM.Interop.epdm.dll</HintPath>
       <EmbedInteropTypes>False</EmbedInteropTypes>
     </Reference>
     <Reference Include="System" />

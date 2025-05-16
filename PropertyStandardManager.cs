@@ -111,7 +111,7 @@ namespace RoesleinAddIn
             }
 
             // Load the standards (consider loading only when needed)
-            List<PropertyStandardSetting> allStandards = Settings.LoadPropertyStandards();
+            List<PropertyStandardSetting> allStandards = Settings.LoadSettings().PropertyStandards;
             if (allStandards == null || allStandards.Count == 0)
             {
                 swApp.SendMsgToUser2("No property standards are defined. Please configure them in the add-in settings.", (int)swMessageBoxIcon_e.swMbInformation, (int)swMessageBoxBtn_e.swMbOk);
@@ -594,6 +594,18 @@ namespace RoesleinAddIn
                         propertiesSkippedCount++; // Increment skip count for config properties without active config
                     }
                 }
+            }
+
+            // --- Set the Roeslein Standards Version property using the version from settings ---
+            string standardsVersion = Settings.LoadSettings().SettingsVersion;
+            if (!string.IsNullOrEmpty(standardsVersion))
+            {
+                swCustPropMgr.Add3("Roeslein Standards Version", (int)swCustomInfoType_e.swCustomInfoText, standardsVersion, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                if (swConfPropMgr != null)
+                {
+                    swConfPropMgr.Add3("Roeslein Standards Version", (int)swCustomInfoType_e.swCustomInfoText, standardsVersion, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                }
+                Logger.Info($"Set 'Roeslein Standards Version' property to '{standardsVersion}' on summary and active config.");
             }
         }
 
@@ -1101,26 +1113,23 @@ namespace RoesleinAddIn
                         Logger.Warning("Bounding box length or width is zero, area cannot be calculated accurately.");
                     }
 
-                    string rawMaterialPN = rawMaterialSettingsMatch.PartNumber;
-                    string unitOfMeasureValue = "SI"; // Changed from SQ IN to SI
-                    string areaValue = boundingBoxArea.ToString("F2", CultureInfo.InvariantCulture); // Format to 2 decimal places
-                    string rawMaterialDescription = rawMaterialSettingsMatch.Description ?? ""; // Get description, ensure not null
+                    string areaValue = boundingBoxArea.ToString("F2", CultureInfo.InvariantCulture);
+                    string partNumber = rawMaterialSettingsMatch.PartNumber;
+                    string unitOfMeasure = rawMaterialSettingsMatch.UnitOfMeasure ?? "EA";
+                    string description = rawMaterialSettingsMatch.Description ?? "";
 
-                    List<CustomPropertyManager> propManagersToUpdate = new List<CustomPropertyManager>();
+                    // Set properties on summary tab using corrected names/values
+                    CustomPropertyManager modelPropMgr = swModel.Extension.CustomPropertyManager[""];
+                    modelPropMgr.Add3("Raw Material Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                    modelPropMgr.Add3("Unit of Measurement", (int)swCustomInfoType_e.swCustomInfoText, "SI", (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                    modelPropMgr.Add3("legacy Part Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                    modelPropMgr.Add3("Legacy Unit of Measure", (int)swCustomInfoType_e.swCustomInfoText, unitOfMeasure, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                    modelPropMgr.Add3("Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                    modelPropMgr.Add3("Legacy Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                    modelPropMgr.Add3("Raw Material Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                    modelPropMgr.Add3("legacy Part Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
 
-                    // Add summary properties manager
-                    CustomPropertyManager summaryPropMgr = swModel.Extension.CustomPropertyManager[""];
-                    if (summaryPropMgr != null)
-                    {
-                        propManagersToUpdate.Add(summaryPropMgr);
-                        Logger.Info("Added Summary CustomPropertyManager for updates.");
-                    }
-                    else
-                    {
-                        Logger.Warning("Could not get Summary CustomPropertyManager.");
-                    }
-
-                    // Get all configuration names
+                    // Set properties on all configurations using corrected names/values
                     string[] configNames = (string[])swModel.GetConfigurationNames();
                     if (configNames != null)
                     {
@@ -1128,158 +1137,20 @@ namespace RoesleinAddIn
                         {
                             if (string.IsNullOrEmpty(configName)) continue;
                             CustomPropertyManager configPropMgr = swModel.Extension.CustomPropertyManager[configName];
-                            if (configPropMgr != null)
-                            {
-                                propManagersToUpdate.Add(configPropMgr);
-                                Logger.Info($"Added CustomPropertyManager for configuration '{configName}' for updates.");
-                            }
-                            else
-                            {
-                                Logger.Warning($"Could not get CustomPropertyManager for configuration: {configName}");
-                            }
+                            configPropMgr.Add3("Raw Material Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Unit of Measurement", (int)swCustomInfoType_e.swCustomInfoText, "SI", (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("legacy Part Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Legacy Unit of Measure", (int)swCustomInfoType_e.swCustomInfoText, unitOfMeasure, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Legacy Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Raw Material Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("legacy Part Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                         }
                     }
-                    else
-                    {
-                        Logger.Warning("Could not retrieve configuration names.");
-                    }
-                    
-                    int successCount = 0;
-                    int attemptCount = 0;
 
-                    foreach (CustomPropertyManager propMgr in propManagersToUpdate)
-                    {
-                        // Determine the target name for logging
-                        string currentConfigNameForMgr = ""; // Default to summary
-                        bool isSummaryManager = true; // Assume summary unless found in specific configs
-
-                        if (propMgr != summaryPropMgr) // If it's not the explicitly stored summaryPropMgr
-                        {
-                            // Try to find which config this manager belongs to. 
-                            // This is a bit indirect; a cleaner way would be to store pairs of (configName, propMgr)
-                            // For now, iterate configNames again to identify it for logging.
-                            if (configNames != null) {
-                                foreach (string cn in configNames) {
-                                    if (propMgr == swModel.Extension.CustomPropertyManager[cn]) {
-                                        currentConfigNameForMgr = cn;
-                                        isSummaryManager = false;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        // If after checks, currentConfigNameForMgr is still empty, it implies it's the summaryPropMgr or couldn't be matched.
-                        // The summaryPropMgr should have been caught by propMgr == summaryPropMgr directly.
-                        // If propMgr != summaryPropMgr but currentConfigNameForMgr is still empty, it's an edge case or error.
-
-                        string logTargetName;
-                        if (isSummaryManager) {
-                            logTargetName = "Summary Tab";
-                        }
-                        else if (!string.IsNullOrEmpty(currentConfigNameForMgr)) {
-                            logTargetName = $"Configuration '{currentConfigNameForMgr}'";
-                        }
-                        else {
-                            // Fallback if a specific config manager couldn't be named (should ideally not happen with current loop structure)
-                            logTargetName = "Unknown Specific Configuration"; 
-                            Logger.Warning("Could not determine specific configuration name for a CustomPropertyManager instance during logging.");
-                        }
-
-                        Logger.Info($"Attempting to update properties for: {logTargetName}");
-
-                        // 1. Raw Material Number
-                        attemptCount++;
-                        int addResultPN = propMgr.Add3(
-                            "Raw Material Number", // Changed name
-                            (int)swCustomInfoType_e.swCustomInfoText,
-                            rawMaterialPN,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-                        if (addResultPN == 0) successCount++; else Logger.Warning($"Failed to set 'Raw Material Number' for {logTargetName}. Result: {addResultPN}");
-
-                        // 2. Unit of Measurement
-                        attemptCount++;
-                        int addResultUOM = propMgr.Add3(
-                            "Unit of Measurement", // Changed name
-                            (int)swCustomInfoType_e.swCustomInfoText,
-                            unitOfMeasureValue,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-                        if (addResultUOM == 0) successCount++; else Logger.Warning($"Failed to set 'Unit of Measurement' for {logTargetName}. Result: {addResultUOM}");
-
-                        // 3. legacy Part Number
-                        attemptCount++;
-                        int addResultLegacyPN = propMgr.Add3(
-                            "legacy Part Number",
-                            (int)swCustomInfoType_e.swCustomInfoText,
-                            rawMaterialPN,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-                        if (addResultLegacyPN == 0) successCount++; else Logger.Warning($"Failed to set 'legacy Part Number' for {logTargetName}. Result: {addResultLegacyPN}");
-
-                        // 4. Legacy Unit of Measure
-                        attemptCount++;
-                        int addResultLegacyUOM = propMgr.Add3(
-                            "Legacy Unit of Measure",
-                            (int)swCustomInfoType_e.swCustomInfoText,
-                            unitOfMeasureValue,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-                        if (addResultLegacyUOM == 0) successCount++; else Logger.Warning($"Failed to set 'Legacy Unit of Measure' for {logTargetName}. Result: {addResultLegacyUOM}");
-
-                        // 5. Raw Mat Amount
-                        attemptCount++;
-                        int addResultRawAmount = propMgr.Add3(
-                            "Raw Mat Amount",
-                            (int)swCustomInfoType_e.swCustomInfoText,
-                            areaValue,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-                        if (addResultRawAmount == 0) successCount++; else Logger.Warning($"Failed to set 'Raw Mat Amount' for {logTargetName}. Result: {addResultRawAmount}");
-
-                        // 6. Legacy Raw Mat Amount
-                        attemptCount++;
-                        int addResultLegacyRawAmount = propMgr.Add3(
-                            "Legacy Raw Mat Amount",
-                            (int)swCustomInfoType_e.swCustomInfoText,
-                            areaValue,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-                        if (addResultLegacyRawAmount == 0) successCount++; else Logger.Warning($"Failed to set 'Legacy Raw Mat Amount' for {logTargetName}. Result: {addResultLegacyRawAmount}");
-
-                        // 7. Raw Material Description
-                        attemptCount++;
-                        int addResultRawDesc = propMgr.Add3(
-                            "Raw Material Description",
-                            (int)swCustomInfoType_e.swCustomInfoText,
-                            rawMaterialDescription,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-                        if (addResultRawDesc == 0) successCount++; else Logger.Warning($"Failed to set 'Raw Material Description' for {logTargetName}. Result: {addResultRawDesc}");
-
-                        // 8. legacy Part Description
-                        attemptCount++;
-                        int addResultLegacyDesc = propMgr.Add3(
-                            "legacy Part Description",
-                            (int)swCustomInfoType_e.swCustomInfoText,
-                            rawMaterialDescription,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-                        if (addResultLegacyDesc == 0) successCount++; else Logger.Warning($"Failed to set 'legacy Part Description' for {logTargetName}. Result: {addResultLegacyDesc}");
-                    }
-
-                    if (attemptCount > 0 && successCount == attemptCount)
-                    {
-                        Logger.Info($"Successfully updated all {successCount}/{attemptCount} raw material related properties across applicable property managers.");
-                        rawMaterialPropertiesUpdated = true;
-                        rawMaterialMessage = $"Raw Material PN {rawMaterialPN} (UOM: {unitOfMeasureValue}, Area: {areaValue}, Desc: {rawMaterialDescription}) applied to all configurations.";
-                        return true;
-                    }
-                    else if (successCount > 0)
-                    {
-                         Logger.Warning($"Partially updated raw material properties: {successCount} out of {attemptCount} succeeded across applicable property managers.");
-                         rawMaterialPropertiesUpdated = true; // Still true if some succeeded
-                         rawMaterialMessage = $"Partially applied Raw Material PN {rawMaterialPN}. Check logs for details.";
-                         return false; // Return false as not all operations were successful
-                    }
-                    else
-                    {
-                        Logger.Warning($"Failed to update any raw material properties across applicable property managers. Success: {successCount}/{attemptCount}");
-                        rawMaterialMessage = $"Found match ({rawMaterialPN}), but failed to write any properties. Check logs.";
-                        return false;
-                    }
+                    rawMaterialPropertiesUpdated = true;
+                    rawMaterialMessage = $"Raw Material PN {partNumber} (UOM: {unitOfMeasure}) and all legacy/raw material properties applied to summary tab and all configurations.";
+                    return true;
                 }
                 else
                 {
@@ -1331,13 +1202,21 @@ namespace RoesleinAddIn
                     }
                 }
 
+                // --- DEBUG LOGGING FOR MATCHING ---
+                foreach (var rm in rawMaterials)
+                {
+                    Logger.Info($"Candidate: Mat='{rm.Material}', Thk='{rm.Thickness}', L={rm.Length}, W={rm.Width}");
+                    Logger.Info($"  Material match: {string.Equals(rm.Material.Trim(), normalizedPartMaterial, StringComparison.OrdinalIgnoreCase)}");
+                    Logger.Info($"  Thickness diff: {Math.Abs(rm.Thickness - thickness)} (tolerance {thicknessTolerance})");
+                    Logger.Info($"  Length ok: {rm.Length} >= {length} = {rm.Length >= length}, Width ok: {rm.Width} >= {width} = {rm.Width >= width}");
+                }
+                // --- END DEBUG LOGGING ---
+
                 var matches = rawMaterials.Where(rm =>
                     string.Equals(rm.Material.Trim(), normalizedPartMaterial, StringComparison.OrdinalIgnoreCase) &&
-                    // Match thickness (with tolerance for floating point comparison)
                     Math.Abs(rm.Thickness - thickness) < thicknessTolerance &&
-                    // Ensure our part fits within the sheet dimensions
-                    rm.SheetLength >= length &&
-                    rm.SheetHeight >= width
+                    rm.Length >= length &&
+                    rm.Width >= width
                 ).ToList();
 
                 if (matches.Count == 0)
@@ -1350,7 +1229,7 @@ namespace RoesleinAddIn
 
                 // If we have multiple matches, get the smallest sheet that fits our part
                 var bestMatch = matches
-                    .OrderBy(m => m.SheetLength * m.SheetHeight) // Order by sheet area
+                    .OrderBy(m => m.Length * m.Width) // Order by sheet area
                     .FirstOrDefault();
 
                 // Convert Settings.RawMaterial to RawMaterialMatch
@@ -1361,9 +1240,10 @@ namespace RoesleinAddIn
                         PartNumber = bestMatch.PartNumber,
                         Material = bestMatch.Material,
                         Thickness = bestMatch.Thickness,
-                        SheetLength = bestMatch.SheetLength,
-                        SheetHeight = bestMatch.SheetHeight,
-                        Description = bestMatch.Description
+                        Length = bestMatch.Length,
+                        Width = bestMatch.Width,
+                        Description = bestMatch.Description,
+                        UnitOfMeasure = bestMatch.UnitOfMeasure
                     };
                 }
 
@@ -1384,9 +1264,10 @@ namespace RoesleinAddIn
             public string PartNumber { get; set; }
             public string Material { get; set; }
             public double Thickness { get; set; }
-            public double SheetLength { get; set; }
-            public double SheetHeight { get; set; }
+            public double Length { get; set; }
+            public double Width { get; set; }
             public string Description { get; set; }
+            public string UnitOfMeasure { get; set; }
         }
 
         /// <summary>
@@ -1611,6 +1492,50 @@ namespace RoesleinAddIn
                 Logger.Error($"Error in EnsureSheetMetalCutList: {ex.Message}");
                 return false;
             }
+        }
+
+        public void SetPdmVault(IEdmVault5 pdmVault)
+        {
+            this.pdmVault = pdmVault;
+        }
+
+        private Settings.RawMaterial FindRawMaterialMatch(double length, double width, double thicknessInches)
+        {
+            if (currentSettings.RawMaterials == null || !currentSettings.RawMaterials.Any())
+            {
+                this.LogMessage("RawMaterials list is empty or null. Cannot find match.");
+                return null;
+            }
+            this.LogMessage($"Finding raw material for L={length}, W={width}, Thickness={thicknessInches} (inches). Tolerance for thickness: +/- {currentSettings.ThicknessToleranceInches}");
+
+            double dim1 = Math.Max(length, width); 
+            double dim2 = Math.Min(length, width); 
+
+            foreach (var material in currentSettings.RawMaterials)
+            {
+                double matDim1 = Math.Max(material.Length, material.Width);
+                double matDim2 = Math.Min(material.Length, material.Width);
+
+                bool thicknessMatch = Math.Abs(material.Thickness - thicknessInches) <= currentSettings.ThicknessToleranceInches;
+                bool dimensionsMatch = (dim1 >= matDim1 && dim2 >= matDim2);
+
+                if (thicknessMatch && dimensionsMatch)
+                {
+                    this.LogMessage($"Match found: CSV L={material.Length}, W={material.Width}, T={material.Thickness} with Part L={length}, W={width}, T_Cutlist={thicknessInches}. Ordered part dims: D1={dim1}, D2={dim2}. Ordered mat dims: M1={matDim1}, M2={matDim2}");
+                    return material;
+                }
+                else if (thicknessMatch) 
+                {
+                    this.LogMessage($"Thickness match for PartNo {material.PartNumber} (T={material.Thickness}), but dimensions no match: Part Dims (ordered) Lrg={dim1}, Sml={dim2}. Material Dims (ordered) Lrg={matDim1}, Sml={matDim2}.");
+                }
+            }
+            this.LogMessage("No suitable raw material found in the list for the given dimensions and thickness.");
+            return null;
+        }
+
+        private void LogMessage(string message)
+        {
+            System.Diagnostics.Debug.WriteLine($"[PropertyStandardManager] {DateTime.Now:yyyy-MM-dd HH:mm:ss}: {message}");
         }
     }
 } 

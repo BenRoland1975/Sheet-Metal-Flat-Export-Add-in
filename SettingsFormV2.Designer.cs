@@ -86,6 +86,9 @@
             this.lblRosleinVersonLabel = new System.Windows.Forms.Label();
             this.lblVersionNumber = new System.Windows.Forms.Label();
             this.lblCopyright = new System.Windows.Forms.Label();
+            this.txtSettingsVersion = new System.Windows.Forms.TextBox();
+            this.lblSettingsVersion = new System.Windows.Forms.Label();
+            this.lblSettingsVersionNote = new System.Windows.Forms.Label();
             this.tabControl1.SuspendLayout();
             this.GeneralSettings.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
@@ -548,6 +551,9 @@
             // 
             // tpStandardsSettings
             // 
+            this.tpStandardsSettings.Controls.Add(this.lblSettingsVersionNote);
+            this.tpStandardsSettings.Controls.Add(this.lblSettingsVersion);
+            this.tpStandardsSettings.Controls.Add(this.txtSettingsVersion);
             this.tpStandardsSettings.Controls.Add(this.lblDefautFileProp);
             this.tpStandardsSettings.Controls.Add(this.BtnAddNewFileProp);
             this.tpStandardsSettings.Controls.Add(this.btnSaveFileProp);
@@ -705,6 +711,33 @@
             this.lblCopyright.TabIndex = 7;
             this.lblCopyright.Text = "Copyright";
             // 
+            // txtSettingsVersion
+            // 
+            this.txtSettingsVersion.Location = new System.Drawing.Point(105, 440);
+            this.txtSettingsVersion.Name = "txtSettingsVersion";
+            this.txtSettingsVersion.Size = new System.Drawing.Size(100, 20);
+            this.txtSettingsVersion.TabIndex = 32;
+            // 
+            // lblSettingsVersion
+            // 
+            this.lblSettingsVersion.AutoSize = true;
+            this.lblSettingsVersion.Location = new System.Drawing.Point(13, 443);
+            this.lblSettingsVersion.Name = "lblSettingsVersion";
+            this.lblSettingsVersion.Size = new System.Drawing.Size(86, 13);
+            this.lblSettingsVersion.TabIndex = 33;
+            this.lblSettingsVersion.Text = "Settings Version:";
+            // 
+            // lblSettingsVersionNote
+            // 
+            this.lblSettingsVersionNote.AutoSize = true;
+            this.lblSettingsVersionNote.ForeColor = System.Drawing.SystemColors.AppWorkspace;
+            this.lblSettingsVersionNote.Location = new System.Drawing.Point(211, 447);
+            this.lblSettingsVersionNote.Name = "lblSettingsVersionNote";
+            this.lblSettingsVersionNote.Size = new System.Drawing.Size(389, 13);
+            this.lblSettingsVersionNote.TabIndex = 34;
+            this.lblSettingsVersionNote.Text = "This is places on each file and is used to see if the file has been checked alrea" +
+    "dy";
+            // 
             // SettingsFormV2
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
@@ -801,5 +834,8 @@
         private System.Windows.Forms.Button BtnAddNewRawSheet;
         private System.Windows.Forms.Button btnSaveRawSheet;
         private System.Windows.Forms.Label lblRawSheet;
+        private System.Windows.Forms.TextBox txtSettingsVersion;
+        private System.Windows.Forms.Label lblSettingsVersionNote;
+        private System.Windows.Forms.Label lblSettingsVersion;
     }
 }

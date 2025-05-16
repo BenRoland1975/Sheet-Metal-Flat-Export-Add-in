@@ -122,6 +122,8 @@ namespace RoesleinAddIn
         {
             try
             {
+                // Initial WriteToLog might go to default debug output or a default log file
+                // if logger isn't configured yet. This is acceptable for initial trace.
                 WriteToLog("=== ConnectToSW Started ===");
                 Debug.WriteLine("=== ConnectToSW Started ===");
 
@@ -131,28 +133,19 @@ namespace RoesleinAddIn
 
                 // Set callback info
                 bool result = swApp.SetAddinCallbackInfo2(0, this, addinID);
-                WriteToLog($"SetAddinCallbackInfo2 result: {result}");
+                // WriteToLog($"SetAddinCallbackInfo2 result: {result}"); // Log after logger config
 
                 // Create path to add-in assembly
                 addinPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-                WriteToLog($"Add-in path: {addinPath}");
-                WriteToLog($"Add-in path exists: {Directory.Exists(addinPath)}");
+                // WriteToLog($"Add-in path: {addinPath}"); // Log after logger config
+                // WriteToLog($"Add-in path exists: {Directory.Exists(addinPath)}"); // Log after logger config
 
-                // Create processors
-                processor = new SheetMetalProcessor(swApp);
-                bomProcessor = new BomProcessor(swApp);
-                propertyStandardManager = new PropertyStandardManager(swApp, pdmVault);
-
-                // Attempt to connect to PDM Vault for the active document
-                TryConnectToPdmVaultForActiveDoc();
-
-                // Add the CommandManager
-                AddCommandMgr();
-
-                // ---- Configure Logger AFTER processor creation ----
+                // ---- Configure Logger EARLY ----
                 try
                 {
-                    WriteToLog("Attempting to configure global logger...");
+                    // This WriteToLog might still be pre-config if called before SetLogFilePath etc.
+                    // However, the critical part is that Logger.Instance itself is configured.
+                    WriteToLog("Attempting to configure global logger..."); 
                     var settings = Settings.LoadSettings();
 
                     if (settings != null)
@@ -168,34 +161,56 @@ namespace RoesleinAddIn
                             {
                                 debugLogPath = Path.Combine(
                                     System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments),
-                                    "RoesleinAddIn_Debug.log"
+                                    "RoesleinAddIn_Debug.log" // Default debug log path
                                 );
                             }
                             Logger.Instance.SetDebugLogPath(debugLogPath);
-                            WriteToLog($"Logger configured: Enabled={settings.LoggingEnabled}, DebugEnabled={settings.DebugLoggingEnabled}, Path={settings.LogFilePath}, DebugPath={debugLogPath}");
+                            // Now that paths are set, this log message should go to the right place.
+                            Logger.Info($"Logger configured: Enabled={settings.LoggingEnabled}, DebugEnabled={settings.DebugLoggingEnabled}, Path={settings.LogFilePath}, DebugPath={debugLogPath}");
                         }
                         else
                         {
                             Logger.Instance.SetSettingsEnabled(false); 
                             Logger.Instance.SetDebugEnabled(false);    
-                            WriteToLog("Logger disabled due to empty/invalid log file path in settings.");
+                            Logger.Warning("Logger disabled due to empty/invalid log file path in settings.");
                         }
                     }
                     else
                     {
-                        WriteToLog("Could not load settings to configure logger. Using defaults or previous state.");
+                         Logger.Warning("Could not load settings to configure logger. Using defaults or previous state. Ensure RoesleinAddInSettings.xml is accessible.");
                     }
                 }
                 catch (Exception exLogger)
                 {
-                    WriteToLog($"ERROR configuring logger: {exLogger.Message}");
+                    // Use Debug.WriteLine as a fallback if Logger itself fails.
+                    Debug.WriteLine($"CRITICAL ERROR configuring logger: {exLogger.Message}");
                     try { 
-                        Logger.Instance.SetSettingsEnabled(false);
+                        Logger.Instance.SetSettingsEnabled(false); // Attempt to disable to prevent further issues
                         Logger.Instance.SetDebugEnabled(false);
-                    } catch { }
+                    } catch { /* nested catch to prevent further exceptions */ }
                 }
-                // -----------------------------------------------------
+                // ----------------------------------
 
+                // Log early messages now that logger should be configured
+                WriteToLog($"SetAddinCallbackInfo2 result: {result}");
+                WriteToLog($"Add-in path: {addinPath}");
+                WriteToLog($"Add-in path exists: {Directory.Exists(addinPath)}");
+
+                // Create processors
+                processor = new SheetMetalProcessor(swApp);
+                bomProcessor = new BomProcessor(swApp);
+
+                // Attempt to connect to PDM Vault for the active document
+                // Logs from TryConnectToPdmVaultForActiveDoc (via WriteToLog) should now go to the configured debug log.
+                TryConnectToPdmVaultForActiveDoc(); 
+                
+                // Instantiate PropertyStandardManager AFTER attempting to connect to PDM
+                // Logs from PropertyStandardManager constructor should now go to the configured logs.
+                propertyStandardManager = new PropertyStandardManager(swApp, pdmVault);
+
+                // Add the CommandManager
+                AddCommandMgr();
+                
                 WriteToLog("=== ConnectToSW Completed ===");
                 return true;
             }
@@ -203,6 +218,10 @@ namespace RoesleinAddIn
             {
                 WriteToLog($"ERROR in ConnectToSW: {ex.Message}");
                 WriteToLog($"StackTrace: {ex.StackTrace}");
+                Debug.WriteLine($"FATAL ERROR in ConnectToSW: {ex.Message}");
+                Debug.WriteLine($"StackTrace: {ex.StackTrace}");
+                // Consider a user message if ConnectToSW fails catastrophically
+                // swApp.SendMsgToUser2($"Critical Add-in Initialization Failed: {ex.Message}", (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
                 return false;
             }
         }
@@ -861,11 +880,24 @@ namespace RoesleinAddIn
             try
             {
                 WriteToLog("ApplyPropertyStandards command invoked.");
+
+                // Ensure PDM vault connection is attempted/refreshed for the current active document
+                TryConnectToPdmVaultForActiveDoc(); 
+
                 if (propertyStandardManager == null)
                 {
-                    // Should be initialized in ConnectToSW, but as a fallback:
-                    propertyStandardManager = new PropertyStandardManager(swApp, pdmVault as IEdmVault5); 
+                    // Fallback: Should have been initialized in ConnectToSW, 
+                    // but if not, create it now with the potentially just-updated pdmVault.
+                    Logger.Warning("ApplyPropertyStandards: propertyStandardManager was null. Re-initializing.");
+                    propertyStandardManager = new PropertyStandardManager(swApp, this.pdmVault as IEdmVault5); 
                 }
+                else
+                {
+                    // Update the existing PropertyStandardManager instance with the latest PDM vault status
+                    propertyStandardManager.SetPdmVault(this.pdmVault as IEdmVault5);
+                }
+                
+                // Now, proceed with applying standards
                 propertyStandardManager.ApplyStandardsToActiveDocument();
             }
             catch (Exception ex)
@@ -900,17 +932,16 @@ namespace RoesleinAddIn
         {
             try
             {
-                // First try to output to debugger console (Visual Studio)
-                Debug.WriteLine($"[DEBUG] {message}");
+                // Output to Visual Studio's debug console unconditionally for development
+                Debug.WriteLine($"[RoesleinAddIn DEBUG] {message}");
                 
-                // Use the Logger class for all logging
+                // Use the Logger class for all persistent logging
                 if (Logger.Instance != null)
                 {
-                    // Only log if debug logging is enabled in settings
-                    if (Logger.Instance.IsDebugEnabled())
-                    {
-                        Logger.DebugLog(message);
-                    }
+                    // Logger.DebugLog will internally check if debug logging is enabled.
+                    // If paths are not set, it might log to a default location or not at all,
+                    // depending on Logger's internal implementation.
+                    Logger.DebugLog(message); 
                 }
             }
             catch
@@ -925,25 +956,27 @@ namespace RoesleinAddIn
         {
             if (swApp == null)
             {
-                WriteToLog("PDM: SolidWorks application not available. Cannot connect to PDM vault.");
+                // Use Logger.Warning for conditions that prevent operation but aren't necessarily critical errors.
+                Logger.Warning("PDM: SolidWorks application not available. Cannot connect to PDM vault.");
                 return;
             }
 
             ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
             if (swModel == null)
             {
-                WriteToLog("PDM: No active SolidWorks document. PDM connection not attempted for a specific file.");
+                Logger.Info("PDM: No active SolidWorks document. PDM connection not attempted for a specific file at this time.");
+                // It's not an error if no doc is open, PDM might be connected later or not needed.
                 return;
             }
 
             string filePath = swModel.GetPathName();
             if (string.IsNullOrEmpty(filePath))
             {
-                WriteToLog("PDM: Active SolidWorks document is not saved. PDM connection not attempted for this file.");
+                Logger.Info("PDM: Active SolidWorks document is not saved. PDM connection not attempted for this file.");
                 return;
             }
 
-            WriteToLog($"PDM: Attempting to connect to vault for file: '{filePath}'");
+            Logger.Info($"PDM: Attempting to connect to vault for file: '{filePath}'");
             try
             {
                 // Instantiate EdmVault5 class, which is the CoClass for IEdmVault5 and can provide other interfaces.
@@ -988,12 +1021,13 @@ namespace RoesleinAddIn
             }
             catch (System.Runtime.InteropServices.COMException comEx)
             {
-                WriteToLog($"PDM: COM Exception during PDM connection for '{filePath}'. HRESULT: {comEx.ErrorCode:X}, Message: {comEx.Message}. Ensure PDM interops are correctly registered and version compatible.");
+                // Use Logger.Error for actual errors.
+                Logger.Error($"PDM: COM Exception during PDM connection for '{filePath}'. HRESULT: {comEx.ErrorCode:X}, Message: {comEx.Message}. Ensure PDM interops are correctly registered and version compatible.");
                 this.pdmVault = null;
             }
             catch (Exception ex)
             {
-                WriteToLog($"PDM: General exception during PDM connection for '{filePath}': {ex.Message}");
+                Logger.Error($"PDM: General exception during PDM connection for '{filePath}': {ex.Message}");
                 this.pdmVault = null;
             }
         }
