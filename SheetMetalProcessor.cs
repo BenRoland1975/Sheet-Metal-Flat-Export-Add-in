@@ -1029,7 +1029,7 @@ namespace RoesleinAddIn
                     propMgr.Add3("Sheet Metal Thickness", 
                                (int)swCustomInfoType_e.swCustomInfoText, 
                                formattedThickness, 
-                               (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                               (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
 
                     // Also update these properties to match Ben's macro
                     // BEN ROLAND - 2024-07-26: Commented out next line to use existing Part Number property instead of filename.
@@ -1070,7 +1070,7 @@ namespace RoesleinAddIn
             if (!string.IsNullOrEmpty(value))
             {
                 propMgr.Add3(propName, (int)swCustomInfoType_e.swCustomInfoText, value,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                            (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                 
                 Logger.Info($"Updated {propName}: {value}");
             }

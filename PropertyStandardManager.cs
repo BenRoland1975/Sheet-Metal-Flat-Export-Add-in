@@ -1,1541 +1,985 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using SolidWorks.Interop.sldworks;
-using SolidWorks.Interop.swconst;
-using EPDM.Interop.epdm;
+using System;
 using System.Diagnostics;
 using System.IO;
-using System.Globalization;
+using System.Windows.Forms;
+using System.Reflection;
+using SolidWorks.Interop.swconst;
+using EPDM.Interop.epdm;
+using System.Linq;
+using System.Collections.Generic;
+using System.Text;
 
 namespace RoesleinAddIn
 {
+    /// <summary>
+    /// Helper class to track files that need to be checked out for standards application
+    /// </summary>
+    public class FileCheckoutInfo
+    {
+        public EPDM.Interop.epdm.IEdmFile5 File { get; set; }
+        public EPDM.Interop.epdm.IEdmFolder5 Folder { get; set; }
+        public string Path { get; set; }
+        public string FileName => System.IO.Path.GetFileName(Path);
+        public bool IsAlreadyCheckedOut { get; set; }
+        public bool StandardsApplied { get; set; }
+        public ModelDoc2 Document { get; set; }
+    }
+
+    /// <summary>
+    /// Manages applying property standards to SolidWorks files, including PDM checkout.
+    /// </summary>
     public class PropertyStandardManager
     {
         private ISldWorks swApp;
-        private IEdmVault5 pdmVault;
-        private Settings currentSettings;
+        private EPDM.Interop.epdm.IEdmVault5 pdmVault;
+        private string logFilePath;
 
-        // Add counters for statistics
-        private int propertiesCheckedCount = 0;
-        private int propertiesAddedCount = 0;
-        private int propertiesUpdatedCount = 0;
-        private int propertiesSkippedCount = 0;
-        
-        // Material mapping statistics
-        private bool isSheetMetalPart = false;
-        private bool materialMappingPerformed = false;
-        private string originalMaterial = "";
-        private string mappedMaterial = "";
-        private bool materialMappingSuccess = false;
-        private bool materialIsMissing = false;
-        
-        // Add cut list check status properties
-        private bool cutListCheckPerformed = false;
-        private bool cutListFound = false;
-        private bool cutListAutoUpdateEnabled = false;
-
-        // Raw Material processing statistics
-        private bool rawMaterialProcessingAttempted = false;
-        private bool rawMaterialMatchFound = false;
-        private bool rawMaterialPropertiesUpdated = false;
-        private string rawMaterialMessage = "";
-        
-        public PropertyStandardManager(ISldWorks swApp, IEdmVault5 pdmVault)
+        public PropertyStandardManager(EPDM.Interop.epdm.IEdmVault5 vault, ISldWorks application, string debugLogFilePath = null)
         {
-            this.swApp = swApp;
-            this.pdmVault = pdmVault;
-            // Load settings when the manager is created
-            this.currentSettings = Settings.LoadSettings();
-            // Load property standards separately as they are in their own file
-            // We might load this list on demand in the Apply method instead, depending on usage.
-            // For now, let's assume we load it here or pass it in.
-            propertiesUpdatedCount = 0;
-            propertiesSkippedCount = 0;
+            swApp = application;
+            pdmVault = vault;
             
-            // Reset material mapping stats
-            isSheetMetalPart = false;
-            materialMappingPerformed = false;
-            originalMaterial = "";
-            mappedMaterial = "";
-            materialMappingSuccess = false;
-            materialIsMissing = false;
-            
-            // Reset cut list check stats
-            cutListCheckPerformed = false;
-            cutListFound = false;
-            cutListAutoUpdateEnabled = false;
+            logFilePath = debugLogFilePath;
+            LogMessage("PropertyStandardManager initialized" + (pdmVault != null ? " with PDM Vault connection." : " without PDM Vault connection."));
+        }
+        
+        // Add logging functionality
+        private void LogMessage(string message)
+        {
+            try
+            {
+                // First output to debug for immediate developer visibility
+                Debug.WriteLine($"[PropertyStandardManager] {message}");
+                
+                // Then use the proper Logger class to ensure logging settings are respected
+                Logger.DebugLog(message);
+                
+                // Additional logging to custom log file if path was specifically provided
+                if (!string.IsNullOrEmpty(logFilePath))
+                {
+                    string logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}";
+                    File.AppendAllText(logFilePath, logEntry + System.Environment.NewLine);
+                }
+            }
+            catch
+            {
+                // Silent fail for logging
+            }
+        }
 
-            // Reset Raw Material stats
-            rawMaterialProcessingAttempted = false;
-            rawMaterialMatchFound = false;
-            rawMaterialPropertiesUpdated = false;
-            rawMaterialMessage = "";
+        // Get the SolidWorks main window handle
+        private int GetSolidWorksMainWindowHandle()
+        {
+            try
+            {
+                if (swApp != null)
+                {
+                    IFrame swFrame = swApp.Frame() as IFrame;
+                    if (swFrame != null)
+                    {
+                        return swFrame.GetHWnd();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error getting SW window handle: {ex.Message}");
+            }
+            LogMessage("Could not get SolidWorks main window handle, returning 0.");
+            return 0;
         }
 
         /// <summary>
-        /// Applies the defined property standards to the currently active SolidWorks document.
+        /// Applies property standards to the active document.
+        /// Checks out the file from PDM if necessary and if the "Roeslein Standards Version" property is missing or outdated.
         /// </summary>
-        public void ApplyStandardsToActiveDocument()
+        /// <param name="swModel">The SolidWorks model document.</param>
+        /// <param name="currentStandardsVersion">The current version string of the Roeslein Standards.</param>
+        /// <param name="silentMode">If true, suppresses UI messages (not fully implemented for PDM interactions yet).</param>
+        /// <returns>True if standards were successfully applied (or file was already compliant/not in PDM), false otherwise.</returns>
+        public bool ApplyStandardsToActiveDocument(ModelDoc2 swModel, string currentStandardsVersion, bool silentMode = false)
         {
-            // Reset counters for new operation
-            propertiesCheckedCount = 0;
-            propertiesAddedCount = 0;
-            propertiesUpdatedCount = 0;
-            propertiesSkippedCount = 0;
-            
-            // Reset material mapping stats
-            isSheetMetalPart = false;
-            materialMappingPerformed = false;
-            originalMaterial = "";
-            mappedMaterial = "";
-            materialMappingSuccess = false;
-            materialIsMissing = false;
-            
-            // Reset cut list check stats
-            cutListCheckPerformed = false;
-            cutListFound = false;
-            cutListAutoUpdateEnabled = false;
-            
-            // Reset Raw Material stats
-            rawMaterialProcessingAttempted = false;
-            rawMaterialMatchFound = false;
-            rawMaterialPropertiesUpdated = false;
-            rawMaterialMessage = "";
-            
-            ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
             if (swModel == null)
             {
-                swApp.SendMsgToUser2("Please open a Part, Assembly, or Drawing file first.", (int)swMessageBoxIcon_e.swMbWarning, (int)swMessageBoxBtn_e.swMbOk);
-                return;
-            }
-
-            // Load the standards (consider loading only when needed)
-            List<PropertyStandardSetting> allStandards = Settings.LoadSettings().PropertyStandards;
-            if (allStandards == null || allStandards.Count == 0)
-            {
-                swApp.SendMsgToUser2("No property standards are defined. Please configure them in the add-in settings.", (int)swMessageBoxIcon_e.swMbInformation, (int)swMessageBoxBtn_e.swMbOk);
-                return;
+                LogMessage("ApplyStandardsToActiveDocument: No active SolidWorks model provided.");
+                if (!silentMode) MessageBox.Show("No active document.", "Property Standards", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
             }
 
             string filePath = swModel.GetPathName();
             if (string.IsNullOrEmpty(filePath))
             {
-                swApp.SendMsgToUser2("The file needs to be saved before applying property standards.", (int)swMessageBoxIcon_e.swMbWarning, (int)swMessageBoxBtn_e.swMbOk);
-                return;
-            }
-
-            // --- Determine Document Type ---
-            swDocumentTypes_e docType = (swDocumentTypes_e)swModel.GetType();
-
-            // --- Filter Standards based on Document Type ---
-            List<PropertyStandardSetting> applicableStandards = FilterStandardsByDocType(allStandards, docType);
-
-            if (applicableStandards.Count == 0)
-            {
-                swApp.SendMsgToUser2("No applicable property standards found for this document type.", (int)swMessageBoxIcon_e.swMbInformation, (int)swMessageBoxBtn_e.swMbOk);
-                return;
-            }
-
-            // --- PDM Check Out (Implementation needed) ---
-            // bool wasCheckedOut = false; // Commented out: CS0219 - Assigned but never used yet
-            // TODO: Check PDM status, check out if necessary using pdmVault
-            // IEdmFile5 edmFile = pdmVault.GetFileFromPath(filePath, out _); // Example
-            // if (edmFile != null && !edmFile.IsLocked) { /* ... edmFile.LockFile(...); wasCheckedOut = true; ... */ } 
-
-            try
-            {
-                // First check and update material for sheet metal parts if needed
-                if (docType == swDocumentTypes_e.swDocPART)
-                {
-                    CheckAndMapMaterial(swModel);
-                }
-                
-                // --- Apply Properties ---
-                ApplyFilteredStandards(swModel, applicableStandards);
-
-                // Build a detailed message with statistics
-                string completionMsg = $"Property standard check complete.\n" +
-                                      $"Properties checked: {propertiesCheckedCount}\n" +
-                                      $"Properties added: {propertiesAddedCount}\n" +
-                                      $"Properties updated: {propertiesUpdatedCount}\n" +
-                                      $"Properties skipped: {propertiesSkippedCount}";
-                
-                // Add material mapping info if it was performed
-                if (materialMappingPerformed)
-                {
-                    completionMsg += $"\n\nSheet Metal Material Check:";
-                    if (materialIsMissing)
-                    {
-                        completionMsg += $"\nWARNING: No material assigned to part.";
-                    }
-                    else if (materialMappingSuccess)
-                    {
-                        if (!string.IsNullOrEmpty(originalMaterial) && originalMaterial != mappedMaterial)
-                        {
-                            completionMsg += $"\nMaterial was successfully mapped from non-standard to standard name.";
-                            completionMsg += $"\nOriginal: {originalMaterial}";
-                            completionMsg += $"\nMapped to: {mappedMaterial}";
-                        }
-                        else
-                        {
-                            completionMsg += $"\nMaterial was already in the correct standard format.";
-                        }
-                    }
-                    else
-                    {
-                        completionMsg += $"\nWARNING: Material '{originalMaterial}' does not match any material mapping.";
-                        completionMsg += $"\nPlease update the material or add it to the Material Mappings.";
-                    }
-                }
-                
-                // Add cut list check info if it was performed
-                if (cutListCheckPerformed)
-                {
-                    completionMsg += $"\n\nSheet Metal Cut List Check:";
-                    if (cutListFound)
-                    {
-                        completionMsg += $"\nCut list was found and";
-                        if (cutListAutoUpdateEnabled)
-                        {
-                            completionMsg += $" automatic update is enabled.";
-                        }
-                        else
-                        {
-                            completionMsg += $" automatic update was reviewed/set.";
-                        }
-                    }
-                    else
-                    {
-                        completionMsg += $"\nNo cut list was found. Please add a cut list to this sheet metal part.";
-                    }
-                }
-
-                // Add Raw Material processing info if it was attempted
-                if (rawMaterialProcessingAttempted)
-                {
-                    completionMsg += $"\n\nRaw Material Matching:";
-                    if (!string.IsNullOrEmpty(rawMaterialMessage))
-                    {
-                        completionMsg += $"\n{rawMaterialMessage}";
-                    }
-                    else if (rawMaterialMatchFound && rawMaterialPropertiesUpdated)
-                    {
-                        completionMsg += $"\nSuccessfully matched raw material and updated properties.";
-                    }
-                    else if (rawMaterialMatchFound && !rawMaterialPropertiesUpdated)
-                    {
-                        completionMsg += $"\nFound a raw material match, but failed to update properties.";
-                    }
-                    else
-                    {
-                        completionMsg += $"\nNo matching raw material found or processing issue occurred.";
-                    }
-                }
-                
-                swApp.SendMsgToUser2(completionMsg, (int)swMessageBoxIcon_e.swMbInformation, (int)swMessageBoxBtn_e.swMbOk);
-            }
-            catch (Exception ex)
-            {
-                // Log error
-                Logger.Error("Error applying property standards", ex);
-                swApp.SendMsgToUser2($"An error occurred while applying property standards: {ex.Message}", (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
-            }
-            finally
-            {
-                // --- PDM Check In (Implementation needed) ---
-                // TODO: Check in the file if it was checked out by this process
-                // if (wasCheckedOut && edmFile != null && edmFile.IsLocked) { edmFile.UnlockFile(...); }
-            }
-        }
-
-        /// <summary>
-        /// Checks if the part is sheet metal and verifies/maps the material according to the Material Mappings
-        /// </summary>
-        private void CheckAndMapMaterial(ModelDoc2 swModel)
-        {
-            try
-            {
-                // Check if this is a sheet metal part
-                bool isSheetMetal = IsSheetMetalPart(swModel);
-                isSheetMetalPart = isSheetMetal;
-                
-                if (!isSheetMetal)
-                {
-                    Logger.Info("Not a sheet metal part, skipping material mapping check.");
-                    return;
-                }
-                
-                // First ensure the cut list is set up correctly
-                EnsureSheetMetalCutList(swModel);
-                
-                materialMappingPerformed = true;
-                
-                // Get the current material from the model
-                string currentMaterial = GetPartMaterial(swModel);
-                originalMaterial = currentMaterial;
-                
-                if (string.IsNullOrEmpty(currentMaterial))
-                {
-                    Logger.Warning("Sheet metal part has no material assigned.");
-                    materialIsMissing = true;
-                    return;
-                }
-                
-                // Extract the actual material name from pipe-separated format if needed
-                // Format is often: "Library|MaterialName|ID"
-                string normalizedMaterial = currentMaterial;
-                if (currentMaterial.Contains("|"))
-                {
-                    string[] parts = currentMaterial.Split('|');
-                    if (parts.Length >= 2)
-                    {
-                        // Use the middle part as the material name
-                        normalizedMaterial = parts[1].Trim();
-                        Logger.Info($"Extracted material name '{normalizedMaterial}' from '{currentMaterial}'");
-                    }
-                }
-                
-                // Load material mappings
-                List<MaterialMapping> materialMappings = Settings.LoadMaterialMappings();
-                if (materialMappings == null || materialMappings.Count == 0)
-                {
-                    Logger.Warning("No material mappings defined in settings.");
-                    return;
-                }
-                
-                // First check if the material is already in the DXF Output Material column
-                var exactMatch = materialMappings.FirstOrDefault(m => 
-                    string.Equals(m.DxfMaterial, normalizedMaterial, StringComparison.OrdinalIgnoreCase));
-                    
-                if (exactMatch != null)
-                {
-                    // Material is already in the correct format
-                    Logger.Info($"Material '{normalizedMaterial}' is already in the correct output format.");
-                    materialMappingSuccess = true;
-                    mappedMaterial = normalizedMaterial;
-                    return;
-                }
-                
-                // Check if the material is in the SolidWorks Material column and needs mapping
-                var matchToMap = materialMappings.FirstOrDefault(m => 
-                    string.Equals(m.SwMaterial, normalizedMaterial, StringComparison.OrdinalIgnoreCase));
-                    
-                if (matchToMap != null)
-                {
-                    // Found a mapping, update the material
-                    string targetMaterial = matchToMap.DxfMaterial;
-                    mappedMaterial = targetMaterial;
-                    
-                    // Update the material in the model
-                    bool success = SetPartMaterial(swModel, targetMaterial);
-                    
-                    if (success)
-                    {
-                        Logger.Info($"Updated material from '{currentMaterial}' to '{targetMaterial}'");
-                        materialMappingSuccess = true;
-                    }
-                    else
-                    {
-                        Logger.Error($"Failed to update material from '{currentMaterial}' to '{targetMaterial}'");
-                    }
-                    
-                    return;
-                }
-                
-                // If we get here, no mapping was found
-                Logger.Warning($"No material mapping found for '{currentMaterial}'.");
-                materialMappingSuccess = false;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error in CheckAndMapMaterial: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Checks if the part is a sheet metal part
-        /// </summary>
-        private bool IsSheetMetalPart(ModelDoc2 swModel)
-        {
-            try
-            {
-                int docType = swModel.GetType();
-                if (docType != (int)swDocumentTypes_e.swDocPART)
-                {
-                    return false;
-                }
-                
-                // Iterate through features looking for sheet metal features
-                Feature feat = swModel.FirstFeature() as Feature;
-                while (feat != null)
-                {
-                    string typeName = feat.GetTypeName2();
-                    if (typeName == "SheetMetal" || typeName == "SMBaseFlange")
-                    {
-                        return true;
-                    }
-                    feat = feat.GetNextFeature() as Feature;
-                }
-                
+                LogMessage("ApplyStandardsToActiveDocument: File has not been saved yet. Cannot perform PDM operations or apply standards that require a saved file.");
+                if (!silentMode) MessageBox.Show("The file must be saved before applying property standards.", "Property Standards", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return false;
             }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error checking if part is sheet metal: {ex.Message}");
-                return false;
-            }
-        }
 
-        /// <summary>
-        /// Gets the current material applied to the part
-        /// </summary>
-        private string GetPartMaterial(ModelDoc2 swModel)
-        {
-            try
-            {
-                if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
-                {
-                    return string.Empty;
-                }
-                
-                // Try to get material directly from the model
-                return swModel.MaterialIdName;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error getting part material: {ex.Message}");
-                return string.Empty;
-            }
-        }
+            LogMessage($"ApplyStandardsToActiveDocument started for: '{filePath}'. Current Standards Version: '{currentStandardsVersion}'");
 
-        /// <summary>
-        /// Sets the material for the part
-        /// </summary>
-        private bool SetPartMaterial(ModelDoc2 swModel, string materialName)
-        {
-            try
+            bool wasCheckedOutByThisProcess = false;
+            bool canWriteToFile = !swModel.IsOpenedReadOnly();
+            EPDM.Interop.epdm.IEdmFile5 edmFile = null;
+            EPDM.Interop.epdm.IEdmFolder5 parentFolder = null;
+
+            if (pdmVault != null && pdmVault.IsLoggedIn)
             {
-                if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
-                {
-                    Logger.Warning("Cannot set material on non-part document");
-                    return false;
-                }
-                
-                // Convert to PartDoc
-                PartDoc partDoc = (PartDoc)swModel;
-                
-                // Path to custom material database
-                const string matPropFile = @"C:\PCSVAULT\SolidWorks Settings\Material Databases 1\Roeslein Standard Materials.sldmat";
-                
-                // Get the current material for logging
-                string originalMaterial = swModel.MaterialIdName ?? "None";
-                Logger.Info($"Current material before change: '{originalMaterial}'");
-                
+                LogMessage($"PDM: Vault '{pdmVault.Name}' is logged in. Checking file status for '{filePath}'.");
                 try
                 {
-                    // Use the method from the macro that works with custom materials
-                    Logger.Info($"Setting material to '{materialName}' from database '{matPropFile}'");
-                    
-                    // This method returns void, not bool
-                    partDoc.SetMaterialPropertyName(matPropFile, materialName);
-                    
-                    // Force a rebuild
-                    swModel.ForceRebuild3(false);
-                    
-                    // Get the new material name
-                    string newMaterial = swModel.MaterialIdName ?? "None";
-                    Logger.Info($"Material after SetMaterialPropertyName: '{newMaterial}'");
-                    
-                    if (newMaterial.Contains(materialName))
+                    edmFile = pdmVault.GetFileFromPath(filePath, out parentFolder);
+
+                    if (edmFile != null && parentFolder != null)
                     {
-                        Logger.Info($"Successfully changed material from '{originalMaterial}' to '{newMaterial}'");
-                        return true;
-                    }
-                    else
-                    {
-                        Logger.Warning($"SetMaterialPropertyName did not change the material - value still: '{newMaterial}'");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warning($"Failed to set material using SetMaterialPropertyName: {ex.Message}");
-                }
-                
-                // Try fallback approaches
-                try
-                {
-                    // Try approach 2: Using configuration specific method
-                    string configName = "";
-                    Configuration activeConfig = swModel.IGetActiveConfiguration();
-                    if (activeConfig != null)
-                    {
-                        configName = activeConfig.Name;
-                    }
-                    
-                    Logger.Info($"Attempting to set material using SetMaterialPropertyName2 with config '{configName}'");
-                    
-                    // Call the method with configuration name
-                    partDoc.SetMaterialPropertyName2(configName, "", materialName);
-                    swModel.ForceRebuild3(false);
-                    
-                    string newMaterial = swModel.MaterialIdName ?? "None";
-                    Logger.Info($"Material after SetMaterialPropertyName2: '{newMaterial}'");
-                    
-                    if (newMaterial.Contains(materialName))
-                    {
-                        Logger.Info($"Successfully changed material to '{newMaterial}' using configuration approach");
-                        return true;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warning($"Failed to set material using SetMaterialPropertyName2: {ex.Message}");
-                }
-                
-                // Last resort - try direct property change
-                try
-                {
-                    Logger.Info($"Attempting to set material using direct MaterialIdName property");
-                    swModel.MaterialIdName = materialName;
-                    swModel.ForceRebuild3(false);
-                    
-                    string newMaterial = swModel.MaterialIdName ?? "None";
-                    Logger.Info($"Material after direct property setting: '{newMaterial}'");
-                    
-                    if (newMaterial.Contains(materialName))
-                    {
-                        Logger.Info($"Successfully changed material to '{newMaterial}' using direct property");
-                        return true;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Warning($"Failed to set material using direct property: {ex.Message}");
-                }
-                
-                // If we get here, all approaches failed
-                Logger.Error($"All methods to set material '{materialName}' failed. Current material is '{swModel.MaterialIdName}'");
-                
-                return false;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error setting part material: {ex.Message}");
-                return false;
-            }
-        }
+                        LogMessage($"PDM: File '{filePath}' found in vault. ID: {edmFile.ID}, Parent Folder ID: {parentFolder.ID}");
 
-        private List<PropertyStandardSetting> FilterStandardsByDocType(List<PropertyStandardSetting> allStandards, swDocumentTypes_e docType)
-        {
-            switch (docType)
-            {
-                case swDocumentTypes_e.swDocPART:
-                    return allStandards.Where(s => s.UseOnPartFiles).ToList();
-                case swDocumentTypes_e.swDocASSEMBLY:
-                    return allStandards.Where(s => s.UseOnAssemblyFiles).ToList();
-                case swDocumentTypes_e.swDocDRAWING:
-                    return allStandards.Where(s => s.UseOnDrawingFiles).ToList();
-                default:
-                    return new List<PropertyStandardSetting>(); // Empty list for unknown types
-            }
-        }
+                        CustomPropertyManager swCustPropMgr = swModel.Extension.CustomPropertyManager[""];
+                        string existingStandardsVersion = "";
+                        string valOut = "";
+                        string resolvedValOut = "";
+                        bool wasResolved;
+                        bool linkToProperty;
+                        swCustPropMgr.Get6("Roeslein Standards Version", false, out valOut, out resolvedValOut, out wasResolved, out linkToProperty);
+                        existingStandardsVersion = resolvedValOut;
 
-        private void ApplyFilteredStandards(ModelDoc2 swModel, List<PropertyStandardSetting> standardsToApply)
-        {
-            CustomPropertyManager swCustPropMgr = swModel.Extension.CustomPropertyManager[""]; // Summary properties
-            // Configuration specific properties need the active configuration name
-            Configuration activeConfig = swModel.IGetActiveConfiguration();
-            CustomPropertyManager swConfPropMgr = null;
-            if (activeConfig != null) 
-            {
-                 swConfPropMgr = swModel.Extension.CustomPropertyManager[activeConfig.Name];
-            }
+                        LogMessage($"PDM: Existing 'Roeslein Standards Version' property value: '{existingStandardsVersion}'. Required version: '{currentStandardsVersion}'.");
 
-            // Determine document type for this file
-            swDocumentTypes_e docType = (swDocumentTypes_e)swModel.GetType();
-
-            foreach (var standard in standardsToApply)
-            {
-                propertiesCheckedCount++; // Increment the checked count
-                Logger.Info($"Processing property: {standard.PropertyName}");
-
-                // Determine if this property should be applied to this document type
-                bool applyToThisDoc =
-                    (docType == swDocumentTypes_e.swDocPART && standard.UseOnPartFiles)
-                    || (docType == swDocumentTypes_e.swDocASSEMBLY && standard.UseOnAssemblyFiles)
-                    || (docType == swDocumentTypes_e.swDocDRAWING && standard.UseOnDrawingFiles);
-
-                if (!applyToThisDoc)
-                {
-                    Logger.Info($"Skipping property '{standard.PropertyName}' for this document type.");
-                    propertiesSkippedCount++; // Increment skip count for non-applicable properties
-                    continue;
-                }
-
-                // Set correct expressions for key properties
-                string defaultExpr = standard.DefaultValueExpr;
-
-                // Apply to Custom tab if checked
-                if (standard.IsCustomProperty)
-                {
-                    ApplyOrUpdateProperty(swModel.Extension.CustomPropertyManager[""], standard, defaultExpr, "Custom");
-                }
-                // Apply to Config tab if checked
-                if (standard.IsConfigSpecific)
-                {
-                    if (activeConfig != null)
-                    {
-                        ApplyOrUpdateProperty(swModel.Extension.CustomPropertyManager[activeConfig.Name], standard, defaultExpr, $"Configuration ({activeConfig.Name})");
-                    }
-                    else
-                    {
-                        Logger.Warning($"No active configuration for config-specific property '{standard.PropertyName}'. Skipping.");
-                        propertiesSkippedCount++; // Increment skip count for config properties without active config
-                    }
-                }
-            }
-
-            // --- Set the Roeslein Standards Version property using the version from settings ---
-            string standardsVersion = Settings.LoadSettings().SettingsVersion;
-            if (!string.IsNullOrEmpty(standardsVersion))
-            {
-                swCustPropMgr.Add3("Roeslein Standards Version", (int)swCustomInfoType_e.swCustomInfoText, standardsVersion, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                if (swConfPropMgr != null)
-                {
-                    swConfPropMgr.Add3("Roeslein Standards Version", (int)swCustomInfoType_e.swCustomInfoText, standardsVersion, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                }
-                Logger.Info($"Set 'Roeslein Standards Version' property to '{standardsVersion}' on summary and active config.");
-            }
-        }
-
-        private void ApplyOrUpdateProperty(CustomPropertyManager propMgr, PropertyStandardSetting standard, string defaultExpr, string tabName)
-        {
-            try
-            {
-                // Get document type from the model - ensure we're getting the actual type
-                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
-                swDocumentTypes_e docType = (swDocumentTypes_e)swModel.GetType();
-                
-                // Debug logging to help diagnose document type issues
-                Logger.Info($"Document type detected: {docType} for file: {swModel.GetPathName()}");
-                
-                // First try to get all properties to check case-sensitively
-                string[] allPropertyNames = (string[])propMgr.GetNames();
-                bool manualPropertyCheck = false;
-                
-                if (allPropertyNames != null)
-                {
-                    foreach (string propName in allPropertyNames)
-                    {
-                        // Logger.Info($"DEBUG: Found existing property in {tabName}: '{propName}'"); // Removed to reduce log spam
-                        if (string.Equals(propName, standard.PropertyName, StringComparison.OrdinalIgnoreCase))
+                        if (string.IsNullOrWhiteSpace(existingStandardsVersion) || existingStandardsVersion != currentStandardsVersion)
                         {
-                            manualPropertyCheck = true;
-                            break;
-                        }
-                    }
-                }
-                
-                // Now try the regular API call
-                int getResult = propMgr.Get5(standard.PropertyName, true, out string existingValue, out string resolvedValue, out bool wasResolved);
-                
-                // Detailed API result debugging
-                // Logger.Info($"DEBUG: Get5 API returned: code={getResult}, existingValue='{existingValue}', resolvedValue='{resolvedValue}', wasResolved={wasResolved}, manualPropertyCheck={manualPropertyCheck}");
-                
-                // According to SolidWorks API docs - 0 means property exists, 1 means it doesn't
-                bool propertyExists = (getResult == 0 || manualPropertyCheck);
-                bool shouldSetValue = false;
-                string valueToAdd = string.Empty;
+                            LogMessage("PDM: Standards version mismatch or property missing. Checkout may be required.");
 
-                // Use expressions from settings form if they're properly formatted, 
-                // or format them correctly if they need to be adjusted
-                string formattedExpression = FormatPropertyExpression(standard.PropertyName, defaultExpr, docType);
-
-                // CASE 1: Property exists AND "Use Default Value" is checked - UPDATE it
-                if (propertyExists && standard.UseDefaultValue)
-                {
-                    shouldSetValue = true;
-                    valueToAdd = formattedExpression;
-                    Logger.Info($"Property '{standard.PropertyName}' exists and has value '{existingValue}'. Overwriting with '{valueToAdd}' because Use Default Value is checked in {tabName} tab.");
-                }
-                // CASE 2: Property exists AND "Use Default Value" is NOT checked - LEAVE IT ALONE
-                else if (propertyExists && !standard.UseDefaultValue)
-                {
-                    shouldSetValue = false;
-                    Logger.Info($"Property '{standard.PropertyName}' exists and has value '{existingValue}'. Not changing (Use Default Value not checked) in {tabName} tab.");
-                    propertiesSkippedCount++; // Increment skip count for existing properties
-                }
-                // CASE 3: Property does NOT exist - ALWAYS ADD IT
-                else if (!propertyExists)
-                {
-                    // Always add properties that don't exist, even if they're blank
-                    shouldSetValue = true;
-                    valueToAdd = formattedExpression;
-                    Logger.Info($"Adding new property '{standard.PropertyName}' with value '{(string.IsNullOrEmpty(valueToAdd) ? "[blank]" : valueToAdd)}' to {tabName} tab.");
-                }
-
-                if (shouldSetValue)
-                {
-                    try
-                    {
-                        // For expressions in SolidWorks with quotes, we need to ensure they
-                        // are passed as-is to the API without extra escaping
-                        int addResult = propMgr.Add3(
-                            standard.PropertyName,
-                            (int)swCustomInfoType_e.swCustomInfoText,
-                            valueToAdd,
-                            (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
-
-                        // Logger.Info($"DEBUG: Add3 API returned: code={addResult}");
-
-                        if (addResult == 0)
-                        {
-                            Logger.Info($"Set property '{standard.PropertyName}' to '{valueToAdd}' in {tabName} tab.");
-                            
-                            // Update the appropriate counter
-                            if (propertyExists)
-                                propertiesUpdatedCount++; // Increment updated count for existing properties
-                            else
-                                propertiesAddedCount++;   // Increment added count for new properties
-                        }
-                        else
-                        {
-                            Logger.Warning($"Failed to set property '{standard.PropertyName}' in {tabName} tab. Result code: {addResult}");
-                            propertiesSkippedCount++; // Increment skip count for failed properties
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Exception setting property '{standard.PropertyName}': {ex.Message}");
-                        propertiesSkippedCount++; // Increment skip count for exception cases
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error in ApplyOrUpdateProperty for {standard.PropertyName}: {ex.Message}");
-                propertiesSkippedCount++; // Increment skip count for exception cases
-            }
-        }
-
-        /// <summary>
-        /// Formats property expressions correctly based on property name and document type
-        /// </summary>
-        private string FormatPropertyExpression(string propertyName, string defaultExpr, swDocumentTypes_e docType)
-        {
-            // If defaultExpr is empty, return empty
-            if (string.IsNullOrEmpty(defaultExpr))
-                return defaultExpr;
-
-            // Get the model to extract the filename if needed
-            ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
-            string filename = System.IO.Path.GetFileNameWithoutExtension(swModel.GetPathName());
-            
-            // Get the correct file extension based on document type
-            string suffix;
-            switch (docType)
-            {
-                case swDocumentTypes_e.swDocASSEMBLY:
-                    // For assemblies, use the specific filename instead of wildcard
-                    suffix = "@" + filename + ".SLDASM";
-                    break;
-                case swDocumentTypes_e.swDocDRAWING:
-                    suffix = "@*.SLDDRW";
-                    break;
-                case swDocumentTypes_e.swDocPART:
-                default:
-                    suffix = "@*.SLDPRT";
-                    break;
-            }
-            
-            // Create the correct expressions for special properties WITH quotes
-            // SolidWorks needs the quotes for the expressions to work
-            switch (propertyName.ToLower())
-            {
-                case "weight":
-                    if (defaultExpr.Contains("SW-Mass") || defaultExpr.Contains("$PRP:"))
-                        return "\"SW-Mass" + suffix + "\"";
-                    break;
-                    
-                case "material":
-                    if (defaultExpr.Contains("SW-Material") || defaultExpr.Contains("$PRPMODEL:"))
-                        return "\"SW-Material" + suffix + "\"";
-                    break;
-                    
-                case "sheet metal thickness":
-                case "thickness":
-                    if (defaultExpr.Contains("Thickness") || defaultExpr.Contains("$PRPSHEET:"))
-                        return "\"Thickness" + suffix + "\"";
-                    break;
-            }
-            
-            // For other expressions, ensure they have quotes if needed
-            // If the expression already has quotes, use as is
-            if (defaultExpr.StartsWith("\"") && defaultExpr.EndsWith("\""))
-                return defaultExpr;
-            
-            if (defaultExpr.StartsWith("'") && defaultExpr.EndsWith("'"))
-            {
-                defaultExpr = defaultExpr.Substring(1, defaultExpr.Length - 2);
-                return "\"" + defaultExpr + "\"";
-            }
-            
-            // If it doesn't have quotes and seems to be an expression (contains @ or $),
-            // add quotes around it
-            if (defaultExpr.Contains("@") || defaultExpr.Contains("$"))
-                return "\"" + defaultExpr + "\"";
-                
-            return defaultExpr;
-        }
-        
-        private string GetSuffixForDocType(swDocumentTypes_e docType)
-        {
-            switch (docType)
-            {
-                case swDocumentTypes_e.swDocASSEMBLY:
-                    return "@*.SLDASM";
-                case swDocumentTypes_e.swDocDRAWING:
-                    return "@*.SLDDRW";
-                case swDocumentTypes_e.swDocPART:
-                default:
-                    return "@*.SLDPRT";
-            }
-        }
-
-        /// <summary>
-        /// Placeholder for evaluating SolidWorks property expressions like $PRPMODEL:"SW-Material".
-        /// </summary>
-        private string EvaluateExpression(ModelDoc2 swModel, string expression)
-        {
-            if (string.IsNullOrEmpty(expression))
-                return string.Empty;
-
-            // Handle SolidWorks expressions
-            if (expression.StartsWith("$"))
-            {   
-                // Material property handling
-                if (expression.StartsWith("$PRPMODEL:\"SW-Mat") || expression.Contains("SW-Material"))
-                {
-                    try
-                    {
-                        // Try to get material directly from the model
-                        string materialName = swModel.MaterialIdName;
-                        
-                        if (!string.IsNullOrEmpty(materialName))
-                        {
-                            return materialName;
-                        }
-
-                        // Fallback to MaterialPropertyValues if direct method fails
-                        object[] materialPropVals = swModel.MaterialPropertyValues as object[];
-                        if (materialPropVals != null && materialPropVals.Length > 0)
-                        {
-                            materialName = materialPropVals[0] as string;
-                            if (!string.IsNullOrEmpty(materialName))
+                            if (edmFile.IsLocked)
                             {
-                                return materialName;
-                            }
-                        }
-
-                        Logger.Warning($"Could not evaluate material expression: {expression}");
-                        return string.Empty;
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Error evaluating material expression: {ex.Message}");
-                        return string.Empty;
-                    }
-                }
-                // Mass property handling
-                else if (expression.Equals("$PRP:SW-Mass", StringComparison.OrdinalIgnoreCase))
-                {
-                    MassProperty swMass = swModel.Extension.CreateMassProperty();
-                    if (swMass != null)
-                    {   
-                        return swMass.Mass.ToString();
-                    }
-                }
-                // Sheet metal thickness handling
-                else if (expression.Contains("Thickness"))
-                {
-                    if (swModel.GetType() == (int)swDocumentTypes_e.swDocPART)
-                    {
-                        Feature feat = swModel.FirstFeature() as Feature;
-                        while (feat != null)
-                        {
-                            if (feat.GetTypeName2() == "SheetMetal")
-                            {
-                                var swSheetMetal = feat.GetDefinition() as SheetMetalFeatureData;
-                                if (swSheetMetal != null)
+                                // Use simpler approach to determine if file is locked by current user
+                                bool isLockedByCurrentUser = false;
+                                
+                                // First check if this file is already open in SolidWorks
+                                // If it's open and not read-only, we have it checked out
+                                isLockedByCurrentUser = !swModel.IsOpenedReadOnly();
+                                LogMessage($"PDM: File is locked. Appears to be locked by current user (based on read-only status): {isLockedByCurrentUser}");
+                                
+                                if (isLockedByCurrentUser)
                                 {
-                                    return swSheetMetal.Thickness.ToString();
+                                    LogMessage($"PDM: File appears to be checked out by the current user. Proceeding with write access.");
+                                    canWriteToFile = true;
+                                }
+                                else
+                                {
+                                    LogMessage($"PDM: File is checked out by another user. Cannot apply standards.");
+                                    if (!silentMode) MessageBox.Show($@"File '{Path.GetFileName(filePath)}' is checked out by another user.
+Cannot apply standards.", "PDM Checkout Conflict", MessageBoxButtons.OK, MessageBoxIcon.Stop);
+                                    return false;
                                 }
                             }
-                            feat = feat.GetNextFeature() as Feature;
+                            else
+                            {
+                                LogMessage("PDM: File is not checked out. Attempting to check out...");
+                                int swWindowHandle = GetSolidWorksMainWindowHandle();
+                                try
+                                {
+                                    // Using the standard EPDM API checkout method
+                                    // First, close the document in SolidWorks to avoid sharing violations
+                                    bool wasOpen = false;
+                                    string docPath = swModel.GetPathName();
+                                    
+                                    // Check if this is the file we're trying to check out
+                                    if (string.Equals(docPath, filePath, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        wasOpen = true;
+                                        LogMessage("PDM: Closing document to avoid sharing violation during checkout");
+                                        swApp.CloseDoc(docPath); // Use CloseDoc instead of model.Close()
+                                    }
+                                    
+                                    // Perform the checkout operation
+                                    edmFile.LockFile(parentFolder.ID, swWindowHandle, (int)EdmLockFlag.EdmLock_Simple);
+                                    wasCheckedOutByThisProcess = true;
+                                    canWriteToFile = true;
+                                    
+                                    // Reopen the file if it was previously open
+                                    if (wasOpen)
+                                    {
+                                        LogMessage("PDM: Reopening document after checkout");
+                                        int docType = (int)swDocumentTypes_e.swDocPART; // Default to part
+                                        
+                                        // Try to determine document type from extension
+                                        string ext = Path.GetExtension(filePath).ToLower();
+                                        if (ext == ".sldasm") docType = (int)swDocumentTypes_e.swDocASSEMBLY;
+                                        else if (ext == ".slddrw") docType = (int)swDocumentTypes_e.swDocDRAWING;
+                                        
+                                        int errors = 0;
+                                        int warnings = 0;
+                                        swModel = swApp.OpenDoc6(filePath, docType, 
+                                                     (int)swOpenDocOptions_e.swOpenDocOptions_Silent, 
+                                                     "", ref errors, ref warnings);
+                                        
+                                        if (swModel == null)
+                                        {
+                                            LogMessage($"PDM: Failed to reopen document after checkout. Errors: {errors}, Warnings: {warnings}");
+                                            if (!silentMode) MessageBox.Show("File was checked out but could not be reopened.", 
+                                                           "Document Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                                            return false;
+                                        }
+                                    }
+                                    
+                                    LogMessage("PDM: File checked out successfully.");
+                                    if (!silentMode) MessageBox.Show($"File '{Path.GetFileName(filePath)}' checked out successfully.", "PDM Checkout", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                                }
+                                catch (System.Runtime.InteropServices.COMException comEx)
+                                {
+                                    LogMessage($"PDM: Checkout FAILED. COMException: HRESULT=0x{comEx.ErrorCode:X}, Msg={comEx.Message}");
+                                    if (!silentMode) MessageBox.Show($@"Failed to check out file '{Path.GetFileName(filePath)}' from PDM.
+
+Error: {comEx.Message}
+
+Please ensure you have permissions and the file is not locked by another process.", "PDM Checkout Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                    return false;
+                                }
+                                catch (Exception ex)
+                                {
+                                    LogMessage($"PDM: Checkout FAILED. Exception: {ex.Message}");
+                                    if (!silentMode) MessageBox.Show($@"Failed to check out file '{Path.GetFileName(filePath)}' from PDM.
+
+Error: {ex.Message}", "PDM Checkout Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                    return false;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            LogMessage("PDM: 'Roeslein Standards Version' property is up-to-date. No checkout needed for version update.");
+                            if (edmFile.IsLocked)
+                            {
+                                // Simplify this approach as well - just check if SolidWorks shows the file as read-only
+                                bool isLockedByCurrentUser = !swModel.IsOpenedReadOnly();
+                                
+                                if(isLockedByCurrentUser)
+                                {
+                                   canWriteToFile = true;
+                                   LogMessage("PDM: File already checked out by current user.");
+                                } else {
+                                   LogMessage($"PDM: File locked by another user. Assuming read-only.");
+                                   canWriteToFile = false;
+                                }
+                            } else {
+                                LogMessage("PDM: Standards up-to-date, file not locked. Assuming no write needed for version property.");
+                                canWriteToFile = !swModel.IsOpenedReadOnly();
+                            }
                         }
                     }
                     else
                     {
-                        Logger.Warning("Cannot evaluate thickness on a non-part document.");
+                        LogMessage($"PDM: File '{filePath}' not found in the current PDM vault view or vault connection issue. Proceeding as non-PDM file.");
+                        canWriteToFile = !swModel.IsOpenedReadOnly();
                     }
-                    return string.Empty;
                 }
-                
-                // For any other expressions, try to evaluate using the model
-                try
+                catch (System.Runtime.InteropServices.COMException comEx)
                 {
-                    // Get the active configuration name
-                    string configName = "";
-                    Configuration activeConfig = swModel.IGetActiveConfiguration();
-                    if (activeConfig != null)
-                    {
-                        configName = activeConfig.Name;
-                    }
-
-                    // Try to evaluate the expression
-                    string evalResult = swModel.GetCustomInfoValue(expression, configName);
-                    if (!string.IsNullOrEmpty(evalResult))
-                    {
-                        return evalResult;
-                    }
+                    LogMessage($"PDM: Error during PDM operations for '{filePath}'. COMException: HRESULT=0x{comEx.ErrorCode:X}, Msg={comEx.Message}. Proceeding as if file is not in PDM or not writable.");
+                    if (!silentMode) MessageBox.Show($"Error communicating with PDM: {comEx.Message}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    canWriteToFile = !swModel.IsOpenedReadOnly();
                 }
                 catch (Exception ex)
                 {
-                    Logger.Warning($"Failed to evaluate expression {expression}: {ex.Message}");
+                    LogMessage($"PDM: Error during PDM operations for '{filePath}'. Exception: {ex.Message}. Proceeding as if file is not in PDM or not writable.");
+                    if (!silentMode) MessageBox.Show($"Error during PDM operations: {ex.Message}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    canWriteToFile = !swModel.IsOpenedReadOnly();
                 }
-                
-                Logger.Warning($"Expression evaluation for '{expression}' returned no result.");
-                return expression;
+            }
+            else
+            {
+                LogMessage("PDM: No PDM vault connected or not logged in. Proceeding as non-PDM file.");
+                canWriteToFile = !swModel.IsOpenedReadOnly();
             }
 
-            return expression; // Return literal value if not an expression
+            // Get the current property value before doing the check - using a different name to avoid conflict
+            string currentPropertyVersion = "";
+            try
+            {
+                // Using Get6 (consistent with other parts of code) instead of Get to avoid bool-to-string conversion issues
+                string tempVal = "";
+                string tempResolvedVal = "";
+                bool tempWasResolved = false;
+                bool tempLinkToProperty = false;
+                swModel.Extension.CustomPropertyManager[""].Get6("Roeslein Standards Version", false, 
+                    out tempVal, out tempResolvedVal, out tempWasResolved, out tempLinkToProperty);
+                currentPropertyVersion = tempResolvedVal;
+                LogMessage($"Retrieved 'Roeslein Standards Version' property: '{currentPropertyVersion}'");
+            }
+            catch
+            {
+                // If any error occurs, assume the property doesn't exist
+                currentPropertyVersion = "";
+                LogMessage("Could not get existing 'Roeslein Standards Version' property. It may not exist.");
+            }
+
+            if (!canWriteToFile && (string.IsNullOrWhiteSpace(currentPropertyVersion) || currentPropertyVersion != currentStandardsVersion))
+            {
+                LogMessage("File is not writable and standards need update/application. Cannot proceed.");
+                if (!silentMode) MessageBox.Show($@"File '{Path.GetFileName(filePath)}' is read-only and standards need to be applied/updated. Cannot proceed.", "File Read-Only", MessageBoxButtons.OK, MessageBoxIcon.Stop);
+                if (wasCheckedOutByThisProcess && edmFile != null && parentFolder != null)
+                {
+                    try
+                    {
+                        edmFile.UnlockFile(0, "Automatic check-in after failed standards application due to read-only state.");
+                        LogMessage("PDM: File checked back in after failing to apply standards to read-only file.");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"PDM: Failed to check file back in after error: {ex.Message}");
+                    }
+                }
+                return false;
+            }
+
+            bool standardsAppliedSuccessfully = false;
+            if (canWriteToFile)
+            {
+                try
+                {
+                    LogMessage("=== STARTING PROPERTY APPLICATION ===");
+                    
+                    // Create a backup version of the filename for saving
+                    string backupFilePath = filePath + ".backup";
+                    bool backupCreated = false;
+                    
+                    try
+                    {
+                        // Save a backup copy of the file in case something goes wrong
+                        File.Copy(filePath, backupFilePath, true);
+                        backupCreated = true;
+                        LogMessage($"Created backup at {backupFilePath}");
+                    }
+                    catch (Exception backupEx)
+                    {
+                        LogMessage($"WARNING: Could not create backup: {backupEx.Message}");
+                    }
+                    
+                    // Use the SolidWorks API to get property manager
+                    LogMessage("Getting CustomPropertyManager...");
+                    CustomPropertyManager swCustPropMgr = swModel.Extension.CustomPropertyManager[""];
+                    
+                    if (swCustPropMgr == null)
+                    {
+                        LogMessage("ERROR: CustomPropertyManager is null!");
+                        standardsAppliedSuccessfully = false;
+                    }
+                    else
+                    {
+                        // DIRECT: Set the property using BOTH available methods to ensure it works
+                        LogMessage($"Setting property 'Roeslein Standards Version' to '{currentStandardsVersion}'");
+                        
+                        // First try Add3 method
+                        int addPropResult = swCustPropMgr.Add3("Roeslein Standards Version",
+                                               (int)swCustomInfoType_e.swCustomInfoText,
+                                               currentStandardsVersion,
+                                               (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                        
+                        LogMessage($"Add3 result: {addPropResult}");
+                        
+                        // For insurance, also try Set2 method
+                        int setPropResult = swCustPropMgr.Set2("Roeslein Standards Version", currentStandardsVersion);
+                        LogMessage($"Set2 result: {setPropResult}");
+                        
+                        // Verify the property was set
+                        string valOut = "";
+                        string resolvedValOut = "";
+                        bool wasResolved = false;
+                        bool linkToProperty = false;
+                        
+                        swCustPropMgr.Get6("Roeslein Standards Version", false, out valOut, out resolvedValOut, out wasResolved, out linkToProperty);
+                        LogMessage($"Property verification - Value: '{valOut}', Resolved: '{resolvedValOut}'");
+                        
+                        if (resolvedValOut == currentStandardsVersion)
+                        {
+                            LogMessage("Property set successfully!");
+                            standardsAppliedSuccessfully = true;
+                        }
+                        else 
+                        {
+                            LogMessage($"FAILED to set property correctly. Expected '{currentStandardsVersion}' but got '{resolvedValOut}'");
+                            standardsAppliedSuccessfully = false;
+                        }
+                    }
+                    
+                    // Force save the document with all changes
+                    if (standardsAppliedSuccessfully)
+                    {
+                        LogMessage("Forcing save...");
+                        int saveErrors = 0;
+                        int saveWarnings = 0;
+                        
+                        // Ensure we're on the right document
+                        swApp.ActivateDoc3(filePath, false, 0, ref saveErrors);
+                        
+                        // Explicitly force the save
+                        bool saveResult = swModel.Save3((int)swSaveAsOptions_e.swSaveAsOptions_Silent, 
+                                         ref saveErrors, ref saveWarnings) as bool? ?? false;
+                        
+                        LogMessage($"Save result: {saveResult}, Errors: {saveErrors}, Warnings: {saveWarnings}");
+                        
+                        if (!saveResult || saveErrors != 0)
+                        {
+                            standardsAppliedSuccessfully = false;
+                            LogMessage("Save failed - standards will not be considered applied");
+                        }
+                    }
+                    
+                    // Cleanup backup if successful
+                    if (standardsAppliedSuccessfully && backupCreated)
+                    {
+                        try
+                        {
+                            File.Delete(backupFilePath);
+                            LogMessage("Backup file deleted");
+                        }
+                        catch
+                        {
+                            LogMessage("Note: Could not delete backup file");
+                        }
+                    }
+                    LogMessage("=== PROPERTY APPLICATION COMPLETED ===");
+                }
+                catch (Exception ex)
+                {
+                    LogMessage($"ERROR applying standards or saving file: {ex.Message}\\nStackTrace: {ex.StackTrace}");
+                    if (!silentMode) MessageBox.Show($"An error occurred while applying standards or saving the file: {ex.Message}", "Standards Application Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    standardsAppliedSuccessfully = false;
+                }
+            }
+            else
+            {
+                // Safe way to get property value
+                string finalVersionCheck = "";
+                try
+                {
+                    string tempValOut = "";
+                    string tempResolvedValOut = "";
+                    bool tempWasResolved = false;
+                    bool tempLinkToProperty = false;
+                    swModel.Extension.CustomPropertyManager[""].Get6("Roeslein Standards Version", false, out tempValOut, out tempResolvedValOut, out tempWasResolved, out tempLinkToProperty);
+                    finalVersionCheck = tempResolvedValOut;
+                }
+                catch
+                {
+                    // If property can't be accessed, assume it doesn't exist
+                    finalVersionCheck = "";
+                    LogMessage("Error accessing 'Roeslein Standards Version' property when checking final state.");
+                }
+
+                if (finalVersionCheck == currentStandardsVersion) {
+                    LogMessage("File is read-only or no PDM action taken, but standards are already up-to-date.");
+                    standardsAppliedSuccessfully = true;
+                } else {
+                    LogMessage("File is read-only and standards need update. This state should have been caught earlier.");
+                    standardsAppliedSuccessfully = false;
+                }
+            }
+
+            if (wasCheckedOutByThisProcess && edmFile != null && parentFolder != null && pdmVault != null && pdmVault.IsLoggedIn)
+            {
+                // Declare the file path variable at this scope level so it's available in catch blocks
+                string filePathToCheckIn = swModel.GetPathName();
+                string fileName = Path.GetFileName(filePathToCheckIn);
+                
+                try
+                {
+                    string comment = standardsAppliedSuccessfully ? $"Applied Roeslein Standards Version: {currentStandardsVersion}." : "Attempted to apply Roeslein Standards; see logs for details.";
+                    
+                    // Final verification to make sure properties were saved
+                    LogMessage("=== FINAL VERIFICATION BEFORE CHECK-IN ===");
+                    bool propertiesVerified = false;
+                    
+                    try
+                    {
+                        // Get the final property value to verify it worked
+                        CustomPropertyManager swCustPropMgr = swModel.Extension.CustomPropertyManager[""];
+                        string valOut = "";
+                        string resolvedValOut = "";
+                        bool wasResolved = false;
+                        bool linkToProperty = false;
+                        
+                        swCustPropMgr.Get6("Roeslein Standards Version", false, out valOut, out resolvedValOut, out wasResolved, out linkToProperty);
+                        LogMessage($"Final property check - Value: '{valOut}', Resolved: '{resolvedValOut}'");
+                        
+                        propertiesVerified = (resolvedValOut == currentStandardsVersion);
+                        
+                        // If not right, try one more time to set the property
+                        if (!propertiesVerified)
+                        {
+                            LogMessage("WARNING: Property not set correctly - trying one more time");
+                            int setPropResult = swCustPropMgr.Set2("Roeslein Standards Version", currentStandardsVersion);
+                            LogMessage($"Final Set2 attempt result: {setPropResult}");
+                            
+                            // Check again
+                            swCustPropMgr.Get6("Roeslein Standards Version", false, out valOut, out resolvedValOut, out wasResolved, out linkToProperty);
+                            LogMessage($"Re-check - Value: '{valOut}', Resolved: '{resolvedValOut}'");
+                            
+                            propertiesVerified = (resolvedValOut == currentStandardsVersion);
+                        }
+                        
+                        if (propertiesVerified)
+                        {
+                            LogMessage("Properties verified successfully!");
+                        }
+                        else
+                        {
+                            LogMessage("WARNING: Property not set correctly, but proceeding with check-in");
+                        }
+                        
+                        // Force one final save to be sure
+                        int saveErrors = 0;
+                        int saveWarnings = 0;
+                        bool finalSaveResult = swModel.Save3((int)swSaveAsOptions_e.swSaveAsOptions_Silent, 
+                                               ref saveErrors, ref saveWarnings) as bool? ?? false;
+                        
+                        LogMessage($"Final save result: {finalSaveResult}, Errors: {saveErrors}");
+                    }
+                    catch (Exception propEx)
+                    {
+                        LogMessage($"Error during final property verification: {propEx.Message}");
+                    }
+                    
+                    // CRITICAL: Before checking in, ensure the file is saved and released
+                    LogMessage("=== STARTING PDM CHECK-IN PROCESS ===");
+                    LogMessage("Preparing file for check-in by saving and closing...");
+                    
+                    // Get the file path before closing
+                    LogMessage($"File to check in: '{filePathToCheckIn}'");
+                    
+                    // Close the document to release its handles 
+                    LogMessage("Closing document to release file handles for check-in...");
+                    swApp.CloseDoc(filePathToCheckIn);
+                    
+                    // Give Windows a moment to fully release file handles
+                    LogMessage("Waiting for file handles to be released...");
+                    System.Threading.Thread.Sleep(1000);
+
+                    int swWindowHandle = GetSolidWorksMainWindowHandle();
+                    LogMessage($"Checking in file '{fileName}' with comment: '{comment}'");
+                    edmFile.UnlockFile(swWindowHandle, comment);
+                    LogMessage($"PDM: File '{fileName}' checked back in successfully");
+                    
+                    // Reopen the document after check-in
+                    LogMessage("Reopening document after check-in...");
+                    int docType = (int)swDocumentTypes_e.swDocPART;
+                    string ext = Path.GetExtension(filePathToCheckIn).ToLower();
+                    if (ext == ".sldasm") docType = (int)swDocumentTypes_e.swDocASSEMBLY;
+                    else if (ext == ".slddrw") docType = (int)swDocumentTypes_e.swDocDRAWING;
+                    
+                    int errors = 0;
+                    int warnings = 0;
+                    ModelDoc2 reopenedModel = swApp.OpenDoc6(filePathToCheckIn, docType, 
+                                         (int)swOpenDocOptions_e.swOpenDocOptions_Silent, 
+                                         "", ref errors, ref warnings);
+                    
+                    if (reopenedModel == null)
+                    {
+                        LogMessage($"Warning: Could not reopen document after check-in. Errors: {errors}");
+                        if (!silentMode) MessageBox.Show($"File was successfully checked in, but could not be reopened automatically.",
+                                       "Information", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    else
+                    {
+                        // Verify if the properties persisted
+                        try 
+                        {
+                            CustomPropertyManager finalPropMgr = reopenedModel.Extension.CustomPropertyManager[""];
+                            string finalVal = "";
+                            string finalResolvedVal = "";
+                            bool finalResolved = false;
+                            bool finalLink = false;
+                            
+                            finalPropMgr.Get6("Roeslein Standards Version", false, out finalVal, out finalResolvedVal, out finalResolved, out finalLink);
+                            LogMessage($"Post-reopen property check - Value: '{finalVal}', Resolved: '{finalResolvedVal}'");
+                            
+                            if (finalResolvedVal == currentStandardsVersion)
+                            {
+                                LogMessage("SUCCESS! Property persisted through PDM check-in/check-out!");
+                            }
+                            else
+                            {
+                                LogMessage("WARNING: Property did not persist after PDM check-in/check-out.");
+                            }
+                        }
+                        catch (Exception propEx)
+                        {
+                            LogMessage($"Error checking properties after reopen: {propEx.Message}");
+                        }
+                    }
+                    
+                    LogMessage("=== PDM CHECK-IN PROCESS COMPLETED ===");
+                    
+                    if (propertiesVerified) 
+                    {
+                        if (!silentMode) MessageBox.Show($"File '{fileName}' successfully checked in with Roeslein Standards Version {currentStandardsVersion}.", 
+                                       "PDM Check-in Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    else
+                    {
+                        if (!silentMode) MessageBox.Show($"File '{fileName}' was checked in, but there may have been issues setting the Roeslein Standards Version property.",
+                                       "PDM Check-in Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                }
+                catch (System.Runtime.InteropServices.COMException comEx)
+                {
+                    LogMessage($"PDM: Failed to check file back in. COMException: HRESULT=0x{comEx.ErrorCode:X}, Msg={comEx.Message}");
+                    if (!silentMode) MessageBox.Show($"Failed to check file '{fileName}' back into PDM: {comEx.Message}", "PDM Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                catch (Exception ex)
+                {
+                    LogMessage($"PDM: Failed to check file back in: {ex.Message}");
+                    if (!silentMode) MessageBox.Show($"Failed to check file '{fileName}' back into PDM: {ex.Message}", "PDM Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            
+            if (standardsAppliedSuccessfully)
+            {
+                LogMessage($"ApplyStandardsToActiveDocument completed successfully for '{filePath}'.");
+            }
+            else
+            {
+                LogMessage($"ApplyStandardsToActiveDocument failed or partially completed for '{filePath}'.");
+            }
+            return standardsAppliedSuccessfully;
         }
 
-        private string MapMaterial(string swMaterial, string partTitle = null)
+        /// <summary>
+        /// Check if file is locked by current user - using a very simplified approach
+        /// </summary>
+        private bool IsLockedByCurrentUser(EPDM.Interop.epdm.IEdmFile5 file)
         {
-            if (string.IsNullOrWhiteSpace(swMaterial)) return null;
+            if (!file.IsLocked) return false;
             
-            // Extract the actual material name from pipe-separated format if needed
-            string normalized = swMaterial.Trim();
-            if (normalized.Contains("|"))
+            try
             {
-                string[] parts = normalized.Split('|');
-                if (parts.Length >= 2)
-                {
-                    // Use the middle part as the material name
-                    normalized = parts[1].Trim();
-                }
+                // Return as a function of UserName - check if the current logged in user matches the file lock
+                LogMessage("We cannot determine file checkout ownership in the current PDM API version.");
+                
+                // For now, assume the file isn't locked by the current user
+                // This will result in a conservative approach - the UI will show locked files as 
+                // being locked by other users unless the document is open and not read-only
+                
+                // Just use a simple flag to indicate we don't know
+                return false;
             }
-            
-            var mappings = Settings.LoadMaterialMappings();
-            var match = mappings.FirstOrDefault(m => string.Equals(m.SwMaterial.Trim(), normalized, StringComparison.OrdinalIgnoreCase));
-            if (match != null && !string.IsNullOrWhiteSpace(match.DxfMaterial))
+            catch (Exception ex)
             {
-                return match.DxfMaterial.Trim();
+                LogMessage($"Error in IsLockedByCurrentUser: {ex.Message}");
+                return false;
+            }
+        }
+        
+        /// <summary>
+        /// Helper method to get document by path
+        /// </summary>
+        private ModelDoc2 GetDocumentByPath(string path)
+        {
+            if (swApp == null) return null;
+            
+            object[] openDocs = swApp.GetDocuments() as object[];
+            if (openDocs == null) return null;
+            
+            foreach (object docObj in openDocs)
+            {
+                ModelDoc2 doc = docObj as ModelDoc2;
+                if (doc != null && string.Equals(doc.GetPathName(), path, StringComparison.OrdinalIgnoreCase))
+                {
+                    return doc;
+                }
             }
             
             return null;
         }
 
         /// <summary>
-        /// Reads cut list data and matches raw material for sheet metal parts
+        /// Get the current standards version from a document
         /// </summary>
-        private bool ProcessCutListAndRawMaterial(ModelDoc2 swModel)
+        private string GetCurrentStandardsVersion(ModelDoc2 doc)
         {
-            rawMaterialProcessingAttempted = true;
-            rawMaterialMatchFound = false;
-            rawMaterialPropertiesUpdated = false;
-            rawMaterialMessage = ""; // Reset message
-
+            if (doc == null) return string.Empty;
+            
             try
             {
-                if (!isSheetMetalPart || !cutListFound)
-                {
-                    Logger.Info("Not a sheet metal part with a found cut list, skipping raw material processing.");
-                    rawMaterialMessage = "Skipped: Not a sheet metal part or no cut list found.";
-                    return false;
-                }
-
-                Logger.Info("Reading cut list data for raw material matching...");
-
-                double boundingBoxLength = 0;
-                double boundingBoxWidth = 0;
-                double sheetMetalThickness = 0;
-                string partMaterial = ""; // Renamed to avoid conflict
-
-                Feature swFeat = (Feature)swModel.FirstFeature();
-                Feature cutListItemFeature = null;
-
-                // Find the SolidBodyFolder first, then look for CutListFeat under it.
-                while (swFeat != null)
-                {
-                    if (swFeat.GetTypeName2() == "SolidBodyFolder")
-                    {
-                        Logger.Info($"Found SolidBodyFolder: {swFeat.Name}");
-                        // Now iterate sub-features of the SolidBodyFolder to find the cut list item feature
-                        Feature subFeat = swFeat.IGetFirstSubFeature() as Feature;
-                        while (subFeat != null)
-                        {
-                            // Common type names for cut list items are "CutListFeat", "WeldMemberFeat", "SheetMetalPart" (if specific)
-                            // The log line below is critical for diagnosis.
-                            Logger.Info($"Checking sub-feature under SolidBodyFolder '{swFeat.Name}': Name='{subFeat.Name}', Type='{subFeat.GetTypeName2()}'");
-                            if (subFeat.GetTypeName2() == "CutListFolder") // Adjust this type name if necessary based on logs
-                            {
-                                cutListItemFeature = subFeat;
-                                Logger.Info($"Found expected CutListFolder: {cutListItemFeature.Name}");
-                                break; 
-                            }
-                            subFeat = subFeat.IGetNextSubFeature() as Feature;
-                        }
-                        break; // Stop searching for SolidBodyFolder
-                    }
-                    swFeat = (Feature)swFeat.GetNextFeature();
-                }
-
-                if (cutListItemFeature == null)
-                {
-                    Logger.Warning("Could not find a 'CutListFolder' feature under SolidBodyFolder.");
-                    rawMaterialMessage = "Could not find cut list item feature (e.g., CutListFolder).";
-                    return false;
-                }
-
-                // Get the custom property manager for the cut list item feature
-                CustomPropertyManager cutListPropMgr = cutListItemFeature.CustomPropertyManager;
+                CustomPropertyManager propMgr = doc.Extension.CustomPropertyManager[""];
+                string tempVal = "";
+                string tempResolvedVal = "";
+                bool tempWasResolved = false;
+                bool tempLinkToProperty = false;
                 
-                if (cutListPropMgr == null)
-                {
-                    Logger.Warning($"Could not get CustomPropertyManager for cut list item feature: {cutListItemFeature.Name}");
-                    rawMaterialMessage = $"Could not access properties for cut list item: {cutListItemFeature.Name}.";
-                    return false;
-                }
+                propMgr.Get6("Roeslein Standards Version", false, 
+                    out tempVal, out tempResolvedVal, out tempWasResolved, out tempLinkToProperty);
+                
+                return tempResolvedVal;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
 
-                string resolvedValue;
-                bool wasResolved;
+        /// <summary>
+        /// Process an assembly file and apply standards to all its components
+        /// </summary>
+        public void ProcessAssemblyForStandards(ModelDoc2 assemblyDoc, string requiredStandardsVersion, bool silentMode = false)
+        {
+            if (assemblyDoc == null || assemblyDoc.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY)
+            {
+                LogMessage("ProcessAssemblyForStandards: Not an assembly document.");
+                if (!silentMode) MessageBox.Show("The active document is not an assembly.", "Standards Application", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
 
-                // Bounding Box Length
-                int res = cutListPropMgr.Get5("Bounding Box Length", true, out _, out resolvedValue, out wasResolved);
-                if ((res == 0 || res == 2) && wasResolved && double.TryParse(resolvedValue, out boundingBoxLength)) // Accept res == 2 if wasResolved is true
+            LogMessage($"Beginning standards batch processing for assembly: {assemblyDoc.GetPathName()}");
+            
+            // Step 1: Scan assembly and collect all files needing standards
+            List<FileCheckoutInfo> filesToCheckout = new List<FileCheckoutInfo>();
+            
+            try
+            {
+                // Get the assembly's configuration manager and active configuration
+                ConfigurationManager configMgr = assemblyDoc.ConfigurationManager;
+                if (configMgr == null)
                 {
-                    Logger.Info($"Found Bounding Box Length: {boundingBoxLength}");
-                }
-                else 
-                {
-                    Logger.Warning($"Failed to get Bounding Box Length or parse value. Get5 result: {res}, Resolved: {wasResolved}, Value: '{resolvedValue}'");
-                    boundingBoxLength = 0; // Ensure zero if not parsed
-                }
-
-                // Bounding Box Width
-                res = cutListPropMgr.Get5("Bounding Box Width", true, out _, out resolvedValue, out wasResolved);
-                if ((res == 0 || res == 2) && wasResolved && double.TryParse(resolvedValue, out boundingBoxWidth)) // Accept res == 2 if wasResolved is true
-                {
-                    Logger.Info($"Found Bounding Box Width: {boundingBoxWidth}");
-                }
-                 else 
-                {
-                    Logger.Warning($"Failed to get Bounding Box Width or parse value. Get5 result: {res}, Resolved: {wasResolved}, Value: '{resolvedValue}'");
-                    boundingBoxWidth = 0; // Ensure zero if not parsed
-                }
-
-                // Sheet Metal Thickness - This is often a direct property of the sheet metal feature or a cut-list property
-                // Try to get "Sheet Metal Thickness" first, as seen in user's screenshot
-                res = cutListPropMgr.Get5("Sheet Metal Thickness", true, out _, out resolvedValue, out wasResolved);
-                if ((res == 0 || res == 2) && wasResolved && double.TryParse(resolvedValue, NumberStyles.Any, CultureInfo.InvariantCulture, out sheetMetalThickness))
-                {
-                    Logger.Info($"Found 'Sheet Metal Thickness' from cut list: {sheetMetalThickness} (assuming document units, e.g., inches)");
-                }
-                else 
-                {
-                    Logger.Warning($"Failed to get 'Sheet Metal Thickness' from cut list. Get5 result: {res}, Resolved: {wasResolved}, Value: '{resolvedValue}'. Trying part's sheet metal feature as fallback.");
-                    sheetMetalThickness = 0; // Ensure zero before trying fallback
-                    if (isSheetMetalPart)
-                    {
-                        Feature smFeat = swModel.FirstFeature() as Feature;
-                        while(smFeat != null)
-                        {
-                            if (smFeat.GetTypeName2() == "SheetMetal")
-                            {
-                                SheetMetalFeatureData smData = smFeat.GetDefinition() as SheetMetalFeatureData;
-                                if (smData != null)
-                                {
-                                    double thicknessInMeters = smData.Thickness;
-                                    sheetMetalThickness = thicknessInMeters * 39.3701; // Convert meters to inches
-                                    Logger.Info($"Found Sheet Metal Thickness from SM feature: {thicknessInMeters} meters, converted to {sheetMetalThickness} inches.");
-                                    break;
-                                }
-                            }
-                            smFeat = smFeat.GetNextFeature() as Feature;
-                        }
-                    }
+                    LogMessage("Unable to get configuration manager from assembly.");
+                    return;
                 }
                 
-                // Material - from the part itself
-                partMaterial = GetPartMaterial(swModel); // This method already logs
-                if (string.IsNullOrEmpty(partMaterial)) 
+                Configuration activeConfig = configMgr.ActiveConfiguration;
+                if (activeConfig == null)
                 {
-                    Logger.Warning("Part material is empty.");
-                    // partMaterial remains empty or null
-                } else {
-                     Logger.Info($"Found Part Material: {partMaterial}");
+                    LogMessage("Unable to get active configuration from assembly.");
+                    return;
                 }
-
-                // Check if all necessary data was retrieved
-                if (boundingBoxLength == 0 || boundingBoxWidth == 0 || sheetMetalThickness == 0 || string.IsNullOrEmpty(partMaterial))
+                
+                // Get the root component
+                Component2 rootComp = activeConfig.GetRootComponent3(true);
+                if (rootComp == null)
                 {
-                    Logger.Warning("Could not find all required cut list data (Length, Width, Thickness, Material).");
-                    rawMaterialMessage = "Incomplete cut list data (Length, Width, Thickness, or Material missing/zero).";
-                    // Log current values for debugging
-                    Logger.Info($"Debug - Length: {boundingBoxLength}, Width: {boundingBoxWidth}, Thickness: {sheetMetalThickness}, Material: '{partMaterial}'");
-                    return false;
+                    LogMessage("Unable to get root component from assembly.");
+                    return;
                 }
-
-                // Now match with raw material table
-                var rawMaterialSettingsMatch = FindRawMaterialMatch( // Renamed to avoid confusion with class RawMaterialMatch
-                    partMaterial,
-                    sheetMetalThickness,
-                    boundingBoxLength,
-                    boundingBoxWidth);
-
-                if (rawMaterialSettingsMatch != null)
+                
+                // Get all components - need to cast to object[]
+                object[] allComponents = (object[])rootComp.GetChildren();
+                if (allComponents == null || allComponents.Length == 0)
                 {
-                    rawMaterialMatchFound = true;
-                    Logger.Info($"Found matching raw material: PN='{rawMaterialSettingsMatch.PartNumber}'");
-
-                    // Calculate Bounding Box Area
-                    double boundingBoxArea = 0;
-                    if (boundingBoxLength > 0 && boundingBoxWidth > 0) // Ensure dimensions are valid
-                    {
-                        boundingBoxArea = boundingBoxLength * boundingBoxWidth;
-                        Logger.Info($"Calculated Bounding Box Area: {boundingBoxArea} sq. inches");
-                    }
-                    else
-                    {
-                        Logger.Warning("Bounding box length or width is zero, area cannot be calculated accurately.");
-                    }
-
-                    string areaValue = boundingBoxArea.ToString("F2", CultureInfo.InvariantCulture);
-                    string partNumber = rawMaterialSettingsMatch.PartNumber;
-                    string unitOfMeasure = rawMaterialSettingsMatch.UnitOfMeasure ?? "EA";
-                    string description = rawMaterialSettingsMatch.Description ?? "";
-
-                    // Set properties on summary tab using corrected names/values
-                    CustomPropertyManager modelPropMgr = swModel.Extension.CustomPropertyManager[""];
-                    modelPropMgr.Add3("Raw Material Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                    modelPropMgr.Add3("Unit of Measurement", (int)swCustomInfoType_e.swCustomInfoText, "SI", (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                    modelPropMgr.Add3("legacy Part Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                    modelPropMgr.Add3("Legacy Unit of Measure", (int)swCustomInfoType_e.swCustomInfoText, unitOfMeasure, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                    modelPropMgr.Add3("Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                    modelPropMgr.Add3("Legacy Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                    modelPropMgr.Add3("Raw Material Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                    modelPropMgr.Add3("legacy Part Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-
-                    // Set properties on all configurations using corrected names/values
-                    string[] configNames = (string[])swModel.GetConfigurationNames();
-                    if (configNames != null)
-                    {
-                        foreach (string configName in configNames)
-                        {
-                            if (string.IsNullOrEmpty(configName)) continue;
-                            CustomPropertyManager configPropMgr = swModel.Extension.CustomPropertyManager[configName];
-                            configPropMgr.Add3("Raw Material Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                            configPropMgr.Add3("Unit of Measurement", (int)swCustomInfoType_e.swCustomInfoText, "SI", (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                            configPropMgr.Add3("legacy Part Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                            configPropMgr.Add3("Legacy Unit of Measure", (int)swCustomInfoType_e.swCustomInfoText, unitOfMeasure, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                            configPropMgr.Add3("Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                            configPropMgr.Add3("Legacy Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                            configPropMgr.Add3("Raw Material Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                            configPropMgr.Add3("legacy Part Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                        }
-                    }
-
-                    rawMaterialPropertiesUpdated = true;
-                    rawMaterialMessage = $"Raw Material PN {partNumber} (UOM: {unitOfMeasure}) and all legacy/raw material properties applied to summary tab and all configurations.";
-                    return true;
+                    LogMessage("No components found in assembly.");
+                    if (!silentMode) MessageBox.Show("No components found in this assembly.", "Standards Application", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
                 }
-                else
+                
+                LogMessage($"Found {allComponents.Length} components in assembly.");
+                
+                // Process each component
+                foreach (object obj in allComponents)
                 {
-                    rawMaterialMatchFound = false; // Explicitly set
-                    Logger.Warning("No matching raw material found in table.");
-                    rawMaterialMessage = $"No matching raw material found for: Mat='{partMaterial}', Thk='{sheetMetalThickness}', Size='{boundingBoxLength}x{boundingBoxWidth}'.";
-                    // User message for no match is good, but handled by rawMaterialMessage now.
-                    // swApp.SendMsgToUser2(...); // This can be removed if the summary message is sufficient
-                    return false;
+                    Component2 comp = obj as Component2;
+                    if (comp == null) continue;
+                    
+                    // Skip virtual components - IsVirtual is a property, not a method
+                    if (comp.IsVirtual) continue;
+                    
+                    // Need to cast to ModelDoc2
+                    ModelDoc2 compDoc = comp.GetModelDoc2() as ModelDoc2;
+                    if (compDoc == null) continue;
+                    
+                    // We only care about part files
+                    if (compDoc.GetType() != (int)swDocumentTypes_e.swDocPART) continue;
+                    
+                    string filePath = compDoc.GetPathName();
+                    LogMessage($"Examining component: {filePath}");
+                    
+                    // Skip if file path is empty
+                    if (string.IsNullOrEmpty(filePath)) continue;
+                    
+                    if (pdmVault == null || !pdmVault.IsLoggedIn)
+                    {
+                        LogMessage("PDM vault not connected or not logged in. Skipping PDM operations.");
+                        continue;
+                    }
+                    
+                    // Skip if not in PDM vault
+                    string vaultName = pdmVault.GetVaultNameFromPath(filePath);
+                    if (string.IsNullOrEmpty(vaultName))
+                    {
+                        LogMessage($"File not in PDM vault: {filePath}");
+                        continue;
+                    }
+                    
+                    // Get PDM file
+                    EPDM.Interop.epdm.IEdmFile5 edmFile = pdmVault.GetFileFromPath(filePath, out EPDM.Interop.epdm.IEdmFolder5 folder);
+                    if (edmFile == null || folder == null)
+                    {
+                        LogMessage($"Could not get PDM file or folder for: {filePath}");
+                        continue;
+                    }
+                    
+                    // Check if standards need to be applied
+                    string currentVersion = GetCurrentStandardsVersion(compDoc);
+                    bool needsStandards = string.IsNullOrEmpty(currentVersion) || 
+                                         currentVersion != requiredStandardsVersion;
+                    
+                    if (!needsStandards)
+                    {
+                        LogMessage($"Standards already up to date for: {filePath}");
+                        continue;
+                    }
+                    
+                    // Check if locked by someone else
+                    bool isLockedByOther = edmFile.IsLocked && !IsLockedByCurrentUser(edmFile);
+                    
+                    if (isLockedByOther)
+                    {
+                        LogMessage($"File is locked by another user: {filePath}");
+                        continue;
+                    }
+                    
+                    // Add to checkout list
+                    filesToCheckout.Add(new FileCheckoutInfo 
+                    { 
+                        File = edmFile, 
+                        Folder = folder, 
+                        Path = filePath,
+                        IsAlreadyCheckedOut = edmFile.IsLocked && IsLockedByCurrentUser(edmFile),
+                        Document = compDoc
+                    });
+                    
+                    LogMessage($"Added to checkout list: {filePath}, Already checked out: {(edmFile.IsLocked && IsLockedByCurrentUser(edmFile))}");
                 }
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error in ProcessCutListAndRawMaterial: {ex.Message}");
-                rawMaterialMessage = $"Error during raw material processing: {ex.Message}";
-                return false;
+                LogMessage($"Error scanning assembly components: {ex.Message}\n{ex.StackTrace}");
+                if (!silentMode) MessageBox.Show($"Error scanning assembly components: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
             }
-        }
-
-        /// <summary>
-        /// Finds matching raw material from the settings table
-        /// </summary>
-        private RawMaterialMatch FindRawMaterialMatch(string material, double thickness, double length, double width)
-        {
-            try
+            
+            // Step 2: Show dialog with list of files to check out
+            if (filesToCheckout.Count > 0)
             {
-                // Get raw material data from settings
-                if (this.currentSettings == null || this.currentSettings.RawMaterials == null || this.currentSettings.RawMaterials.Count == 0)
+                StringBuilder message = new StringBuilder();
+                message.AppendLine($"The following {filesToCheckout.Count} file(s) need to be checked out to apply Roeslein standards v{requiredStandardsVersion}:");
+                message.AppendLine();
+                
+                foreach (var fileInfo in filesToCheckout)
                 {
-                    Logger.Error("No raw materials defined in currentSettings or settings could not be loaded. Raw material matching cannot proceed.");
-                    return null;
-                }
-                var rawMaterials = this.currentSettings.RawMaterials;
-
-                // Define a tolerance for thickness matching
-                const double thicknessTolerance = 0.005;
-                Logger.Info($"Using thickness tolerance for matching: +/- {thicknessTolerance}");
-
-                // Match material (case insensitive)
-                // Ensure the 'material' parameter (from part) is normalized before comparison
-                string normalizedPartMaterial = material;
-                if (material.Contains("|"))
-                {
-                    string[] parts = material.Split('|');
-                    if (parts.Length >= 2)
-                    {
-                        normalizedPartMaterial = parts[1].Trim();
-                        Logger.Info($"FindRawMaterialMatch: Normalized part material from '{material}' to '{normalizedPartMaterial}' for matching.");
-                    }
-                }
-
-                // --- DEBUG LOGGING FOR MATCHING ---
-                foreach (var rm in rawMaterials)
-                {
-                    Logger.Info($"Candidate: Mat='{rm.Material}', Thk='{rm.Thickness}', L={rm.Length}, W={rm.Width}");
-                    Logger.Info($"  Material match: {string.Equals(rm.Material.Trim(), normalizedPartMaterial, StringComparison.OrdinalIgnoreCase)}");
-                    Logger.Info($"  Thickness diff: {Math.Abs(rm.Thickness - thickness)} (tolerance {thicknessTolerance})");
-                    Logger.Info($"  Length ok: {rm.Length} >= {length} = {rm.Length >= length}, Width ok: {rm.Width} >= {width} = {rm.Width >= width}");
-                }
-                // --- END DEBUG LOGGING ---
-
-                var matches = rawMaterials.Where(rm =>
-                    string.Equals(rm.Material.Trim(), normalizedPartMaterial, StringComparison.OrdinalIgnoreCase) &&
-                    Math.Abs(rm.Thickness - thickness) < thicknessTolerance &&
-                    rm.Length >= length &&
-                    rm.Width >= width
-                ).ToList();
-
-                if (matches.Count == 0)
-                {
-                    Logger.Info($"No raw material match found for: Material='{material}', Thickness='{thickness}', Length='{length}', Width='{width}' with tolerance {thicknessTolerance}.");
-                    return null;
+                    string status = fileInfo.IsAlreadyCheckedOut ? " (already checked out)" : "";
+                    message.AppendLine($"• {fileInfo.FileName}{status}");
                 }
                 
-                Logger.Info($"Found {matches.Count} potential raw material matches before ordering.");
-
-                // If we have multiple matches, get the smallest sheet that fits our part
-                var bestMatch = matches
-                    .OrderBy(m => m.Length * m.Width) // Order by sheet area
-                    .FirstOrDefault();
-
-                // Convert Settings.RawMaterial to RawMaterialMatch
-                if (bestMatch != null)
-                {
-                    return new RawMaterialMatch
-                    {
-                        PartNumber = bestMatch.PartNumber,
-                        Material = bestMatch.Material,
-                        Thickness = bestMatch.Thickness,
-                        Length = bestMatch.Length,
-                        Width = bestMatch.Width,
-                        Description = bestMatch.Description,
-                        UnitOfMeasure = bestMatch.UnitOfMeasure
-                    };
-                }
-
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error in FindRawMaterialMatch: {ex.Message}");
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Internal class for raw material matching results
-        /// </summary>
-        private class RawMaterialMatch
-        {
-            public string PartNumber { get; set; }
-            public string Material { get; set; }
-            public double Thickness { get; set; }
-            public double Length { get; set; }
-            public double Width { get; set; }
-            public string Description { get; set; }
-            public string UnitOfMeasure { get; set; }
-        }
-
-        /// <summary>
-        /// Ensures the part has a sheet metal cut list that's set to update automatically
-        /// </summary>
-        private bool EnsureSheetMetalCutList(ModelDoc2 swModel)
-        {
-            try
-            {
-                if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
-                {
-                    Logger.Info("Not a part document, skipping cut list check");
-                    return false;
-                }
-
-                // PartDoc partDoc = (PartDoc)swModel; // Not strictly needed here if using swModel.FeatureManager
+                message.AppendLine();
+                message.AppendLine("Proceed with checkout and apply standards?");
                 
-                Logger.Info("Checking for sheet metal cut list...");
-                
-                // First, check if this is a sheet metal part at all
-                // bool isSheetMetal = IsSheetMetalPart(swModel); // isSheetMetalPart class member is set by IsSheetMetalPart
-                this.isSheetMetalPart = IsSheetMetalPart(swModel);
-                
-                if (!this.isSheetMetalPart)
-                {
-                    Logger.Info("Not a sheet metal part, skipping cut list check");
-                    return false;
-                }
-                
-                // Set flag to indicate check was performed
-                cutListCheckPerformed = true;
-                
-                // Look for the SolidBodyFolder feature
-                Feature swFeat = (Feature)swModel.FirstFeature();
-                this.cutListFound = false; // Initialize class member
-                
-                while (swFeat != null)
-                {
-                    string typeName = swFeat.GetTypeName2();
+                DialogResult result = MessageBox.Show(
+                    message.ToString(),
+                    "Batch Checkout Required",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
                     
-                    if (typeName == "SolidBodyFolder")
+                if (result == DialogResult.Yes)
+                {
+                    // Step 3: Check out all files
+                    List<FileCheckoutInfo> filesToProcess = new List<FileCheckoutInfo>();
+                    
+                    foreach (var fileInfo in filesToCheckout)
                     {
-                        // Found the SolidBodyFolder
-                        this.cutListFound = true;
-                        Logger.Info("Found SolidBodyFolder feature");
-                        
-                        // Get the specific feature
-                        BodyFolder swBodyFolder = swFeat.GetSpecificFeature2() as BodyFolder;
-                        
-                        if (swBodyFolder != null)
+                        try
                         {
-                            // Check current settings
-                            bool isAuto = swBodyFolder.GetAutomaticCutList();
-                            // cutListAutoUpdateEnabled = isAuto; // This is a class member, ensure it's set if needed for reporting
-                            Logger.Info($"Automatic cut list is currently: {(isAuto ? "Enabled" : "Disabled")}");
-                            
-                            // Set to automatic
-                            swBodyFolder.SetAutomaticCutList(true);
-                            swBodyFolder.SetAutomaticUpdate(true);
-                            // cutListAutoUpdateEnabled = true; // Update class member for reporting
-                            Logger.Info("Set cut list to automatic update");
-                        }
-                        else
-                        {
-                            Logger.Warning("Found SolidBodyFolder but couldn't get BodyFolder interface");
-                        }
-                        
-                        break; // Found the folder, exit loop
-                    }
-                    
-                    // Move to next feature
-                    swFeat = (Feature)swFeat.GetNextFeature();
-                }
-                
-                if (!this.cutListFound)
-                {
-                    Logger.Warning("SolidBodyFolder not found. Attempting to create cut list...");
-                    
-                    try
-                    {
-                        // SolidWorks doesn't have a direct InsertCutList method on PartDoc
-                        // Instead we need to use the Insert > Cut-List menu command via the API
-                        PartDoc partDoc = (PartDoc)swModel; // Needed for GetBodies2
-
-                        // First, try to select the bodies in the part
-                        // Use swModel.Extension, not partDoc.Extension
-                        bool selectResult = false;
-                        try {
-                            // Use the correct SelectionManager to select bodies
-                            SelectionMgr swSelMgr = (SelectionMgr)swModel.SelectionManager;
-                            
-                            // Get all bodies in the part
-                            Body2[] swBodies = (Body2[])partDoc.GetBodies2((int)swBodyType_e.swSolidBody, true);
-                            if (swBodies != null && swBodies.Length > 0)
+                            if (!fileInfo.IsAlreadyCheckedOut)
                             {
-                                // Clear current selection
-                                swModel.ClearSelection2(true);
-                                
-                                // Select each solid body
-                                foreach (Body2 body in swBodies)
-                                {
-                                    swSelMgr.AddSelectionListObject(body, null);
-                                }
-                                
-                                selectResult = true;
-                                Logger.Info($"Selected {swBodies.Length} bodies for cut list creation");
+                                LogMessage($"Checking out: {fileInfo.Path}");
+                                fileInfo.File.LockFile(fileInfo.Folder.ID, 0, 
+                                    (int)EdmLockFlag.EdmLock_Simple);
+                                fileInfo.IsAlreadyCheckedOut = true;
+                            }
+                            
+                            filesToProcess.Add(fileInfo);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogMessage($"Failed to check out {fileInfo.Path}: {ex.Message}");
+                            if (!silentMode) MessageBox.Show($"Failed to check out file: {fileInfo.FileName}\n\nError: {ex.Message}", 
+                                "Checkout Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
+                    }
+                    
+                    // Step 4: Apply standards to each file
+                    int successCount = 0;
+                    foreach (var fileInfo in filesToProcess)
+                    {
+                        try
+                        {
+                            LogMessage($"Applying standards to: {fileInfo.Path}");
+                            
+                            bool success = ApplyStandardsToActiveDocument(fileInfo.Document, requiredStandardsVersion, true);
+                            fileInfo.StandardsApplied = success;
+                            
+                            if (success)
+                            {
+                                successCount++;
+                                LogMessage($"Successfully applied standards to: {fileInfo.Path}");
                             }
                             else
                             {
-                                Logger.Warning("No solid bodies found in the part");
+                                LogMessage($"Failed to apply standards to: {fileInfo.Path}");
                             }
                         }
                         catch (Exception ex)
                         {
-                            Logger.Error($"Error selecting bodies for cut list creation: {ex.Message}");
+                            LogMessage($"Error applying standards to {fileInfo.Path}: {ex.Message}");
+                            fileInfo.StandardsApplied = false;
                         }
-                        
-                        if (selectResult)
-                        {
-                            // Use the Cut-List command via command manager
-                            // Command ID for Insert Cut-List is 1801
-                            bool cmdResult = swModel.Extension.RunCommand(1801, "");
-                            
-                            if (cmdResult)
-                            {
-                                Logger.Info("Successfully created cut list through command manager");
-                                
-                                // Now find it and set it to automatic
-                                swModel.ForceRebuild3(false);
-                                
-                                // Re-scan for the SolidBodyFolder feature
-                                Feature newFeat = (Feature)swModel.FirstFeature();
-                                
-                                while (newFeat != null)
-                                {
-                                    string typeName = newFeat.GetTypeName2();
-                                    
-                                    if (typeName == "SolidBodyFolder")
-                                    {
-                                        this.cutListFound = true; // Mark as found
-                                        BodyFolder swBodyFolder = newFeat.GetSpecificFeature2() as BodyFolder;
-                                        
-                                        if (swBodyFolder != null)
-                                        {
-                                            swBodyFolder.SetAutomaticCutList(true);
-                                            swBodyFolder.SetAutomaticUpdate(true);
-                                            // cutListAutoUpdateEnabled = true; // Update class member for reporting
-                                            Logger.Info("Set automatic cut list on new cut list");
-                                        }
-                                        
-                                        break;
-                                    }
-                                    
-                                    newFeat = (Feature)newFeat.GetNextFeature();
-                                }
-                            }
-                            else
-                            {
-                                Logger.Warning("Failed to run cut list command");
-                                // cutListFound remains false
-                            }
-                        }
-                        // If selectResult is false, cutListFound remains false
                     }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"Error creating cut list: {ex.Message}");
-                        // cutListFound remains false
-                    }
-                }
-
-                // After all attempts to find or create:
-                if (this.cutListFound)
-                {
-                    // If a cut list exists (either pre-existing or newly created and configured)
-                    // then process it for raw material.
-                    // ProcessCutListAndRawMaterial itself checks for isSheetMetalPart and cutListFound.
-                    // ProcessCutListAndRawMaterial(swModel); // This call is REMOVED - it's redundant
                     
-                    // Update cutListAutoUpdateEnabled based on the final state if needed for reporting
-                    // This requires re-fetching the BodyFolder if it was newly created or re-checking.
-                    // For simplicity, the existing logging inside the find/create blocks handles immediate status.
-                    // The class member cutListAutoUpdateEnabled might need more careful handling if its state
-                    // post-creation is critical for the summary message and not just logged during setup.
-                    // The original code set it inside the find/create blocks too.
-                    // Let's assume the ApplyStandardsToActiveDocument completion message will primarily rely on `cutListFound`.
-                }
-                else
-                {
-                    if (this.isSheetMetalPart) // Only log this specific warning if we expected a cutlist
+                    // Step 5: Check in all files with appropriate comments
+                    int checkinCount = 0;
+                    foreach (var fileInfo in filesToProcess)
                     {
-                         Logger.Warning("Sheet metal part: Cut list could not be found or created. Raw material processing skipped.");
+                        // Only check in files that we checked out (not ones that were already checked out)
+                        if (!fileInfo.IsAlreadyCheckedOut || fileInfo.File == null) continue;
+                        
+                        try
+                        {
+                            string comment = fileInfo.StandardsApplied ?
+                                $"Standards v{requiredStandardsVersion} applied by Roeslein Connex" :
+                                "Standards application attempted by Roeslein Connex but failed";
+                                
+                            LogMessage($"Checking in: {fileInfo.Path} with comment: {comment}");
+                            fileInfo.File.UnlockFile(0, comment);
+                            checkinCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            LogMessage($"Failed to check in {fileInfo.Path}: {ex.Message}");
+                            if (!silentMode) MessageBox.Show($"Failed to check in file: {fileInfo.FileName}\n\nError: {ex.Message}", 
+                                "Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
+                    }
+                    
+                    // Show summary
+                    if (!silentMode)
+                    {
+                        MessageBox.Show(
+                            $"Standards application complete.\n\n" +
+                            $"Files processed: {filesToProcess.Count}\n" +
+                            $"Standards applied successfully: {successCount}\n" +
+                            $"Files checked back in: {checkinCount}",
+                            "Standards Application Complete",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
                     }
                 }
-                
-                // The return value of EnsureSheetMetalCutList now primarily indicates if the conditions
-                // for attempting raw material processing (isSheetMetalPart and cutListFound) are met.
-                // The actual success of ProcessCutListAndRawMaterial is tracked by its own flags.
-                bool canAttemptRawMaterialProcessing = this.isSheetMetalPart && this.cutListFound;
-
-                if (canAttemptRawMaterialProcessing)
-                {
-                    // Log that we are now actually calling it.
-                    Logger.Info("EnsureSheetMetalCutList: Conditions met. Proceeding to ProcessCutListAndRawMaterial.");
-                    ProcessCutListAndRawMaterial(swModel);
-                    // The status flags (rawMaterialProcessingAttempted, rawMaterialMatchFound, etc.)
-                    // will be set by ProcessCutListAndRawMaterial.
-                }
                 else
                 {
-                     Logger.Info("Skipping ProcessCutListAndRawMaterial due to isSheetMetalPart=false or cutListFound=false.");
-                     // Ensure rawMaterialProcessingAttempted reflects this if not already false.
-                     // However, ApplyStandardsToActiveDocument calls CheckAndMapMaterial, then EnsureSheetMetalCutList (which then calls ProcessCutListAndRawMaterial)
-                     // So `rawMaterialProcessingAttempted` will be set by ProcessCutListAndRawMaterial itself if called.
-                     // If ProcessCutListAndRawMaterial is not called, rawMaterialProcessingAttempted remains false from its reset.
-                }
-
-                return canAttemptRawMaterialProcessing; // Return if processing could be attempted.
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Error in EnsureSheetMetalCutList: {ex.Message}");
-                return false;
-            }
-        }
-
-        public void SetPdmVault(IEdmVault5 pdmVault)
-        {
-            this.pdmVault = pdmVault;
-        }
-
-        private Settings.RawMaterial FindRawMaterialMatch(double length, double width, double thicknessInches)
-        {
-            if (currentSettings.RawMaterials == null || !currentSettings.RawMaterials.Any())
-            {
-                this.LogMessage("RawMaterials list is empty or null. Cannot find match.");
-                return null;
-            }
-            this.LogMessage($"Finding raw material for L={length}, W={width}, Thickness={thicknessInches} (inches). Tolerance for thickness: +/- {currentSettings.ThicknessToleranceInches}");
-
-            double dim1 = Math.Max(length, width); 
-            double dim2 = Math.Min(length, width); 
-
-            foreach (var material in currentSettings.RawMaterials)
-            {
-                double matDim1 = Math.Max(material.Length, material.Width);
-                double matDim2 = Math.Min(material.Length, material.Width);
-
-                bool thicknessMatch = Math.Abs(material.Thickness - thicknessInches) <= currentSettings.ThicknessToleranceInches;
-                bool dimensionsMatch = (dim1 >= matDim1 && dim2 >= matDim2);
-
-                if (thicknessMatch && dimensionsMatch)
-                {
-                    this.LogMessage($"Match found: CSV L={material.Length}, W={material.Width}, T={material.Thickness} with Part L={length}, W={width}, T_Cutlist={thicknessInches}. Ordered part dims: D1={dim1}, D2={dim2}. Ordered mat dims: M1={matDim1}, M2={matDim2}");
-                    return material;
-                }
-                else if (thicknessMatch) 
-                {
-                    this.LogMessage($"Thickness match for PartNo {material.PartNumber} (T={material.Thickness}), but dimensions no match: Part Dims (ordered) Lrg={dim1}, Sml={dim2}. Material Dims (ordered) Lrg={matDim1}, Sml={matDim2}.");
+                    LogMessage("User cancelled batch standards application.");
                 }
             }
-            this.LogMessage("No suitable raw material found in the list for the given dimensions and thickness.");
-            return null;
-        }
-
-        private void LogMessage(string message)
-        {
-            System.Diagnostics.Debug.WriteLine($"[PropertyStandardManager] {DateTime.Now:yyyy-MM-dd HH:mm:ss}: {message}");
+            else
+            {
+                LogMessage("No files found that need standards applied.");
+                if (!silentMode) MessageBox.Show("No files in this assembly need standards applied or all files requiring standards are locked by other users.", 
+                    "Standards Application", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
         }
     }
 } 

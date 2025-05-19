@@ -10,8 +10,9 @@ using System.Windows.Forms;
 using System.IO;
 using System.Globalization;
 using System.Reflection;
-using EPDM.Interop.epdm;
 using SolidWorks.Interop.sldworks;
+// Use our own PDM interface implementations
+// (Remove EPDM.Interop.epdm import)
 
 namespace RoesleinAddIn
 {
@@ -644,86 +645,79 @@ namespace RoesleinAddIn
 
         private void LoadRawSheetData()
         {
-            if (dgvRawSheet == null) return;
             try
             {
-                List<RawSheetData> rawSheetEntries = LoadAndParsePdmCsv(pdmCsvFilePath);
-                dgvRawSheet.DataSource = new BindingList<RawSheetData>(rawSheetEntries); // Use BindingList for dynamic updates
-                Logger.DebugLog($"Successfully loaded {rawSheetEntries.Count} entries into dgvRawSheet.");
+                dgvRawSheet.Rows.Clear();
+                
+                List<RawSheetData> rawSheets = LoadAndParsePdmCsv(pdmCsvFilePath);
+                
+                foreach (var sheet in rawSheets)
+                {
+                    int rowIndex = dgvRawSheet.Rows.Add();
+                    dgvRawSheet.Rows[rowIndex].Cells["PartNumber"].Value = sheet.PartNumber;
+                    dgvRawSheet.Rows[rowIndex].Cells["LegacyPartNumber"].Value = sheet.LegacyPartNumber;
+                    dgvRawSheet.Rows[rowIndex].Cells["Material"].Value = sheet.Material;
+                    dgvRawSheet.Rows[rowIndex].Cells["Thickness"].Value = sheet.Thickness;
+                    dgvRawSheet.Rows[rowIndex].Cells["Description"].Value = sheet.Description;
+                    dgvRawSheet.Rows[rowIndex].Cells["TotalSQInch"].Value = sheet.TotalSQInch;
+                    dgvRawSheet.Rows[rowIndex].Cells["SheetLengthInch"].Value = sheet.SheetLengthInch;
+                    dgvRawSheet.Rows[rowIndex].Cells["SheetHeightInch"].Value = sheet.SheetHeightInch;
+                    dgvRawSheet.Rows[rowIndex].Cells["LastCost"].Value = sheet.LastCost;
+                }
             }
             catch (Exception ex)
             {
-                Logger.DebugLog($"Error in LoadRawSheetData: {ex.Message}\\nStack Trace: {ex.StackTrace}");
-                MessageBox.Show($"Error loading raw sheet data: {ex.Message}", "Load Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                dgvRawSheet.DataSource = new BindingList<RawSheetData>(); // Ensure it's at least an empty list
+                Logger.Error($"Error loading raw sheet data: {ex.Message}", ex);
+                MessageBox.Show("Error loading raw sheet data: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
-        
+
         private List<RawSheetData> LoadAndParsePdmCsv(string filePath)
         {
-            Logger.DebugLog($"Attempting to load and parse CSV from PDM path: {filePath}");
-            if (pdmVault == null)
-            {
-                Logger.DebugLog("PDM vault object is null. Cannot load CSV from PDM.");
-                MessageBox.Show("PDM connection is not available. Cannot load raw sheet data.", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return new List<RawSheetData>();
-            }
-
-            if (!pdmVault.IsLoggedIn)
-            {
-                Logger.DebugLog("Not logged into PDM. Cannot load CSV.");
-                // Attempt to login or prompt user? For now, just show error.
-                MessageBox.Show("Not logged into PDM. Please log in and try again.", "PDM Login Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return new List<RawSheetData>();
-            }
-
             try
             {
+                if (pdmVault == null)
+                {
+                    MessageBox.Show("PDM Vault not available. Using null PDM implementation.", 
+                        "PDM Not Available", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    pdmVault = PdmHelper.GetNullVault();
+                }
+                
                 IEdmFolder5 edmFolder = null;
                 IEdmFile5 edmFile = pdmVault.GetFileFromPath(filePath, out edmFolder);
+                // edmFolder = (IEdmFolder5)folderObj; // This line is no longer needed
 
                 if (edmFile == null)
                 {
                     Logger.DebugLog($"PDM file not found at path: {filePath}");
-                    MessageBox.Show($"The Raw Material CSV file was not found in PDM at the expected location:\\n{filePath}\\nPlease check the path and PDM availability.", "File Not Found", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show($"The Raw Material CSV file was not found in PDM at the expected location:\n{filePath}\nPlease check the path and PDM availability.", "File Not Found", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return new List<RawSheetData>();
                 }
 
                 Logger.DebugLog($"PDM File found: {edmFile.Name}, ID: {edmFile.ID}, Version: {edmFile.CurrentVersion}");
                 
                 // Get the file to ensure we have the latest version locally
-                // EdmCmdFlags.EdmCmd_Force (if needed to overwrite) | EdmCmdFlags.EdmCmd_Silent
-                edmFile.GetFileCopy((int)GetParentWindowHandle(), 0); // Changed from (int)EPDM.Interop.epdm.EdmCmdFlags.EdmCmd_Nothing to 0
+                edmFile.GetFileCopy((int)GetParentWindowHandle(), 0);
                 Logger.DebugLog($"Local copy of PDM file '{edmFile.Name}' obtained/updated.");
 
-                string localPath = edmFile.GetLocalPath(edmFolder.ID); // Get local path after GetFileCopy
-                if (!File.Exists(localPath))
+                // Now read the CSV directly
+                if (File.Exists(filePath))
                 {
-                     Logger.DebugLog($"Local file copy does not exist after GetFileCopy: {localPath}");
-                     MessageBox.Show($"Failed to retrieve a local copy of the PDM file: {localPath}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                     return new List<RawSheetData>();
+                    string csvData = File.ReadAllText(filePath);
+                    Logger.DebugLog($"Successfully read {csvData.Length} characters from CSV file.");
+                    return ParseRawSheetCsv(csvData);
                 }
-                Logger.DebugLog($"Reading from local PDM file copy: {localPath}");
-                
-                string csvContent;
-                using (StreamReader reader = new StreamReader(localPath, Encoding.UTF8)) // Specify UTF-8
+                else
                 {
-                    csvContent = reader.ReadToEnd();
+                    Logger.DebugLog($"File exists in PDM but not found locally after GetFileCopy: {filePath}");
+                    MessageBox.Show($"Error: Failed to read local copy of the CSV file:\n{filePath}", "File Read Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return new List<RawSheetData>();
                 }
-                Logger.DebugLog($"Successfully read {csvContent.Length} characters from PDM CSV file.");
-                return ParseRawSheetCsv(csvContent);
-            }
-            catch (System.Runtime.InteropServices.COMException cex)
-            {
-                string errorMsg = GetEdmErrorString(cex.ErrorCode);
-                Logger.DebugLog($"PDM COM Exception in LoadAndParsePdmCsv: {cex.Message} (Code: {cex.ErrorCode}, PDM Msg: {errorMsg})\\nStackTrace: {cex.StackTrace}");
-                MessageBox.Show($"A PDM error occurred while loading the raw material data: {errorMsg} (Code: {cex.ErrorCode})", "PDM Operation Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return new List<RawSheetData>();
             }
             catch (Exception ex)
             {
-                Logger.DebugLog($"General Exception in LoadAndParsePdmCsv: {ex.Message}\\nStackTrace: {ex.StackTrace}");
-                MessageBox.Show($"An error occurred while loading or parsing the raw material CSV: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.Error($"Error in LoadAndParsePdmCsv: {ex.Message}", ex);
+                MessageBox.Show($"Error loading CSV from PDM: {ex.Message}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return new List<RawSheetData>();
             }
         }

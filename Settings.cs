@@ -6,7 +6,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Windows.Forms;
-using EPDM.Interop.epdm;
 using SolidWorks.Interop.sldworks;
 using System.Globalization; // Added for parsing
 
@@ -354,45 +353,38 @@ namespace RoesleinAddIn
 
         private void LoadPdmSharedData(IEdmVault5 vault)
         {
-            PdmSharedSettings sharedData = null;
-            
             if (vault == null || !vault.IsLoggedIn)
             {
-                Logger.Warning("LoadPdmSharedData: PDM vault is not available or not logged in. Using local defaults/creating new.");
-                sharedData = new PdmSharedSettings(); // Use defaults
-                // Potentially try to load from a local cache if PDM is unavailable, or just use defaults.
-                // For now, we'll just proceed with defaults which might then be populated by LoadDefaultPropertyStandardsStatic.
+                Logger.DebugLog($"LoadPdmSharedData: No logged in vault available, using defaults.");
+                return;
             }
-            else
-            {
-                try
-                {
-                    IEdmFolder5 pdmFolder = null;
-                    IEdmFile5 pdmFile = vault.GetFileFromPath(PdmPropertyStandardsAndVersionPath, out pdmFolder);
 
-                    if (pdmFile != null)
-                    {
-                        // Get the latest version of the file
-                        // The 0 for ParentWndHandle means no UI will be shown on errors by GetFileCopy itself
-                        pdmFile.GetFileCopy(0, pdmFile.CurrentVersion, PdmPropertyStandardsAndVersionPath); // ParentWndHandle is int, 0 is fine.
-                        Logger.Info($"Retrieved latest version ({pdmFile.CurrentVersion}) of PDM shared settings file: {PdmPropertyStandardsAndVersionPath}");
-                    }
-                    else
-                    {
-                        Logger.Warning($"PDM shared settings file does not exist in vault at: '{PdmPropertyStandardsAndVersionPath}'. Will attempt to create it on next save if settings are modified.");
-                        // File doesn't exist in PDM, so proceed with defaults. It will be created on first save via SettingsForm.
-                    }
-                }
-                catch (System.Runtime.InteropServices.COMException comEx)
+            try
+            {
+                IEdmFile5 pdmFile = null; 
+                IEdmFolder5 pdmFolder = null; 
+                pdmFile = vault.GetFileFromPath(PdmPropertyStandardsAndVersionPath, out pdmFolder);
+                
+                if (pdmFile != null)
                 {
-                    Logger.Error($"PDM COMException during GetFileFromPath or GetFileCopy for '{PdmPropertyStandardsAndVersionPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})", comEx);
-                    // Fallback to defaults if PDM access fails.
+                    pdmFile.GetFileCopy(0, pdmFile.CurrentVersion, PdmPropertyStandardsAndVersionPath);
+                    Logger.Info($"Retrieved latest version ({pdmFile.CurrentVersion}) of PDM shared settings file: {PdmPropertyStandardsAndVersionPath}");
                 }
-                catch (Exception ex)
+                else
                 {
-                    Logger.Error($"Error during PDM file retrieval for '{PdmPropertyStandardsAndVersionPath}': {ex.Message}", ex);
-                    // Fallback to defaults.
+                    Logger.Warning($"PDM shared settings file does not exist in vault at: '{PdmPropertyStandardsAndVersionPath}'. Will attempt to create it on next save if settings are modified.");
+                    // File doesn't exist in PDM, so proceed with defaults. It will be created on first save via SettingsForm.
                 }
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                Logger.Error($"PDM COMException during GetFileFromPath or GetFileCopy for '{PdmPropertyStandardsAndVersionPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})", comEx);
+                // Fallback to defaults if PDM access fails.
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error during PDM file retrieval for '{PdmPropertyStandardsAndVersionPath}': {ex.Message}", ex);
+                // Fallback to defaults.
             }
 
             // Proceed with deserialization attempt regardless of PDM success (might be using local copy or defaults)
@@ -403,29 +395,27 @@ namespace RoesleinAddIn
                     XmlSerializer serializer = new XmlSerializer(typeof(PdmSharedSettings));
                     using (FileStream stream = new FileStream(PdmPropertyStandardsAndVersionPath, FileMode.Open, FileAccess.Read)) // Open with Read access
                     {
-                        sharedData = (PdmSharedSettings)serializer.Deserialize(stream);
+                        PdmSharedSettings sharedData = (PdmSharedSettings)serializer.Deserialize(stream);
+                        this.SettingsVersion = sharedData.SettingsVersion ?? "25.1"; 
+                        this.PropertyStandards = sharedData.PropertyStandards ?? new List<PropertyStandardSetting>();
+
+                        if (this.PropertyStandards.Count == 0)
+                        {
+                            Logger.Info("No property standards found in PDM shared settings or local file. Loading hardcoded default standards into current instance.");
+                            LoadDefaultPropertyStandardsStatic(this.PropertyStandards); 
+                        }
                     }
-                    Logger.Info($"Successfully deserialized shared settings from: {PdmPropertyStandardsAndVersionPath}");
                 }
                 catch (Exception ex)
                 {
                     Logger.Error($"Error deserializing shared settings from '{PdmPropertyStandardsAndVersionPath}': {ex.Message}", ex);
-                    sharedData = new PdmSharedSettings(); 
+                    this.PropertyStandards = new List<PropertyStandardSetting>(); 
                 }
             }
             else
             {
                 Logger.Warning($"Local shared settings file not found after PDM ops: '{PdmPropertyStandardsAndVersionPath}'. Using default values.");
-                sharedData = new PdmSharedSettings(); 
-            }
-
-            this.SettingsVersion = sharedData.SettingsVersion ?? "25.1"; 
-            this.PropertyStandards = sharedData.PropertyStandards ?? new List<PropertyStandardSetting>();
-
-            if (this.PropertyStandards.Count == 0)
-            {
-                Logger.Info("No property standards found in PDM shared settings or local file. Loading hardcoded default standards into current instance.");
-                LoadDefaultPropertyStandardsStatic(this.PropertyStandards); 
+                this.PropertyStandards = new List<PropertyStandardSetting>(); 
             }
         }
         
@@ -433,21 +423,19 @@ namespace RoesleinAddIn
         {
             if (vault == null || !vault.IsLoggedIn)
             {
-                Logger.Error("SavePdmSharedSettings: PDM vault is not available or not logged in. Cannot save shared settings to PDM.");
-                // Optionally, save to a local cache or inform user appropriately.
+                Logger.Error("SavePdmSharedSettings: No logged in vault available.");
                 return false;
             }
 
             IEdmFile5 pdmFile = null;
-            IEdmFolder5 pdmFolder = null;
+            IEdmFolder5 pdmFolder = null; 
             bool wasCheckedOutByThisOperation = false;
             long parentWndHandle = GetSolidWorksWindowHandle();
             string currentPdmUserName = null;
 
-            // Get current PDM user name
             try
             {
-                IEdmVault7 vault7 = vault as IEdmVault7; // Try to cast to IEdmVault7 or higher
+                IEdmVault7 vault7 = vault as IEdmVault7;
                 if (vault7 != null)
                 {
                     IEdmUserMgr5 userMgr = vault7.CreateUtility(EdmUtility.EdmUtil_UserMgr) as IEdmUserMgr5;
@@ -465,7 +453,6 @@ namespace RoesleinAddIn
                 }
                 else
                 {
-                    // Removed the direct call to vault.GetLoggedInUser() as it's not on IEdmVault5
                     Logger.Warning("SavePdmSharedSettings: Could not cast pdmVault to IEdmVault7 (or newer). Unable to get PDM user name via CreateUtility.");
                 }
             }
@@ -474,48 +461,40 @@ namespace RoesleinAddIn
                 Logger.Error($"SavePdmSharedSettings: Error getting current PDM user name: {ex.Message}");
             }
 
-
             try
             {
                 pdmFile = vault.GetFileFromPath(PdmPropertyStandardsAndVersionPath, out pdmFolder);
 
                 if (pdmFile == null)
                 {
-                    // File doesn't exist, so it will be added on check-in.
-                    // We need to ensure the local directory exists to write the file before adding.
                     string directory = Path.GetDirectoryName(PdmPropertyStandardsAndVersionPath);
                     if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                     {
                         Directory.CreateDirectory(directory);
                     }
                     Logger.Info($"PDM shared settings file does not exist in vault. It will be created locally at '{PdmPropertyStandardsAndVersionPath}' and added.");
-                    // No need to checkout if file doesn't exist in PDM yet.
                 }
                 else
                 {
-                    // File exists, check it out
                     if (!pdmFile.IsLocked)
                     {
-                        // parentWndHandle needs to be int for LockFile
                         pdmFile.LockFile(pdmFolder.ID, (int)parentWndHandle, (int)EdmLockFlag.EdmLock_Simple);
                         wasCheckedOutByThisOperation = true;
                         Logger.Info($"Checked out PDM shared settings file: {PdmPropertyStandardsAndVersionPath}");
                     }
-                    // else if (pdmFile.IsLockedByMe) // CS1061: IEdmFile5 has no IsLockedByMe
-                    else if (pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && pdmFile.LockedByUser.Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                    else if (pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
                     {
                         Logger.Info($"PDM shared settings file '{PdmPropertyStandardsAndVersionPath}' is already locked by the current user ('{currentPdmUserName}').");
                     }
                     else
                     {
-                        string lockedByUserName = pdmFile.IsLocked ? pdmFile.LockedByUser.Name : "Unknown User";
+                        string lockedByUserName = pdmFile.IsLocked ? ((IEdmUser5)pdmFile.LockedByUser).Name : "Unknown User";
                         Logger.Error($"PDM shared settings file '{PdmPropertyStandardsAndVersionPath}' is locked by another user: {lockedByUserName}. Current user: '{currentPdmUserName ?? "Unknown"}'. Cannot save.");
                         MessageBox.Show($"Settings file '{PdmPropertyStandardsAndVersionPath}' is locked by user '{lockedByUserName}'. Cannot save changes.", "File Locked", MessageBoxButtons.OK, MessageBoxIcon.Error);
                         return false;
                     }
                 }
                 
-                // Serialize and write the file locally (PDM GetFileCopy on load should have put it in the right place)
                 PdmSharedSettings sharedData = new PdmSharedSettings
                 {
                     SettingsVersion = settingsVersion,
@@ -523,34 +502,26 @@ namespace RoesleinAddIn
                 };
 
                 XmlSerializer serializer = new XmlSerializer(typeof(PdmSharedSettings));
-                using (FileStream stream = new FileStream(PdmPropertyStandardsAndVersionPath, FileMode.Create, FileAccess.Write)) // Create/Overwrite with Write access
+                using (FileStream stream = new FileStream(PdmPropertyStandardsAndVersionPath, FileMode.Create, FileAccess.Write))
                 {
                     serializer.Serialize(stream, sharedData);
                 }
                 Logger.Info($"Successfully wrote shared settings to local file: {PdmPropertyStandardsAndVersionPath}");
 
-                // Check in the file
-                if (pdmFile == null && pdmFolder != null) // File was newly created locally and needs to be added to PDM
+                if (pdmFile == null && pdmFolder != null)
                 {
-                     // parentWndHandle needs to be int for AddFile
                      pdmFolder.AddFile((int)parentWndHandle, PdmPropertyStandardsAndVersionPath, "Added initial property standards and version file.");
                      Logger.Info($"Added new shared settings file to PDM: {PdmPropertyStandardsAndVersionPath}");
-                     // After adding, get the file object to check it in if AddFile doesn't do it automatically or if further check-in comments are desired.
-                     // This step might need refinement based on EPDM API specifics for AddFile + CheckIn.
-                     // For now, we assume AddFile makes it available. If it needs explicit check-in:
-                     pdmFile = vault.GetFileFromPath(PdmPropertyStandardsAndVersionPath, out pdmFolder); // Re-get the file
+                     pdmFile = vault.GetFileFromPath(PdmPropertyStandardsAndVersionPath, out pdmFolder);
                      if (pdmFile != null) {
-                         // parentWndHandle needs to be int for UnlockFile
                          pdmFile.UnlockFile((int)parentWndHandle, "Initial check-in of property standards and version file.");
                          Logger.Info($"Checked in newly added shared settings file: {PdmPropertyStandardsAndVersionPath}");
                      }
                 }
-                // else if (pdmFile != null && pdmFile.IsLockedByMe)
-                else if (pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && pdmFile.LockedByUser.Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                else if (pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
                 {
-                    // parentWndHandle needs to be int for UnlockFile
                     pdmFile.UnlockFile((int)parentWndHandle, "Updated property standards and version.");
-                    wasCheckedOutByThisOperation = false; // No longer checked out by this op
+                    wasCheckedOutByThisOperation = false; 
                     Logger.Info($"Checked in PDM shared settings file: {PdmPropertyStandardsAndVersionPath}");
                 }
                 return true;
@@ -559,29 +530,21 @@ namespace RoesleinAddIn
             {
                 Logger.Error($"PDM COMException during save/checkout/checkin for '{PdmPropertyStandardsAndVersionPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})", comEx);
                  MessageBox.Show($"A PDM error occurred while saving settings: {comEx.Message}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                // TODO: Potentially undo checkout if save failed and wasCheckedOutByThisOperation is true
-                // if (wasCheckedOutByThisOperation && pdmFile != null) pdmFile.UndoLockFile(parentWndHandle);
                 return false;
             }
             catch (Exception ex)
             {
                 Logger.Error($"Error saving PDM shared settings to '{PdmPropertyStandardsAndVersionPath}': {ex.Message}", ex);
                 MessageBox.Show($"An error occurred while saving settings: {ex.Message}", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                // TODO: Potentially undo checkout if save failed
-                // if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLockedByMe) pdmFile.UndoLockFile(parentWndHandle);
                 return false;
             }
             finally
             {
-                // Ensure file is unlocked if an unexpected error occurred during write & PDM check-in wasn't reached,
-                // but only if this operation actually checked it out.
-                // if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLockedByMe)
-                if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && pdmFile.LockedByUser.Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
                 {
                     try
                     {
                         Logger.Warning($"Attempting to undo checkout for {PdmPropertyStandardsAndVersionPath} due to an error or incomplete save.");
-                        // parentWndHandle needs to be int for UndoLockFile
                         pdmFile.UndoLockFile((int)parentWndHandle);
                     }
                     catch (Exception undoEx) { Logger.Error($"Failed to auto-undo PDM checkout: {undoEx.Message}"); }

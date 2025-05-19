@@ -122,8 +122,6 @@ namespace RoesleinAddIn
         {
             try
             {
-                // Initial WriteToLog might go to default debug output or a default log file
-                // if logger isn't configured yet. This is acceptable for initial trace.
                 WriteToLog("=== ConnectToSW Started ===");
                 Debug.WriteLine("=== ConnectToSW Started ===");
 
@@ -133,80 +131,20 @@ namespace RoesleinAddIn
 
                 // Set callback info
                 bool result = swApp.SetAddinCallbackInfo2(0, this, addinID);
-                // WriteToLog($"SetAddinCallbackInfo2 result: {result}"); // Log after logger config
+                WriteToLog($"SetAddinCallbackInfo2 result: {result}");
 
                 // Create path to add-in assembly
                 addinPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-                // WriteToLog($"Add-in path: {addinPath}"); // Log after logger config
-                // WriteToLog($"Add-in path exists: {Directory.Exists(addinPath)}"); // Log after logger config
-
-                // ---- Configure Logger EARLY ----
-                try
-                {
-                    // This WriteToLog might still be pre-config if called before SetLogFilePath etc.
-                    // However, the critical part is that Logger.Instance itself is configured.
-                    WriteToLog("Attempting to configure global logger..."); 
-                    var settings = Settings.LoadSettings();
-
-                    if (settings != null)
-                    {
-                        Logger.Instance.SetSettingsEnabled(settings.LoggingEnabled);
-                        Logger.Instance.SetDebugEnabled(settings.DebugLoggingEnabled);
-                        
-                        if (!string.IsNullOrWhiteSpace(settings.LogFilePath))
-                        {
-                            Logger.Instance.SetLogFilePath(settings.LogFilePath);
-                            string debugLogPath = settings.DebugLogFilePath;
-                            if (string.IsNullOrWhiteSpace(debugLogPath))
-                            {
-                                debugLogPath = Path.Combine(
-                                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments),
-                                    "RoesleinAddIn_Debug.log" // Default debug log path
-                                );
-                            }
-                            Logger.Instance.SetDebugLogPath(debugLogPath);
-                            // Now that paths are set, this log message should go to the right place.
-                            Logger.Info($"Logger configured: Enabled={settings.LoggingEnabled}, DebugEnabled={settings.DebugLoggingEnabled}, Path={settings.LogFilePath}, DebugPath={debugLogPath}");
-                        }
-                        else
-                        {
-                            Logger.Instance.SetSettingsEnabled(false); 
-                            Logger.Instance.SetDebugEnabled(false);    
-                            Logger.Warning("Logger disabled due to empty/invalid log file path in settings.");
-                        }
-                    }
-                    else
-                    {
-                         Logger.Warning("Could not load settings to configure logger. Using defaults or previous state. Ensure RoesleinAddInSettings.xml is accessible.");
-                    }
-                }
-                catch (Exception exLogger)
-                {
-                    // Use Debug.WriteLine as a fallback if Logger itself fails.
-                    Debug.WriteLine($"CRITICAL ERROR configuring logger: {exLogger.Message}");
-                    try { 
-                        Logger.Instance.SetSettingsEnabled(false); // Attempt to disable to prevent further issues
-                        Logger.Instance.SetDebugEnabled(false);
-                    } catch { /* nested catch to prevent further exceptions */ }
-                }
-                // ----------------------------------
-
-                // Log early messages now that logger should be configured
-                WriteToLog($"SetAddinCallbackInfo2 result: {result}");
                 WriteToLog($"Add-in path: {addinPath}");
                 WriteToLog($"Add-in path exists: {Directory.Exists(addinPath)}");
 
                 // Create processors
                 processor = new SheetMetalProcessor(swApp);
                 bomProcessor = new BomProcessor(swApp);
+                propertyStandardManager = new PropertyStandardManager(pdmVault, swApp, null);
 
                 // Attempt to connect to PDM Vault for the active document
-                // Logs from TryConnectToPdmVaultForActiveDoc (via WriteToLog) should now go to the configured debug log.
-                TryConnectToPdmVaultForActiveDoc(); 
-                
-                // Instantiate PropertyStandardManager AFTER attempting to connect to PDM
-                // Logs from PropertyStandardManager constructor should now go to the configured logs.
-                propertyStandardManager = new PropertyStandardManager(swApp, pdmVault);
+                TryConnectToPdmVaultForActiveDoc();
 
                 // Add the CommandManager
                 AddCommandMgr();
@@ -232,7 +170,7 @@ namespace RoesleinAddIn
         public bool DisconnectFromSW()
         {
             Debug.WriteLine("DisconnectFromSW called");
-
+            
             // Remove the CommandManager commands
             try
             {
@@ -880,25 +818,53 @@ namespace RoesleinAddIn
             try
             {
                 WriteToLog("ApplyPropertyStandards command invoked.");
-
-                // Ensure PDM vault connection is attempted/refreshed for the current active document
-                TryConnectToPdmVaultForActiveDoc(); 
-
-                if (propertyStandardManager == null)
+                ModelDoc2 activeDoc = swApp.ActiveDoc as ModelDoc2;
+                if (activeDoc == null)
                 {
-                    // Fallback: Should have been initialized in ConnectToSW, 
-                    // but if not, create it now with the potentially just-updated pdmVault.
-                    Logger.Warning("ApplyPropertyStandards: propertyStandardManager was null. Re-initializing.");
-                    propertyStandardManager = new PropertyStandardManager(swApp, this.pdmVault as IEdmVault5); 
+                    swApp.SendMsgToUser2("No active document to apply standards to.", (int)swMessageBoxIcon_e.swMbWarning, (int)swMessageBoxBtn_e.swMbOk);
+                    WriteToLog("ApplyPropertyStandards: No active document.");
+                    return;
+                }
+
+                // IMPORTANT: Make sure we have a PDM connection for this file first
+                WriteToLog("Ensuring PDM connection is established for the active document.");
+                TryConnectToPdmVaultForActiveDoc();
+
+                // Get current standards version from settings
+                string currentStandardsVersion = "1.0.0"; // Default version
+                
+                // Try to get version from settings form if it's open
+                if (settingsForm != null && !settingsForm.IsDisposed)
+                {
+                    // Assuming txtSettingsVersion is a control on SettingsFormV2
+                    TextBox versionTextBox = settingsForm.Controls.Find("txtSettingsVersion", true).FirstOrDefault() as TextBox;
+                    if (versionTextBox != null && !string.IsNullOrEmpty(versionTextBox.Text))
+                    {
+                        currentStandardsVersion = versionTextBox.Text;
+                        WriteToLog($"Retrieved standards version from settings form: {currentStandardsVersion}");
+                    }
                 }
                 else
                 {
-                    // Update the existing PropertyStandardManager instance with the latest PDM vault status
-                    propertyStandardManager.SetPdmVault(this.pdmVault as IEdmVault5);
+                    // Add code here to load standards version from settings file if settings form is not open
+                    // Example: currentStandardsVersion = Properties.Settings.Default.StandardsVersion;
+                    WriteToLog($"Using default standards version: {currentStandardsVersion}");
+                }
+
+                if (propertyStandardManager == null)
+                {
+                    // Explicitly cast to EPDM.Interop.epdm.IEdmVault5
+                    EPDM.Interop.epdm.IEdmVault5 vaultForManager = this.pdmVault as EPDM.Interop.epdm.IEdmVault5;
+                    propertyStandardManager = new PropertyStandardManager(vaultForManager, swApp, null); 
+                }
+                else if (this.pdmVault != null)
+                {
+                    // Update the PDM vault reference in the property manager to ensure it's current
+                    propertyStandardManager = new PropertyStandardManager(this.pdmVault as EPDM.Interop.epdm.IEdmVault5, swApp, null);
                 }
                 
-                // Now, proceed with applying standards
-                propertyStandardManager.ApplyStandardsToActiveDocument();
+                // Pass the currentStandardsVersion as the second parameter
+                propertyStandardManager.ApplyStandardsToActiveDocument(activeDoc, currentStandardsVersion, false);
             }
             catch (Exception ex)
             {
@@ -980,7 +946,8 @@ namespace RoesleinAddIn
             try
             {
                 // Instantiate EdmVault5 class, which is the CoClass for IEdmVault5 and can provide other interfaces.
-                IEdmVault5 vaultObject = new EdmVault5(); 
+                // Explicitly use the EPDM.Interop.epdm.IEdmVault5 interface
+                EPDM.Interop.epdm.IEdmVault5 vaultObject = new EdmVault5(); 
                 
                 string vaultNameForFile = vaultObject.GetVaultNameFromPath(filePath);
 

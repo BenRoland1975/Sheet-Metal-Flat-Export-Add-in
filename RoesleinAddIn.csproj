@@ -38,6 +38,13 @@
     <ApplicationIcon>Resources\RoesleinConnex_freestyle_bold.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Using our own PDM interface stubs -->
+    <!-- 
+    <Reference Include="EPDM.Interop.EPDMResultCode">
+      <HintPath>SolidWorksReferences\EPDM.Interop.EPDMResultCode.dll</HintPath>
+      <EmbedInteropTypes>True</EmbedInteropTypes>
+    </Reference>
+    -->
     <Reference Include="EPDM.Interop.epdm">
       <HintPath>..\..\..\..\..\Program Files\Solidworks 2023\SOLIDWORKS PDM\EPDM.Interop.epdm.dll</HintPath>
       <EmbedInteropTypes>True</EmbedInteropTypes>
@@ -87,6 +94,7 @@
       <DependentUpon>Resources.resx</DependentUpon>
     </Compile>
     <Compile Include="PropertyStandardManager.cs" />
+    <Compile Include="PdmHelper.cs" />
     <Compile Include="RoesleinAddIn.cs" />
     <Compile Include="Settings.cs" />
     <Compile Include="Logger.cs" />
