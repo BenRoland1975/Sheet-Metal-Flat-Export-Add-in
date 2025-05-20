@@ -46,7 +46,7 @@ namespace RoesleinAddIn
         private SettingsFormV2 settingsForm;
 
         // PDM Vault Object
-        private IEdmVault8 pdmVault;
+        private EPDM.Interop.epdm.IEdmVault5 pdmVault;
 
         private PropertyStandardManager propertyStandardManager;
         #endregion
@@ -674,17 +674,13 @@ namespace RoesleinAddIn
             try
             {
                 WriteToLog("Settings command invoked.");
+                // Always ensure vault is connected before opening settings
+                EnsurePdmVaultConnected("PCSVAULT");
+
                 if (settingsForm == null || settingsForm.IsDisposed)
                 {
-                    // Ensure PDM vault is attempted to connect if not already
-                    if (this.pdmVault == null)
-                    {
-                         TryConnectToPdmVaultForActiveDoc(); // Attempt to connect if not already connected
-                    }
-                    
-                    // Pass the ISldWorks instance (swApp) and the IEdmVault5 instance (pdmVault)
-                    // IEdmVault8 can be directly used where IEdmVault5 is expected, or explicitly cast.
-                    settingsForm = new SettingsFormV2(this.swApp, this.pdmVault as IEdmVault5);
+                    Settings.SetGlobalVaultForSettings(this.pdmVault);
+                    settingsForm = new SettingsFormV2(this.swApp, this.pdmVault);
                 }
                 settingsForm.ShowDialog();
             }
@@ -826,45 +822,49 @@ namespace RoesleinAddIn
                     return;
                 }
 
-                // IMPORTANT: Make sure we have a PDM connection for this file first
+                // Ensure PDM connection FIRST
                 WriteToLog("Ensuring PDM connection is established for the active document.");
                 TryConnectToPdmVaultForActiveDoc();
 
-                // Get current standards version from settings
-                string currentStandardsVersion = "1.0.0"; // Default version
-                
-                // Try to get version from settings form if it's open
-                if (settingsForm != null && !settingsForm.IsDisposed)
+                // Only set global vault if logged in
+                if (this.pdmVault != null && this.pdmVault.IsLoggedIn)
                 {
-                    // Assuming txtSettingsVersion is a control on SettingsFormV2
-                    TextBox versionTextBox = settingsForm.Controls.Find("txtSettingsVersion", true).FirstOrDefault() as TextBox;
-                    if (versionTextBox != null && !string.IsNullOrEmpty(versionTextBox.Text))
-                    {
-                        currentStandardsVersion = versionTextBox.Text;
-                        WriteToLog($"Retrieved standards version from settings form: {currentStandardsVersion}");
-                    }
+                    Settings.SetGlobalVaultForSettings(this.pdmVault);
                 }
                 else
                 {
-                    // Add code here to load standards version from settings file if settings form is not open
-                    // Example: currentStandardsVersion = Properties.Settings.Default.StandardsVersion;
-                    WriteToLog($"Using default standards version: {currentStandardsVersion}");
+                    WriteToLog("PDM vault is not logged in. Cannot proceed with property standards.");
+                    swApp.SendMsgToUser2("Could not connect to PDM vault. Property standards cannot be applied.", (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
+                    return;
                 }
+
+                // Now load settings (vault is set and logged in)
+                Settings.LoadSettings();
 
                 if (propertyStandardManager == null)
                 {
-                    // Explicitly cast to EPDM.Interop.epdm.IEdmVault5
-                    EPDM.Interop.epdm.IEdmVault5 vaultForManager = this.pdmVault as EPDM.Interop.epdm.IEdmVault5;
-                    propertyStandardManager = new PropertyStandardManager(vaultForManager, swApp, null); 
+                    propertyStandardManager = new PropertyStandardManager(this.pdmVault, swApp, null);
                 }
-                else if (this.pdmVault != null)
+                else
                 {
-                    // Update the PDM vault reference in the property manager to ensure it's current
-                    propertyStandardManager = new PropertyStandardManager(this.pdmVault as EPDM.Interop.epdm.IEdmVault5, swApp, null);
+                    propertyStandardManager = new PropertyStandardManager(this.pdmVault, swApp, null);
                 }
-                
-                // Pass the currentStandardsVersion as the second parameter
-                propertyStandardManager.ApplyStandardsToActiveDocument(activeDoc, currentStandardsVersion, false);
+
+                string currentStandardsVersion = null;
+                var loadedSettings = Settings.LoadSettings();
+                if (!string.IsNullOrEmpty(loadedSettings.SettingsVersion))
+                    currentStandardsVersion = loadedSettings.SettingsVersion;
+                else
+                    currentStandardsVersion = "1.0.0"; // fallback
+
+                if (activeDoc.GetType() == (int)SolidWorks.Interop.swconst.swDocumentTypes_e.swDocASSEMBLY)
+                {
+                    propertyStandardManager.ProcessAssemblyForStandards(activeDoc, currentStandardsVersion, false);
+                }
+                else
+                {
+                    propertyStandardManager.ApplyStandardsToActiveDocument(activeDoc, currentStandardsVersion, false);
+                }
             }
             catch (Exception ex)
             {
@@ -945,45 +945,33 @@ namespace RoesleinAddIn
             Logger.Info($"PDM: Attempting to connect to vault for file: '{filePath}'");
             try
             {
-                // Instantiate EdmVault5 class, which is the CoClass for IEdmVault5 and can provide other interfaces.
-                // Explicitly use the EPDM.Interop.epdm.IEdmVault5 interface
-                EPDM.Interop.epdm.IEdmVault5 vaultObject = new EdmVault5(); 
-                
-                string vaultNameForFile = vaultObject.GetVaultNameFromPath(filePath);
-
-                if (!string.IsNullOrEmpty(vaultNameForFile))
+                if (this.pdmVault == null || !this.pdmVault.IsLoggedIn)
                 {
-                    WriteToLog($"PDM: File '{filePath}' is in vault view for vault: '{vaultNameForFile}'. Attempting to log in.");
-                    
-                    vaultObject.LoginAuto(vaultNameForFile, 0); 
-
-                    if (vaultObject.IsLoggedIn)
+                    this.pdmVault = new EPDM.Interop.epdm.EdmVault5();
+                    string vaultNameForFile = this.pdmVault.GetVaultNameFromPath(filePath);
+                    if (!string.IsNullOrEmpty(vaultNameForFile))
                     {
-                        // Successfully logged in using IEdmVault5.
-                        // Now, try to get the IEdmVault8 interface from this same logged-in object.
-                        this.pdmVault = vaultObject as IEdmVault8; 
-
-                        if (this.pdmVault != null)
+                        WriteToLog($"PDM: File '{filePath}' is in vault view for vault: '{vaultNameForFile}'. Attempting to log in.");
+                        this.pdmVault.LoginAuto(vaultNameForFile, 0);
+                        if (this.pdmVault.IsLoggedIn)
                         {
-                            // Successfully got IEdmVault8
-                            WriteToLog($"PDM: Successfully connected to vault: {this.pdmVault.Name} (using IEdmVault8 features, Root Path: {this.pdmVault.RootFolderPath})");
+                            WriteToLog($"PDM: Successfully connected to vault: {this.pdmVault.Name} (Root Path: {this.pdmVault.RootFolderPath})");
+                            if (this.pdmVault != null && this.pdmVault.IsLoggedIn)
+                            {
+                                Settings.SetGlobalVaultForSettings(this.pdmVault);
+                            }
                         }
                         else
                         {
-                            // Could not get IEdmVault8. this.pdmVault will be null.
-                            WriteToLog($"PDM: Logged into vault '{vaultNameForFile}' (as IEdmVault5). Could not obtain IEdmVault8 interface. Vault Name: {vaultObject.Name}. Basic PDM operations using IEdmVault5 might still be possible using 'vaultObject'.");
+                            WriteToLog($"PDM: Failed to auto-login to vault '{vaultNameForFile}'. Ensure PDM client is logged in.");
+                            this.pdmVault = null;
                         }
                     }
                     else
                     {
-                        WriteToLog($"PDM: Failed to auto-login to vault '{vaultNameForFile}'. Ensure PDM client is logged in.");
+                        WriteToLog($"PDM: File '{filePath}' does not appear to be in a PDM vault view.");
                         this.pdmVault = null;
                     }
-                }
-                else
-                {
-                    WriteToLog($"PDM: File '{filePath}' does not appear to be in a PDM vault view.");
-                    this.pdmVault = null;
                 }
             }
             catch (System.Runtime.InteropServices.COMException comEx)
@@ -996,6 +984,35 @@ namespace RoesleinAddIn
             {
                 Logger.Error($"PDM: General exception during PDM connection for '{filePath}': {ex.Message}");
                 this.pdmVault = null;
+            }
+        }
+
+        // Robust version: Ensure a persistent PDM vault connection and only set global vault if logged in
+        private void EnsurePdmVaultConnected(string vaultName)
+        {
+            if (this.pdmVault == null)
+                this.pdmVault = new EPDM.Interop.epdm.EdmVault5();
+
+            if (!this.pdmVault.IsLoggedIn)
+            {
+                try
+                {
+                    this.pdmVault.LoginAuto(vaultName, 0);
+                }
+                catch (Exception ex)
+                {
+                    WriteToLog($"PDM LoginAuto failed: {ex.Message}");
+                }
+            }
+
+            if (this.pdmVault.IsLoggedIn)
+            {
+                Settings.SetGlobalVaultForSettings(this.pdmVault);
+            }
+            else
+            {
+                WriteToLog("PDM vault is not logged in after LoginAuto. Not setting global vault for settings.");
+                MessageBox.Show($"Could not connect to PDM vault '{vaultName}'. Please ensure PDM is running and you are logged in.", "PDM Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
         #endregion

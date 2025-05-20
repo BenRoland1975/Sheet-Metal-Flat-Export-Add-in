@@ -56,8 +56,6 @@ namespace RoesleinAddIn
                     Logger.DebugLog("Warning: Settings.LoadSettings() returned null. General UI fields may not populate correctly.");
                     this.currentGeneralSettings = new Settings(); // Ensure it's not null
                 }
-                // Set the Settings Version textbox from loaded settings
-                txtSettingsVersion.Text = this.currentGeneralSettings.SettingsVersion ?? string.Empty;
                 // Call a method to populate general UI fields from currentGeneralSettings (from backup logic)
                 PopulateGeneralSettingsUI(); 
             }
@@ -117,12 +115,6 @@ namespace RoesleinAddIn
             // Event handlers for Property Standards Tab
             if (BtnAddNewFileProp != null) BtnAddNewFileProp.Click += BtnAddNewFileProp_Click;
             if (btnSaveFileProp != null) btnSaveFileProp.Click += btnSaveFileProp_Click;
-
-            if (pdmVault == null)
-            {
-                MessageBox.Show("PDM Vault not available. PDM features will be disabled.", "PDM Not Available", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                // Optionally, disable PDM-dependent controls
-            }
         }
 
         // Method to populate General Settings tab UI controls (from backup logic)

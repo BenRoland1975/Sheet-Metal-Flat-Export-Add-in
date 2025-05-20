@@ -8,6 +8,7 @@ using System.Linq;
 using System.Windows.Forms;
 using SolidWorks.Interop.sldworks;
 using System.Globalization; // Added for parsing
+using EPDM.Interop.epdm;
 
 namespace RoesleinAddIn
 {
@@ -114,9 +115,9 @@ namespace RoesleinAddIn
         [System.Xml.Serialization.XmlIgnore]
         public static ISldWorks SwAppForPDM { get; set; } // Static reference to SwApp
         [System.Xml.Serialization.XmlIgnore]
-        public static IEdmVault5 PdmVaultForSettings { get; set; } // Static reference to the vault
+        public static EPDM.Interop.epdm.IEdmVault5 PdmVaultForSettings { get; set; } // Static reference to the vault
 
-        public static void SetGlobalVaultForSettings(IEdmVault5 vault)
+        public static void SetGlobalVaultForSettings(EPDM.Interop.epdm.IEdmVault5 vault)
         {
             PdmVaultForSettings = vault;
             if (vault == null)
@@ -128,6 +129,8 @@ namespace RoesleinAddIn
                 Logger.Info($"SetGlobalVaultForSettings: Global PDM vault for settings has been updated. LoggedIn: {vault.IsLoggedIn}, Name: {vault.Name}");
             }
         }
+
+        public static List<PropertyStandardSetting> CurrentPropertyStandards { get; set; } = new List<PropertyStandardSetting>();
 
         public Settings()
         {
@@ -348,21 +351,24 @@ namespace RoesleinAddIn
             // Load Thickness Mappings (static, but might be initialized here too)
             LoadThicknessMappings(); // This loads into the static ThicknessMappings dictionary
 
+            // Update CurrentPropertyStandards
+            CurrentPropertyStandards = settings.PropertyStandards ?? new List<PropertyStandardSetting>();
+
             return settings;
         }
 
-        private void LoadPdmSharedData(IEdmVault5 vault)
+        private void LoadPdmSharedData(EPDM.Interop.epdm.IEdmVault5 vault)
         {
-            if (vault == null || !vault.IsLoggedIn)
+            if (PdmVaultForSettings == null || !PdmVaultForSettings.IsLoggedIn)
             {
-                Logger.DebugLog($"LoadPdmSharedData: No logged in vault available, using defaults.");
+                Logger.Warning("Settings: PdmVaultForSettings is null or not logged in. PDM operations will not be available.");
                 return;
             }
 
             try
             {
-                IEdmFile5 pdmFile = null; 
-                IEdmFolder5 pdmFolder = null; 
+                EPDM.Interop.epdm.IEdmFile5 pdmFile = null; 
+                EPDM.Interop.epdm.IEdmFolder5 pdmFolder = null; 
                 pdmFile = vault.GetFileFromPath(PdmPropertyStandardsAndVersionPath, out pdmFolder);
                 
                 if (pdmFile != null)
@@ -417,31 +423,34 @@ namespace RoesleinAddIn
                 Logger.Warning($"Local shared settings file not found after PDM ops: '{PdmPropertyStandardsAndVersionPath}'. Using default values.");
                 this.PropertyStandards = new List<PropertyStandardSetting>(); 
             }
+
+            // Update CurrentPropertyStandards
+            CurrentPropertyStandards = this.PropertyStandards ?? new List<PropertyStandardSetting>();
         }
         
-        public static bool SavePdmSharedSettings(IEdmVault5 vault, string settingsVersion, List<PropertyStandardSetting> standards)
+        public static bool SavePdmSharedSettings(EPDM.Interop.epdm.IEdmVault5 vault, string settingsVersion, List<PropertyStandardSetting> standards)
         {
-            if (vault == null || !vault.IsLoggedIn)
+            if (PdmVaultForSettings == null || !PdmVaultForSettings.IsLoggedIn)
             {
                 Logger.Error("SavePdmSharedSettings: No logged in vault available.");
                 return false;
             }
 
-            IEdmFile5 pdmFile = null;
-            IEdmFolder5 pdmFolder = null; 
+            EPDM.Interop.epdm.IEdmFile5 pdmFile = null;
+            EPDM.Interop.epdm.IEdmFolder5 pdmFolder = null; 
             bool wasCheckedOutByThisOperation = false;
             long parentWndHandle = GetSolidWorksWindowHandle();
             string currentPdmUserName = null;
 
             try
             {
-                IEdmVault7 vault7 = vault as IEdmVault7;
+                EPDM.Interop.epdm.IEdmVault7 vault7 = vault as EPDM.Interop.epdm.IEdmVault7;
                 if (vault7 != null)
                 {
-                    IEdmUserMgr5 userMgr = vault7.CreateUtility(EdmUtility.EdmUtil_UserMgr) as IEdmUserMgr5;
+                    EPDM.Interop.epdm.IEdmUserMgr5 userMgr = vault7.CreateUtility(EPDM.Interop.epdm.EdmUtility.EdmUtil_UserMgr) as EPDM.Interop.epdm.IEdmUserMgr5;
                     if (userMgr != null)
                     {
-                        IEdmUser5 pdmUser = userMgr.GetLoggedInUser();
+                        EPDM.Interop.epdm.IEdmUser5 pdmUser = userMgr.GetLoggedInUser();
                         if (pdmUser != null)
                         {
                             currentPdmUserName = pdmUser.Name;
@@ -482,13 +491,13 @@ namespace RoesleinAddIn
                         wasCheckedOutByThisOperation = true;
                         Logger.Info($"Checked out PDM shared settings file: {PdmPropertyStandardsAndVersionPath}");
                     }
-                    else if (pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                    else if (pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
                     {
                         Logger.Info($"PDM shared settings file '{PdmPropertyStandardsAndVersionPath}' is already locked by the current user ('{currentPdmUserName}').");
                     }
                     else
                     {
-                        string lockedByUserName = pdmFile.IsLocked ? ((IEdmUser5)pdmFile.LockedByUser).Name : "Unknown User";
+                        string lockedByUserName = pdmFile.IsLocked ? ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name : "Unknown User";
                         Logger.Error($"PDM shared settings file '{PdmPropertyStandardsAndVersionPath}' is locked by another user: {lockedByUserName}. Current user: '{currentPdmUserName ?? "Unknown"}'. Cannot save.");
                         MessageBox.Show($"Settings file '{PdmPropertyStandardsAndVersionPath}' is locked by user '{lockedByUserName}'. Cannot save changes.", "File Locked", MessageBoxButtons.OK, MessageBoxIcon.Error);
                         return false;
@@ -518,7 +527,7 @@ namespace RoesleinAddIn
                          Logger.Info($"Checked in newly added shared settings file: {PdmPropertyStandardsAndVersionPath}");
                      }
                 }
-                else if (pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                else if (pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
                 {
                     pdmFile.UnlockFile((int)parentWndHandle, "Updated property standards and version.");
                     wasCheckedOutByThisOperation = false; 
@@ -540,7 +549,7 @@ namespace RoesleinAddIn
             }
             finally
             {
-                if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
                 {
                     try
                     {
