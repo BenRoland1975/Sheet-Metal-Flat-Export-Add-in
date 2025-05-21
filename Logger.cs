@@ -466,5 +466,30 @@ namespace RoesleinAddIn
                 // Silent fail - if rotation fails, we'll just continue with the existing file
             }
         }
+
+        public static string MainLogFilePath { get; set; }
+        public static string DebugLogFilePath { get; set; }
+        public static bool EnableLogging { get; set; }
+        public static bool EnableDebugLogging { get; set; }
+
+        public static void Log(string message)
+        {
+            if (EnableLogging && !string.IsNullOrEmpty(MainLogFilePath))
+            {
+                string logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}";
+                File.AppendAllText(MainLogFilePath, logEntry + Environment.NewLine);
+            }
+            System.Diagnostics.Debug.WriteLine(message);
+        }
+
+        public static void DebugLog(string message)
+        {
+            if (EnableDebugLogging && !string.IsNullOrEmpty(DebugLogFilePath))
+            {
+                string logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}";
+                File.AppendAllText(DebugLogFilePath, logEntry + Environment.NewLine);
+            }
+            System.Diagnostics.Debug.WriteLine(message);
+        }
     }
 } 

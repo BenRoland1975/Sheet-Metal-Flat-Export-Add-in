@@ -25,6 +25,7 @@ namespace RoesleinAddIn
         public bool StandardsApplied { get; set; }
         public ModelDoc2 Document { get; set; }
         public bool CheckedOutByThisProcess { get; set; } // New property to track checkouts we performed
+        public bool HasAssociatedDrawing { get; set; } // New property to track if file has an associated drawing
     }
 
     /// <summary>
@@ -52,25 +53,7 @@ namespace RoesleinAddIn
         // Add logging functionality
         private void LogMessage(string message)
         {
-            try
-            {
-                // First output to debug for immediate developer visibility
-                Debug.WriteLine($"[PropertyStandardManager] {message}");
-                
-                // Then use the proper Logger class to ensure logging settings are respected
-                Logger.DebugLog(message);
-                
-                // Additional logging to custom log file if path was specifically provided
-                if (!string.IsNullOrEmpty(logFilePath))
-                {
-                    string logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}";
-                    File.AppendAllText(logFilePath, logEntry + System.Environment.NewLine);
-                }
-            }
-            catch
-            {
-                // Silent fail for logging
-            }
+            Logger.Log($"[PropertyStandardManager] {message}");
         }
 
         // Get the SolidWorks main window handle
@@ -106,6 +89,7 @@ namespace RoesleinAddIn
         /// <returns>True if standards were successfully applied (or file was already compliant/not in PDM), false otherwise.</returns>
         public bool ApplyStandardsToActiveDocument(ModelDoc2 swModel, string currentStandardsVersion, bool silentMode = false, Settings settings = null)
         {
+            LogMessage("ApplyStandardsToActiveDocument called");
             if (swModel == null)
             {
                 LogMessage("ApplyStandardsToActiveDocument: No active SolidWorks model provided.");
@@ -453,6 +437,7 @@ namespace RoesleinAddIn
 
         private bool ApplyAllPropertyStandards(ModelDoc2 swModel, string currentStandardsVersion, bool silentMode, Settings settings)
         {
+            LogMessage("ApplyAllPropertyStandards called");
             var allStandards = Settings.CurrentPropertyStandards;
             LogMessage($"Loaded {allStandards?.Count ?? 0} property standards from in-memory cache.");
             if (allStandards == null || allStandards.Count == 0)
@@ -574,6 +559,22 @@ namespace RoesleinAddIn
             LogMessage($"Assembly path: {assemblyDoc.GetPathName()}");
             LogMessage($"Required standards version: {requiredStandardsVersion}");
 
+            // NEW: List to track files missing drawings
+            List<string> filesMissingDrawings = new List<string>();
+            
+            // Check if the assembly itself has a drawing
+            string assemblyPath = assemblyDoc.GetPathName();
+            LogMessage($"======= CHECKING FOR DRAWING OF ASSEMBLY: {assemblyPath} =======");
+            if (!HasAssociatedDrawing(assemblyPath))
+            {
+                filesMissingDrawings.Add(System.IO.Path.GetFileName(assemblyPath));
+                LogMessage($"*** ASSEMBLY FILE DOES NOT HAVE AN ASSOCIATED DRAWING: {assemblyPath} ***");
+            }
+            else
+            {
+                LogMessage($"√√√ ASSEMBLY FILE HAS AN ASSOCIATED DRAWING: {assemblyPath} √√√");
+            }
+
             // NEW: Apply property standards to the assembly file itself before processing components
             List<string> summaryMessages = new List<string>();
             ApplyStandardsToActiveDocument(assemblyDoc, requiredStandardsVersion, silentMode, settings);
@@ -694,6 +695,18 @@ namespace RoesleinAddIn
                         
                         string filePath = compDoc.GetPathName();
                         LogMessage($"Sheet metal component '{compName}' has path: '{filePath}'");
+                        
+                        // Check if this sheet metal part has an associated drawing
+                        LogMessage($"======= CHECKING FOR DRAWING OF SHEET METAL PART: {filePath} =======");
+                        if (!HasAssociatedDrawing(filePath))
+                        {
+                            filesMissingDrawings.Add(Path.GetFileName(filePath));
+                            LogMessage($"*** SHEET METAL PART DOES NOT HAVE AN ASSOCIATED DRAWING: {filePath} ***");
+                        }
+                        else
+                        {
+                            LogMessage($"√√√ SHEET METAL PART HAS AN ASSOCIATED DRAWING: {filePath} √√√");
+                        }
                         
                         // Skip if file path is empty
                         if (string.IsNullOrEmpty(filePath)) 
@@ -990,19 +1003,36 @@ namespace RoesleinAddIn
                         // Count files that were already checked out
                         int alreadyCheckedOutCount = filesAlreadyCheckedOut.Count;
                         
-                        string summary = $"Standards application complete.\n\n" +
-                            $"Files processed: {filesToProcess.Count}\n" +
-                            $"Standards applied successfully: {successCount}\n" +
-                            $"Files already checked out by you: {alreadyCheckedOutCount}\n" +
-                            $"Files checked back in: {checkinCount}";
+                        StringBuilder summary = new StringBuilder();
+                        summary.AppendLine($"Standards application complete.\n");
+                        summary.AppendLine($"Files processed: {filesToProcess.Count}");
+                        summary.AppendLine($"Standards applied successfully: {successCount}");
+                        summary.AppendLine($"Files already checked out by you: {alreadyCheckedOutCount}");
+                        summary.AppendLine($"Files checked back in: {checkinCount}");
                             
                         if (filesWithStandardsUpToDate.Count > 0)
                         {
-                            summary += $"\nFiles already up to date: {filesWithStandardsUpToDate.Count}";
+                            summary.AppendLine($"Files already up to date: {filesWithStandardsUpToDate.Count}");
+                        }
+                        
+                        // Add information about files missing drawings
+                        if (filesMissingDrawings.Count > 0)
+                        {
+                            summary.AppendLine();
+                            summary.AppendLine($"===== FILES MISSING DRAWINGS ({filesMissingDrawings.Count}) =====");
+                            foreach (string missingDrawingFile in filesMissingDrawings)
+                            {
+                                summary.AppendLine($"• {missingDrawingFile}");
+                            }
+                        }
+                        else
+                        {
+                            summary.AppendLine();
+                            summary.AppendLine("All files have associated drawings.");
                         }
                             
                         MessageBox.Show(
-                            summary,
+                            summary.ToString(),
                             "Standards Application Complete",
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Information);
@@ -1035,6 +1065,22 @@ namespace RoesleinAddIn
                 else
                 {
                     message.AppendLine("No files in this assembly need standards applied or all files requiring standards are checked out by other users.");
+                }
+                
+                // Add information about files missing drawings
+                if (filesMissingDrawings.Count > 0)
+                {
+                    message.AppendLine();
+                    message.AppendLine($"===== FILES MISSING DRAWINGS ({filesMissingDrawings.Count}) =====");
+                    foreach (string missingDrawingFile in filesMissingDrawings)
+                    {
+                        message.AppendLine($"• {missingDrawingFile}");
+                    }
+                }
+                else
+                {
+                    message.AppendLine();
+                    message.AppendLine("All files have associated drawings.");
                 }
                 
                 if (!silentMode) MessageBox.Show(
@@ -1318,9 +1364,36 @@ namespace RoesleinAddIn
 
         private bool ProcessCutListAndRawMaterial(ModelDoc2 swModel, Settings settings)
         {
+            LogMessage("ProcessCutListAndRawMaterial called");
             try
             {
-                if (!IsSheetMetalPart(swModel) || !EnsureSheetMetalCutList(swModel, settings))
+                // Defensive: Ensure settings and RawMaterials are loaded
+                if (settings == null || settings.RawMaterials == null || settings.RawMaterials.Count == 0)
+                {
+                    LogMessage("RawMaterials not loaded, attempting to reload settings...");
+                    settings = Settings.LoadSettings();
+                    if (settings == null)
+                    {
+                        LogMessage("Settings.LoadSettings() returned null. Aborting raw material processing.");
+                        return false;
+                    }
+                    if (settings.RawMaterials == null)
+                    {
+                        LogMessage("settings.RawMaterials is null after reload. Aborting raw material processing.");
+                        return false;
+                    }
+                    if (settings.RawMaterials.Count == 0)
+                    {
+                        LogMessage("settings.RawMaterials is empty after reload. Aborting raw material processing.");
+                        return false;
+                    }
+                    LogMessage($"Reloaded settings. RawMaterials count: {settings.RawMaterials.Count}");
+                }
+                // Ensure cut list exists and is set to automatic
+                bool cutListFound = EnsureSheetMetalCutList(swModel, settings);
+                swModel.ForceRebuild3(false); // Force rebuild to ensure cut list and bounding box data are up to date
+                LogMessage($"After EnsureSheetMetalCutList and ForceRebuild3, cut list found: {cutListFound}");
+                if (!IsSheetMetalPart(swModel) || !cutListFound)
                 {
                     LogMessage("Not a sheet metal part with a found cut list, skipping raw material processing.");
                     return false;
@@ -1449,31 +1522,37 @@ namespace RoesleinAddIn
                     double boundingBoxArea = boundingBoxLength * boundingBoxWidth;
                     string areaValue = boundingBoxArea.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
                     string partNumber = bestMatch.PartNumber;
-                    string unitOfMeasure = bestMatch.UnitOfMeasure ?? "EA";
+                    string unitOfMeasure = bestMatch.UnitOfMeasure ?? "SI";
                     string description = bestMatch.Description ?? "";
                     CustomPropertyManager modelPropMgr = swModel.Extension.CustomPropertyManager[""];
                     modelPropMgr.Add3("Raw Material Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                     modelPropMgr.Add3("Unit of Measurement", (int)swCustomInfoType_e.swCustomInfoText, "SI", (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                     modelPropMgr.Add3("legacy Part Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                    modelPropMgr.Add3("Legacy Unit of Measure", (int)swCustomInfoType_e.swCustomInfoText, unitOfMeasure, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                    modelPropMgr.Add3("Legacy Unit of Measure", (int)swCustomInfoType_e.swCustomInfoText, "SI", (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                     modelPropMgr.Add3("Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                     modelPropMgr.Add3("Raw Material Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                     modelPropMgr.Add3("legacy Part Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                     modelPropMgr.Add3("Legacy Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                    foreach (string configName in (string[])swModel.GetConfigurationNames())
+
+                    // Add the same values to all configurations
+                    string[] configNames = (string[])swModel.GetConfigurationNames();
+                    if (configNames != null)
                     {
-                        if (string.IsNullOrEmpty(configName)) continue;
-                        CustomPropertyManager configPropMgr = swModel.Extension.CustomPropertyManager[configName];
-                        configPropMgr.Add3("Raw Material Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                        configPropMgr.Add3("Unit of Measurement", (int)swCustomInfoType_e.swCustomInfoText, "SI", (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                        configPropMgr.Add3("legacy Part Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                        configPropMgr.Add3("Legacy Unit of Measure", (int)swCustomInfoType_e.swCustomInfoText, unitOfMeasure, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                        configPropMgr.Add3("Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                        configPropMgr.Add3("Raw Material Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                        configPropMgr.Add3("legacy Part Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
-                        configPropMgr.Add3("Legacy Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                        foreach (string configName in configNames)
+                        {
+                            if (string.IsNullOrEmpty(configName)) continue;
+                            CustomPropertyManager configPropMgr = swModel.Extension.CustomPropertyManager[configName];
+                            configPropMgr.Add3("Raw Material Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Unit of Measurement", (int)swCustomInfoType_e.swCustomInfoText, "SI", (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("legacy Part Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Legacy Unit of Measure", (int)swCustomInfoType_e.swCustomInfoText, "SI", (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Raw Material Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("legacy Part Description", (int)swCustomInfoType_e.swCustomInfoText, description, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            configPropMgr.Add3("Legacy Raw Mat Amount", (int)swCustomInfoType_e.swCustomInfoText, areaValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                        }
                     }
-                    LogMessage($"Raw Material PN {partNumber} (UOM: {unitOfMeasure}) and all legacy/raw material properties applied to summary tab and all configurations.");
+                    LogMessage($"Raw Material PN {partNumber} (UOM: SI) and all legacy/raw material properties applied to summary tab and all configurations.");
                     return true;
                 }
                 else
@@ -1547,13 +1626,23 @@ namespace RoesleinAddIn
                 LogMessage("Running EnsureSheetMetalCutList...");
                 bool cutListResult = EnsureSheetMetalCutList(swModel, settings);
                 if (cutListResult)
+                {
                     LogMessage("Cut list found or created and set to automatic update.");
+                    LogMessage("Running ProcessCutListAndRawMaterial...");
+                    bool rawMatResult = ProcessCutListAndRawMaterial(swModel, settings);
+                    if (rawMatResult)
+                    {
+                        LogMessage("Raw material properties successfully applied.");
+                    }
+                    else
+                    {
+                        LogMessage("No matching raw material found or applied.");
+                    }
+                }
                 else
-                    LogMessage("Cut list was missing and could not be created.");
-                LogMessage("Running ProcessCutListAndRawMaterial...");
-                bool rawMatResult = ProcessCutListAndRawMaterial(swModel, settings);
-                if (!rawMatResult)
-                    LogMessage("No matching raw material found or applied.");
+                {
+                    LogMessage("Cut list was missing and could not be created. Skipping raw material processing.");
+                }
             }
             
             // 3. Set document display properties - NEW STEP!
@@ -1814,6 +1903,123 @@ namespace RoesleinAddIn
                 LogMessage($"Error setting document display properties: {ex.Message}");
             }
         }
+
+        /// <summary>
+        /// Checks if a file has an associated drawing in PDM
+        /// </summary>
+        /// <param name="filePath">Full path to the file to check</param>
+        /// <returns>True if a drawing exists, false otherwise</returns>
+        private bool HasAssociatedDrawing(string filePath)
+        {
+            if (string.IsNullOrEmpty(filePath))
+                return false;
+            
+            LogMessage($"=== CHECKING FOR ASSOCIATED DRAWING: {filePath} ===");
+            
+            try
+            {
+                // Check by file naming convention - look for file with same name but .SLDDRW extension
+                string fileNameWithoutExt = System.IO.Path.GetFileNameWithoutExtension(filePath);
+                string directoryPath = System.IO.Path.GetDirectoryName(filePath);
+                
+                LogMessage($"Looking for drawing file with name: {fileNameWithoutExt}.SLDDRW");
+                
+                // Try with same name in the same folder
+                string potentialDrawingPath = System.IO.Path.Combine(directoryPath, fileNameWithoutExt + ".SLDDRW");
+                LogMessage($"Checking path: {potentialDrawingPath}");
+                if (System.IO.File.Exists(potentialDrawingPath))
+                {
+                    LogMessage($"Found associated drawing at: {potentialDrawingPath}");
+                    return true;
+                }
+                
+                // Check if there's a drawing subfolder in the same directory
+                string drawingsFolder = System.IO.Path.Combine(directoryPath, "Drawings");
+                LogMessage($"Checking Drawings subfolder: {drawingsFolder}");
+                if (System.IO.Directory.Exists(drawingsFolder))
+                {
+                    potentialDrawingPath = System.IO.Path.Combine(drawingsFolder, fileNameWithoutExt + ".SLDDRW");
+                    LogMessage($"Checking path: {potentialDrawingPath}");
+                    if (System.IO.File.Exists(potentialDrawingPath))
+                    {
+                        LogMessage($"Found associated drawing in Drawings subfolder: {potentialDrawingPath}");
+                        return true;
+                    }
+                }
+                
+                // Check for drawing in parent folder (for PDM structures where drawings are in a parent folder)
+                if (pdmVault != null && pdmVault.IsLoggedIn)
+                {
+                    try
+                    {
+                        // Go up one level to look for a Drawings folder
+                        string parentDir = System.IO.Directory.GetParent(directoryPath)?.FullName;
+                        if (!string.IsNullOrEmpty(parentDir))
+                        {
+                            string parentDrawingsFolder = System.IO.Path.Combine(parentDir, "Drawings");
+                            LogMessage($"Checking parent Drawings folder: {parentDrawingsFolder}");
+                            if (System.IO.Directory.Exists(parentDrawingsFolder))
+                            {
+                                potentialDrawingPath = System.IO.Path.Combine(parentDrawingsFolder, fileNameWithoutExt + ".SLDDRW");
+                                LogMessage($"Checking path: {potentialDrawingPath}");
+                                if (System.IO.File.Exists(potentialDrawingPath))
+                                {
+                                    LogMessage($"Found associated drawing in parent Drawings folder: {potentialDrawingPath}");
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"Error checking parent folder for drawings: {ex.Message}");
+                    }
+                }
+                
+                // Check for common drawing naming conventions (DR-prefix)
+                try
+                {
+                    // Some companies use "DR-" prefix for drawings
+                    string drPrefixName = "DR-" + fileNameWithoutExt + ".SLDDRW";
+                    LogMessage($"Checking for DR-prefix naming convention: {drPrefixName}");
+                    
+                    // Check in the same folder
+                    potentialDrawingPath = System.IO.Path.Combine(directoryPath, drPrefixName);
+                    LogMessage($"Checking path: {potentialDrawingPath}");
+                    if (System.IO.File.Exists(potentialDrawingPath))
+                    {
+                        LogMessage($"Found associated drawing with DR prefix: {potentialDrawingPath}");
+                        return true;
+                    }
+                    
+                    // Check in Drawings subfolder
+                    string drawingsFolderPath = System.IO.Path.Combine(directoryPath, "Drawings");
+                    if (System.IO.Directory.Exists(drawingsFolderPath))
+                    {
+                        potentialDrawingPath = System.IO.Path.Combine(drawingsFolderPath, drPrefixName);
+                        LogMessage($"Checking path: {potentialDrawingPath}");
+                        if (System.IO.File.Exists(potentialDrawingPath))
+                        {
+                            LogMessage($"Found associated drawing with DR prefix in Drawings subfolder: {potentialDrawingPath}");
+                            return true;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogMessage($"Error checking for DR-prefix drawing naming convention: {ex.Message}");
+                }
+                
+                // No associated drawing found through simple file path checks
+                LogMessage($"*** NO ASSOCIATED DRAWING FOUND FOR: {filePath} ***");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error in HasAssociatedDrawing: {ex.Message}");
+                return false;
+            }
+        }
     }
 
     /// <summary>
@@ -1842,25 +2048,7 @@ namespace RoesleinAddIn
         /// </summary>
         private void LogMessage(string message)
         {
-            try
-            {
-                // First output to debug for immediate developer visibility
-                Debug.WriteLine($"[PDMFileManager] {message}");
-                
-                // Then use the proper Logger class to ensure logging settings are respected
-                Logger.DebugLog(message);
-                
-                // Additional logging to custom log file if path was specifically provided
-                if (!string.IsNullOrEmpty(logFilePath))
-                {
-                    string logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}";
-                    File.AppendAllText(logFilePath, logEntry + System.Environment.NewLine);
-                }
-            }
-            catch
-            {
-                // Silent fail for logging
-            }
+            Logger.Log($"[PDMFileManager] {message}");
         }
 
         /// <summary>

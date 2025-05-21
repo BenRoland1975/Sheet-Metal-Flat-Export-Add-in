@@ -1113,33 +1113,21 @@ namespace RoesleinAddIn
                 this.currentGeneralSettings.RawMaterials = new List<Settings.RawMaterial>(); // Clear existing
                 foreach (RawSheetData sheetData in rawSheetDataList)
                 {
-                    // Convert RawSheetData (from CSV, uses decimal) to Settings.RawMaterial (for XML, uses double for some fields)
                     this.currentGeneralSettings.RawMaterials.Add(new Settings.RawMaterial
                     {
                         PartNumber = sheetData.PartNumber,
                         LegacyPartNumber = sheetData.LegacyPartNumber,
                         Material = sheetData.Material,
-                        // Thickness in Settings.RawMaterial is double, RawSheetData.Thickness is decimal
                         Thickness = Convert.ToDouble(sheetData.Thickness), 
                         Description = sheetData.Description,
-                        // TotalSqInch in Settings.RawMaterial is double, RawSheetData.TotalSQInch is decimal
                         TotalSqInch = Convert.ToDouble(sheetData.TotalSQInch),
-                        // SheetLength in Settings.RawMaterial is double, RawSheetData.SheetLengthInch is decimal
-                        Length = Convert.ToDouble(sheetData.SheetLengthInch), // Corrected: Map SheetLengthInch to Length
-                        // SheetHeight in Settings.RawMaterial is double, RawSheetData.SheetHeightInch is decimal
-                        Width = Convert.ToDouble(sheetData.SheetHeightInch), // Corrected: Map SheetHeightInch to Width
-                        LastCost = sheetData.LastCost // LastCost is decimal in both
-                        // UnitOfMeasure will use the default from Settings.RawMaterial constructor if not set here explicitly
+                        Length = Convert.ToDouble(sheetData.SheetLengthInch),
+                        Width = Convert.ToDouble(sheetData.SheetHeightInch),
+                        LastCost = sheetData.LastCost
                     });
                 }
                 Logger.DebugLog($"Transferred {this.currentGeneralSettings.RawMaterials.Count} entries from dgvRawSheet to currentGeneralSettings.RawMaterials.");
-                
-                // Now that currentGeneralSettings.RawMaterials is populated, 
-                // SaveSettings() called within SaveGeneralSettings() OR called explicitly here
-                // will serialize this list into the RoesleinAddInSettings.xml
-                // If SaveGeneralSettings() already calls currentGeneralSettings.SaveSettings(), this is fine.
-                // If not, we might need an explicit call:
-                if (!this.currentGeneralSettings.SaveSettings()) // Ensure settings (including RawMaterials) are saved to XML
+                if (!this.currentGeneralSettings.SaveSettings())
                 {
                      Logger.Warning("btnOK_Click: Failed to save settings to XML after updating RawMaterials.");
                      MessageBox.Show("Failed to save updated raw material list to the main settings file. Please check logs.", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -1156,15 +1144,12 @@ namespace RoesleinAddIn
             // --- END: Added logic ---
 
             // Reconfigure logger after saving settings
-            var settings = Settings.LoadSettings(); 
-            if (settings != null)
+            if (this.currentGeneralSettings != null)
             {
-                Logger.Instance.SetSettingsEnabled(settings.LoggingEnabled);
-                Logger.Instance.SetDebugEnabled(settings.DebugLoggingEnabled);
-                if (!string.IsNullOrWhiteSpace(settings.LogFilePath))
-                    Logger.Instance.SetLogFilePath(settings.LogFilePath);
-                if (!string.IsNullOrWhiteSpace(settings.DebugLogFilePath))
-                    Logger.Instance.SetDebugLogPath(settings.DebugLogFilePath);
+                Logger.MainLogFilePath = this.currentGeneralSettings.LogFilePath;
+                Logger.DebugLogFilePath = this.currentGeneralSettings.DebugLogFilePath;
+                Logger.EnableLogging = this.currentGeneralSettings.LoggingEnabled;
+                Logger.EnableDebugLogging = this.currentGeneralSettings.DebugLoggingEnabled;
             }
 
             this.DialogResult = DialogResult.OK;
@@ -1211,6 +1196,11 @@ namespace RoesleinAddIn
                 if (fbd.ShowDialog(this) == DialogResult.OK)
                 {
                     txtLogFile.Text = fbd.SelectedPath; 
+                    if (this.currentGeneralSettings != null)
+                    {
+                        this.currentGeneralSettings.LogFilePath = Path.Combine(txtLogFile.Text, MainLogFileName);
+                        Logger.MainLogFilePath = this.currentGeneralSettings.LogFilePath;
+                    }
                 }
             }
         }
@@ -1218,11 +1208,19 @@ namespace RoesleinAddIn
         private void chkEnableLogging_CheckedChanged(object sender, EventArgs e)
         {
             SetLogControlsEnabled(chkEnableLogging.Checked);
+            if (this.currentGeneralSettings != null)
+            {
+                Logger.EnableLogging = chkEnableLogging.Checked;
+            }
         }
 
         private void chkEnableDebugLogging_CheckedChanged(object sender, EventArgs e)
         {
             SetDebugLogControlsEnabled(chkEnableDebugLogging.Checked);
+            if (this.currentGeneralSettings != null)
+            {
+                Logger.EnableDebugLogging = chkEnableDebugLogging.Checked;
+            }
         }
 
         private void btnBrowseDebugLogFile_Click(object sender, EventArgs e)
@@ -1237,6 +1235,11 @@ namespace RoesleinAddIn
                 if (fbd.ShowDialog(this) == DialogResult.OK)
                 {
                     txtDebugLogFile.Text = fbd.SelectedPath;
+                    if (this.currentGeneralSettings != null)
+                    {
+                        this.currentGeneralSettings.DebugLogFilePath = Path.Combine(txtDebugLogFile.Text, DebugLogFileName);
+                        Logger.DebugLogFilePath = this.currentGeneralSettings.DebugLogFilePath;
+                    }
                 }
             }
         }
