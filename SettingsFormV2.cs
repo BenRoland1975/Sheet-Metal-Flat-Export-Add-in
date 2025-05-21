@@ -23,6 +23,7 @@ namespace RoesleinAddIn
         private EPDM.Interop.epdm.IEdmVault5 pdmVault;
         private ISldWorks swApp;
         private string pdmCsvFilePath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\Raw Material SheetMetal.csv";
+        private string pdmMaterialMappingsPath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\MaterialMappings.xml";
         
         // currentSettings is primarily for general settings UI elements, not necessarily the DataGridViews
         // that have their own static Load methods in Settings.cs
@@ -346,22 +347,20 @@ namespace RoesleinAddIn
             dgvMaterialMapping.Columns["RowNumber"].AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
         }
 
-        private void LoadMaterialMappingsData() // Adapted from backup
+        private void LoadMaterialMappingsData()
         {
             if (dgvMaterialMapping == null) return;
             try
             {
                 dgvMaterialMapping.Rows.Clear();
-                var mappings = Settings.LoadMaterialMappings(); // Static call
+                var mappings = LoadMaterialMappingsFromPdmXml() ?? Settings.LoadMaterialMappings();
                 if (mappings != null)
                 {
-                    // Assuming MaterialMapping class has: RowNumber, SwMaterial, DxfMaterial
                     foreach (var mapping in mappings.OrderBy(m => m.RowNumber))
                     {
                         dgvMaterialMapping.Rows.Add(mapping.RowNumber, mapping.SwMaterial, mapping.DxfMaterial);
                     }
                 }
-                // AddDefaultMaterialMappings(); // Call if needed
             }
             catch (Exception ex)
             {
@@ -1103,7 +1102,6 @@ namespace RoesleinAddIn
             Logger.DebugLog("btnOK_Click: Saving all settings.");
             SaveGeneralSettings();
             SavePropertyMappings();
-            SaveMaterialMappings();
             SaveThicknessMappings();
             // SavePropertyStandardsData(); // Removed: This is handled by btnSaveFileProp_Click on its specific tab
 
@@ -1324,11 +1322,46 @@ namespace RoesleinAddIn
         }
 
         // --- Methods for dgvMaterialMapping (on Material Mappings Tab) ---
-        private void SaveMaterialMappings() 
+       
+        private void SaveMaterialMappingsToPdm()
         {
-            if (dgvMaterialMapping == null) return;
+            if (dgvMaterialMapping == null || pdmVault == null) return;
+            EPDM.Interop.epdm.IEdmFile5 pdmFile = null;
+            EPDM.Interop.epdm.IEdmFolder5 pdmFolder = null;
+            bool wasCheckedOutByThisOperation = false;
+            long parentWndHandle = GetParentWindowHandle();
+            string currentPdmUserName = null;
             try
             {
+                // Get current PDM user name using the same pattern as SavePdmSharedSettings
+                var vault7 = pdmVault as EPDM.Interop.epdm.IEdmVault7;
+                if (vault7 != null)
+                {
+                    var userMgr = vault7.CreateUtility(EPDM.Interop.epdm.EdmUtility.EdmUtil_UserMgr) as EPDM.Interop.epdm.IEdmUserMgr5;
+                    if (userMgr != null)
+                    {
+                        var pdmUser = userMgr.GetLoggedInUser();
+                        if (pdmUser != null)
+                        {
+                            currentPdmUserName = pdmUser.Name;
+                            Logger.DebugLog($"SaveMaterialMappingsToPdm: Current PDM User: {currentPdmUserName}");
+                        }
+                        else { Logger.DebugLog("SaveMaterialMappingsToPdm: Could not retrieve IEdmUser5 object for current PDM user."); }
+                    }
+                    else { Logger.DebugLog("SaveMaterialMappingsToPdm: Could not create IEdmUserMgr5 utility from vault7."); }
+                }
+                else
+                {
+                    Logger.DebugLog("SaveMaterialMappingsToPdm: Could not cast pdmVault to IEdmVault7 (or newer). Unable to get PDM user name via CreateUtility.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"SaveMaterialMappingsToPdm: Error getting current PDM user name: {ex.Message}");
+            }
+            try
+            {
+                dgvMaterialMapping.EndEdit();
                 var mappings = new List<MaterialMapping>();
                 foreach (DataGridViewRow row in dgvMaterialMapping.Rows)
                 {
@@ -1336,7 +1369,6 @@ namespace RoesleinAddIn
                     string swMat = row.Cells["SwMaterial"].Value?.ToString();
                     string dxfMat = row.Cells["DxfMaterial"].Value?.ToString();
                     string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
-
                     if (!string.IsNullOrWhiteSpace(swMat) && !string.IsNullOrWhiteSpace(dxfMat) && int.TryParse(rowNumStr, out int rowNum))
                     {
                         mappings.Add(new MaterialMapping
@@ -1347,14 +1379,117 @@ namespace RoesleinAddIn
                         });
                     }
                 }
+                // Save to local file first
                 Settings.SaveMaterialMappings(mappings);
-                Logger.DebugLog("Material mappings saved.");
+                // Now save to PDM vault
+                pdmFile = pdmVault.GetFileFromPath(pdmMaterialMappingsPath, out pdmFolder);
+                if (pdmFile == null)
+                {
+                    string directory = Path.GetDirectoryName(pdmMaterialMappingsPath);
+                    if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                    {
+                        Directory.CreateDirectory(directory);
+                    }
+                    Logger.DebugLog($"PDM material mappings file does not exist in vault. It will be created locally at '{pdmMaterialMappingsPath}' and added.");
+                }
+                else
+                {
+                    if (!pdmFile.IsLocked)
+                    {
+                        pdmFile.LockFile(pdmFolder.ID, (int)parentWndHandle, (int)EdmLockFlag.EdmLock_Simple);
+                        wasCheckedOutByThisOperation = true;
+                        Logger.DebugLog($"Checked out PDM material mappings file: {pdmMaterialMappingsPath}");
+                    }
+                    else if (pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.DebugLog($"PDM material mappings file '{pdmMaterialMappingsPath}' is already locked by the current user ('{currentPdmUserName}').");
+                    }
+                    else
+                    {
+                        string lockedByUserName = pdmFile.IsLocked ? ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name : "Unknown User";
+                        Logger.DebugLog($"PDM material mappings file '{pdmMaterialMappingsPath}' is locked by another user: {lockedByUserName}. Current user: '{currentPdmUserName ?? "Unknown"}'. Cannot save.");
+                        MessageBox.Show($"Material mappings file '{pdmMaterialMappingsPath}' is locked by user '{lockedByUserName}'. Cannot save changes.", "File Locked", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                }
+                // Serialize to local file
+                using (FileStream stream = new FileStream(pdmMaterialMappingsPath, FileMode.Create, FileAccess.Write))
+                {
+                    var serializer = new System.Xml.Serialization.XmlSerializer(typeof(List<MaterialMapping>));
+                    serializer.Serialize(stream, mappings);
+                }
+                Logger.DebugLog($"Successfully wrote material mappings to local file: {pdmMaterialMappingsPath}");
+                if (pdmFile == null && pdmFolder != null)
+                {
+                    pdmFolder.AddFile((int)parentWndHandle, pdmMaterialMappingsPath, "Added initial material mappings file.");
+                    Logger.DebugLog($"Added new material mappings file to PDM: {pdmMaterialMappingsPath}");
+                    pdmFile = pdmVault.GetFileFromPath(pdmMaterialMappingsPath, out pdmFolder);
+                    if (pdmFile != null)
+                    {
+                        pdmFile.UnlockFile((int)parentWndHandle, "Initial check-in of material mappings file.");
+                        Logger.DebugLog($"Checked in newly added material mappings file: {pdmMaterialMappingsPath}");
+                    }
+                }
+                else if (pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                {
+                    pdmFile.UnlockFile((int)parentWndHandle, "Updated material mappings.");
+                    wasCheckedOutByThisOperation = false;
+                    Logger.DebugLog($"Checked in PDM material mappings file: {pdmMaterialMappingsPath}");
+                }
+                MessageBox.Show("Material mappings saved to PDM vault.", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                Logger.DebugLog($"PDM COMException during save/checkout/checkin for '{pdmMaterialMappingsPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})");
+                MessageBox.Show($"A PDM error occurred while saving material mappings: {comEx.Message}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             catch (Exception ex)
             {
-                Logger.DebugLog($"Error saving material mappings: {ex.Message}");
-                MessageBox.Show($"Error saving material mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.DebugLog($"Error saving material mappings to PDM: {ex.Message}");
+                MessageBox.Show($"Error saving material mappings to PDM: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            finally
+            {
+                if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        Logger.DebugLog($"Attempting to undo checkout for {pdmMaterialMappingsPath} due to an error or incomplete save.");
+                        pdmFile.UndoLockFile((int)parentWndHandle);
+                    }
+                    catch (Exception undoEx) { Logger.DebugLog($"Failed to auto-undo PDM checkout: {undoEx.Message}"); }
+                }
+            }
+        }
+
+        private List<MaterialMapping> LoadMaterialMappingsFromPdmXml()
+        {
+            try
+            {
+                if (pdmVault == null) return null;
+                EPDM.Interop.epdm.IEdmFolder5 edmFolder = null;
+                EPDM.Interop.epdm.IEdmFile5 edmFile = pdmVault.GetFileFromPath(pdmMaterialMappingsPath, out edmFolder);
+                if (edmFile == null) return null;
+                edmFile.GetFileCopy((int)GetParentWindowHandle(), 0);
+                if (!System.IO.File.Exists(pdmMaterialMappingsPath)) return null;
+                using (FileStream stream = new FileStream(pdmMaterialMappingsPath, FileMode.Open))
+                {
+                    var serializer = new System.Xml.Serialization.XmlSerializer(typeof(List<MaterialMapping>));
+                    return (List<MaterialMapping>)serializer.Deserialize(stream);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"Error loading material mappings from PDM: {ex.Message}");
+                return null;
+            }
+        }
+
+
+
+        private void btnSaveMappingsMaterial_Click(object sender, EventArgs e)
+        {
+            SaveMaterialMappingsToPdm();
         }
 
         // --- Methods for dgvThicknessMapping (on Thickness Mappings Tab) ---
@@ -1428,11 +1563,7 @@ namespace RoesleinAddIn
             dgvMaterialMapping.Rows.Add(newRowNumber, "", "");
         }
 
-        private void btnSaveMappingsMaterial_Click(object sender, EventArgs e)
-        {
-            SaveMaterialMappings();
-            MessageBox.Show("Material mappings saved.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
+
         
         // --- Methods for dgvThicknessMapping (on Thickness Mappings Tab) ---
         private void BtnAddNewThickness_Click(object sender, EventArgs e)
@@ -1488,6 +1619,9 @@ namespace RoesleinAddIn
             {
                 // Ensure any pending edits are committed to the DataSource
                 dgvPropertyStandards.EndEdit();
+
+                // --- FIX: Update SettingsVersion from textbox before saving ---
+                this.currentGeneralSettings.SettingsVersion = txtSettingsVersion.Text?.Trim();
 
                 if (dgvPropertyStandards.DataSource is BindingList<PropertyStandardSetting> standardsListBinding)
                 {

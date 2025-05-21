@@ -839,7 +839,10 @@ namespace RoesleinAddIn
                 }
 
                 // Now load settings (vault is set and logged in)
-                Settings.LoadSettings();
+                var loadedSettings = Settings.LoadSettings();
+                string currentStandardsVersion = !string.IsNullOrEmpty(loadedSettings.SettingsVersion)
+                    ? loadedSettings.SettingsVersion
+                    : "1.0.0";
 
                 if (propertyStandardManager == null)
                 {
@@ -850,20 +853,13 @@ namespace RoesleinAddIn
                     propertyStandardManager = new PropertyStandardManager(this.pdmVault, swApp, null);
                 }
 
-                string currentStandardsVersion = null;
-                var loadedSettings = Settings.LoadSettings();
-                if (!string.IsNullOrEmpty(loadedSettings.SettingsVersion))
-                    currentStandardsVersion = loadedSettings.SettingsVersion;
-                else
-                    currentStandardsVersion = "1.0.0"; // fallback
-
                 if (activeDoc.GetType() == (int)SolidWorks.Interop.swconst.swDocumentTypes_e.swDocASSEMBLY)
                 {
                     propertyStandardManager.ProcessAssemblyForStandards(activeDoc, currentStandardsVersion, false);
                 }
                 else
                 {
-                    propertyStandardManager.ApplyStandardsToActiveDocument(activeDoc, currentStandardsVersion, false);
+                    propertyStandardManager.ApplyStandardsToActiveDocument(activeDoc, currentStandardsVersion, false, loadedSettings);
                 }
             }
             catch (Exception ex)

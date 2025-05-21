@@ -1553,6 +1553,47 @@ namespace RoesleinAddIn
                         }
                     }
                     LogMessage($"Raw Material PN {partNumber} (UOM: SI) and all legacy/raw material properties applied to summary tab and all configurations.");
+
+                    // --- NEW: Loop through ALL CutListFolder features and update properties ---
+                    Feature clSwFeat = (Feature)swModel.FirstFeature();
+                    int cutListCount = 0;
+                    while (clSwFeat != null)
+                    {
+                        if (clSwFeat.GetTypeName2() == "SolidBodyFolder")
+                        {
+                            Feature subFeat = clSwFeat.IGetFirstSubFeature() as Feature;
+                            while (subFeat != null)
+                            {
+                                if (subFeat.GetTypeName2() == "CutListFolder")
+                                {
+                                    cutListCount++;
+                                    CustomPropertyManager clPropMgr = subFeat.CustomPropertyManager;
+                                    // Use file property values if available, otherwise fallback
+                                    string fileMaterial = null;
+                                    string fileThickness = null;
+                                    string val, resolvedVal;
+                                    bool clWasResolved;
+                                    int resMat = swModel.Extension.CustomPropertyManager[""]
+                                        .Get5("Material", true, out val, out resolvedVal, out clWasResolved);
+                                    if ((resMat == 0 || resMat == 2) && clWasResolved && !string.IsNullOrEmpty(resolvedVal))
+                                        fileMaterial = resolvedVal;
+                                    int resThk = swModel.Extension.CustomPropertyManager[""]
+                                        .Get5("Sheet Metal Thickness", true, out val, out resolvedVal, out clWasResolved);
+                                    if ((resThk == 0 || resThk == 2) && clWasResolved && !string.IsNullOrEmpty(resolvedVal))
+                                        fileThickness = resolvedVal;
+                                    string materialValue = !string.IsNullOrEmpty(fileMaterial) ? fileMaterial : partMaterial;
+                                    string thicknessValue = !string.IsNullOrEmpty(fileThickness) ? fileThickness : sheetMetalThickness.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
+                                    string descValue = $"Sheet, {materialValue}, {thicknessValue} Thick, {boundingBoxLength:F3} X {boundingBoxWidth:F3}";
+                                    clPropMgr.Add3("Raw Material Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                                    clPropMgr.Add3("Description", (int)swCustomInfoType_e.swCustomInfoText, descValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                                    LogMessage($"[CutList] Updated {subFeat.Name}: Raw Material Number={partNumber}, Description={descValue}");
+                                }
+                                subFeat = subFeat.IGetNextSubFeature() as Feature;
+                            }
+                        }
+                        clSwFeat = (Feature)clSwFeat.GetNextFeature();
+                    }
+                    LogMessage($"Processed {cutListCount} cut list items for Raw Material Number and Description.");
                     return true;
                 }
                 else
@@ -1837,21 +1878,23 @@ namespace RoesleinAddIn
             {
                 LogMessage("Setting document display properties...");
                 
-                // Set shaded and draft quality HLR/HLV resolution
-                const double shadedResolution = 0.0106931; // Specific value requested
-                LogMessage($"Setting Shaded and Draft quality HLR/HLV resolution to: {shadedResolution}");
-                
-                // Use direct constants instead of enums for compatibility
-                // swImageQualityDrfQuality = 73
-                swApp.SetUserPreferenceDoubleValue(73, shadedResolution);
-                
-                // Set wireframe and high quality HLR/HLV resolution (medium setting)
-                // Medium appears to be around 0.5 on the slider
-                const double wireframeResolution = 0.5;
-                LogMessage($"Setting Wireframe and high quality HLR/HLV resolution to medium: {wireframeResolution}");
-                // swImageQualityHLRQuality = 72
-                swApp.SetUserPreferenceDoubleValue(72, wireframeResolution);
-                
+                // Set shaded and draft quality HLR/HLV resolution (use document method, not app-wide)
+                int shadedDraftQualityInt = 25;
+                swModel.SetTessellationQuality(shadedDraftQualityInt);
+                LogMessage($"SetTessellationQuality (shaded/draft) to: {shadedDraftQualityInt}");
+
+                // Set wireframe and high quality HLR/HLV resolution (use document extension method)
+                int wireframeQualityInt = 35;
+                swModel.Extension.SetUserPreferenceInteger(
+                    (int)SolidWorks.Interop.swconst.swUserPreferenceIntegerValue_e.swImageQualityWireframeValue,
+                    (int)SolidWorks.Interop.swconst.swUserPreferenceOption_e.swDetailingNoOptionSpecified,
+                    wireframeQualityInt);
+                LogMessage($"SetUserPreferenceInteger (wireframe/high quality) to: {wireframeQualityInt}");
+
+                // (Optional) Remove or comment out the old swApp.SetUserPreferenceDoubleValue calls
+                // swApp.SetUserPreferenceDoubleValue(73, shadedResolution);
+                // swApp.SetUserPreferenceDoubleValue(72, wireframeResolution);
+
                 // Enable "Use isometric, zoom to fit view for document preview"
                 LogMessage("Enabling 'Use isometric, zoom to fit view for document preview'");
                 // swDisplayNewDocIsometricView = 235

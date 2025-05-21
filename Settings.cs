@@ -348,6 +348,9 @@ namespace RoesleinAddIn
             // settings.PropertyMappings = LoadPropertyMappings(); // Example if they were instance properties
             // settings.MaterialMappings = LoadMaterialMappings(); // Example
 
+            // --- FIX: Always load material mappings from PDM XML and assign to settings.MaterialMappings ---
+            settings.MaterialMappings = LoadMaterialMappings();
+
             // Load Thickness Mappings (static, but might be initialized here too)
             LoadThicknessMappings(); // This loads into the static ThicknessMappings dictionary
 
