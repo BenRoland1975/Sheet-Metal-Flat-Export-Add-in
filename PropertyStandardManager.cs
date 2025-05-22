@@ -9,6 +9,7 @@ using EPDM.Interop.epdm;
 using System.Linq;
 using System.Collections.Generic;
 using System.Text;
+using RoesleinAddIn;
 
 namespace RoesleinAddIn
 {
@@ -42,8 +43,13 @@ namespace RoesleinAddIn
         {
             swApp = application;
             pdmVault = vault;
-            
             logFilePath = debugLogFilePath;
+            var settings = Settings.LoadSettings();
+            if (settings != null && !string.IsNullOrWhiteSpace(settings.LogFilePath))
+            {
+                Logger.SetMainLogFilePath(settings.LogFilePath);
+                Logger.Instance.SetDebugLogPath(settings.DebugLogFilePath);
+            }
             LogMessage("PropertyStandardManager initialized" + (pdmVault != null ? " with PDM Vault connection." : " without PDM Vault connection."));
             
             // Initialize the PDM file manager
@@ -86,15 +92,16 @@ namespace RoesleinAddIn
         /// <param name="currentStandardsVersion">The current version string of the Roeslein Standards.</param>
         /// <param name="silentMode">If true, suppresses UI messages (not fully implemented for PDM interactions yet).</param>
         /// <param name="settings">The settings object to use for standards application.</param>
-        /// <returns>True if standards were successfully applied (or file was already compliant/not in PDM), false otherwise.</returns>
-        public bool ApplyStandardsToActiveDocument(ModelDoc2 swModel, string currentStandardsVersion, bool silentMode = false, Settings settings = null)
+        /// <param name="deferCheckIn">If true, skips the check-in logic for the document.</param>
+        /// <returns>StandardsApplicationResult with status and checkout info.</returns>
+        public StandardsApplicationResult ApplyStandardsToActiveDocument(ModelDoc2 swModel, string currentStandardsVersion, bool silentMode = false, Settings settings = null, bool deferCheckIn = false)
         {
             LogMessage("ApplyStandardsToActiveDocument called");
             if (swModel == null)
             {
                 LogMessage("ApplyStandardsToActiveDocument: No active SolidWorks model provided.");
                 if (!silentMode) MessageBox.Show("No active document.", "Property Standards", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
+                return new StandardsApplicationResult { StandardsApplied = false, CheckedOutByThisProcess = false };
             }
 
             string filePath = swModel.GetPathName();
@@ -102,7 +109,7 @@ namespace RoesleinAddIn
             {
                 LogMessage("ApplyStandardsToActiveDocument: File has not been saved yet. Cannot perform PDM operations or apply standards that require a saved file.");
                 if (!silentMode) MessageBox.Show("The file must be saved before applying property standards.", "Property Standards", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return false;
+                return new StandardsApplicationResult { StandardsApplied = false, CheckedOutByThisProcess = false };
             }
 
             LogMessage($"ApplyStandardsToActiveDocument started for: '{filePath}'. Current Standards Version: '{currentStandardsVersion}'");
@@ -151,7 +158,7 @@ namespace RoesleinAddIn
                                 {
                                     LogMessage($"PDM: File is checked out by another user. Cannot apply standards.");
                                     if (!silentMode) MessageBox.Show($@"File '{Path.GetFileName(filePath)}' is checked out by another user.\nCannot apply standards.", "PDM Checkout Conflict", MessageBoxButtons.OK, MessageBoxIcon.Stop);
-                                    return false;
+                                    return new StandardsApplicationResult { StandardsApplied = false, CheckedOutByThisProcess = false };
                                 }
                             }
                             else
@@ -177,7 +184,7 @@ namespace RoesleinAddIn
                                 else
                                 {
                                     LogMessage($"PDM: Failed to check out file '{filePath}'.");
-                                    return false;
+                                    return new StandardsApplicationResult { StandardsApplied = false, CheckedOutByThisProcess = false };
                                 }
                             }
                         }
@@ -260,7 +267,7 @@ namespace RoesleinAddIn
                         LogMessage($"PDM: Failed to check file back in after error: {ex.Message}");
                     }
                 }
-                return false;
+                return new StandardsApplicationResult { StandardsApplied = false, CheckedOutByThisProcess = wasCheckedOutByThisProcess };
             }
 
             bool standardsAppliedSuccessfully = false;
@@ -306,7 +313,7 @@ namespace RoesleinAddIn
                 }
             }
 
-            if (wasCheckedOutByThisProcess && edmFile != null && parentFolder != null && pdmVault != null && pdmVault.IsLoggedIn)
+            if (!deferCheckIn && wasCheckedOutByThisProcess && edmFile != null && parentFolder != null && pdmVault != null && pdmVault.IsLoggedIn)
             {
                 string filePathToCheckIn = swModel.GetPathName();
                 string fileName = Path.GetFileName(filePathToCheckIn);
@@ -432,7 +439,7 @@ namespace RoesleinAddIn
             {
                 LogMessage($"ApplyStandardsToActiveDocument failed or partially completed for '{filePath}'.");
             }
-            return standardsAppliedSuccessfully;
+            return new StandardsApplicationResult { StandardsApplied = standardsAppliedSuccessfully, CheckedOutByThisProcess = wasCheckedOutByThisProcess };
         }
 
         private bool ApplyAllPropertyStandards(ModelDoc2 swModel, string currentStandardsVersion, bool silentMode, Settings settings)
@@ -521,28 +528,102 @@ namespace RoesleinAddIn
         private string GetCurrentStandardsVersion(ModelDoc2 doc)
         {
             if (doc == null) return string.Empty;
-            
             try
             {
                 CustomPropertyManager propMgr = doc.Extension.CustomPropertyManager[""];
+                string[] propNames = propMgr.GetNames() as string[] ?? new string[0];
+                LogMessage($"[GetCurrentStandardsVersion] Custom tab property names for {doc.GetPathName()}: {string.Join(", ", propNames)}");
+                if (!propNames.Any(n => n.Equals("Roeslein Standards Version", StringComparison.OrdinalIgnoreCase)))
+                {
+                    LogMessage($"[GetCurrentStandardsVersion] Property not found in summary tab for {doc.GetPathName()}");
+                    return string.Empty;
+                }
                 string tempVal = "";
                 string tempResolvedVal = "";
                 bool tempWasResolved = false;
                 bool tempLinkToProperty = false;
-                
-                propMgr.Get6("Roeslein Standards Version", false, 
-                    out tempVal, out tempResolvedVal, out tempWasResolved, out tempLinkToProperty);
-                
+                propMgr.Get6("Roeslein Standards Version", false, out tempVal, out tempResolvedVal, out tempWasResolved, out tempLinkToProperty);
+                LogMessage($"[GetCurrentStandardsVersion] Found property in summary tab: Value='{tempVal}', Resolved='{tempResolvedVal}'");
                 return tempResolvedVal;
             }
-            catch
+            catch (Exception ex)
             {
+                LogMessage($"[GetCurrentStandardsVersion] Exception: {ex.Message}");
                 return string.Empty;
             }
         }
 
         /// <summary>
-        /// Process an assembly file and apply standards to all its components
+        /// Recursively scans all components (including subassemblies) for standards compliance
+        /// </summary>
+        private void ScanComponentsForStandards(
+            Component2 comp,
+            string requiredVersion,
+            List<FileCheckoutInfo> filesWithStandardsUpToDate,
+            List<FileCheckoutInfo> filesNotUpToDate,
+            List<string> skippedFiles)
+        {
+            try
+            {
+                ModelDoc2 compDoc = comp.GetModelDoc2() as ModelDoc2;
+                if (compDoc == null)
+                    return;
+
+                int docType = compDoc.GetType();
+                if (docType == (int)swDocumentTypes_e.swDocPART)
+                {
+                    bool isSheetMetal = IsSheetMetalPart(compDoc);
+                    if (isSheetMetal)
+                    {
+                        string filePath = compDoc.GetPathName();
+                        string partVersion = GetCurrentStandardsVersion(compDoc);
+                        if (string.IsNullOrWhiteSpace(partVersion) || partVersion != requiredVersion)
+                        {
+                            LogMessage($"[Recursive] Component '{comp.Name2}' is NOT up to date. Found: '{partVersion}', Required: '{requiredVersion}'");
+                            filesNotUpToDate.Add(new FileCheckoutInfo { Path = filePath, File = null, Folder = null, StandardsApplied = false, Document = compDoc });
+                        }
+                        else
+                        {
+                            LogMessage($"[Recursive] Component '{comp.Name2}' is up to date. Version: '{partVersion}'");
+                            filesWithStandardsUpToDate.Add(new FileCheckoutInfo { Path = filePath, File = null, Folder = null, StandardsApplied = true, Document = compDoc });
+                        }
+                    }
+                }
+                else if (docType == (int)swDocumentTypes_e.swDocASSEMBLY)
+                {
+                    // Check the subassembly itself (not just the root)
+                    string subAsmPath = compDoc.GetPathName();
+                    string subAsmVersion = GetCurrentStandardsVersion(compDoc);
+                    if (string.IsNullOrWhiteSpace(subAsmVersion) || subAsmVersion != requiredVersion)
+                    {
+                        LogMessage($"[Recursive] Subassembly '{comp.Name2}' is NOT up to date. Found: '{subAsmVersion}', Required: '{requiredVersion}'");
+                        filesNotUpToDate.Add(new FileCheckoutInfo { Path = subAsmPath, File = null, Folder = null, StandardsApplied = false, Document = compDoc });
+                    }
+                    else
+                    {
+                        LogMessage($"[Recursive] Subassembly '{comp.Name2}' is up to date. Version: '{subAsmVersion}'");
+                        filesWithStandardsUpToDate.Add(new FileCheckoutInfo { Path = subAsmPath, File = null, Folder = null, StandardsApplied = true, Document = compDoc });
+                    }
+                    // Then recurse into children
+                    object[] children = comp.GetChildren() as object[];
+                    if (children != null)
+                    {
+                        foreach (Component2 child in children)
+                        {
+                            ScanComponentsForStandards(child, requiredVersion, filesWithStandardsUpToDate, filesNotUpToDate, skippedFiles);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"[Recursive] Error scanning component: {ex.Message}");
+                skippedFiles.Add($"{comp.Name2} - error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Process an assembly file and apply standards to all its components (recursive)
         /// </summary>
         public void ProcessAssemblyForStandards(ModelDoc2 assemblyDoc, string requiredStandardsVersion, bool silentMode = false)
         {
@@ -561,7 +642,6 @@ namespace RoesleinAddIn
 
             // NEW: List to track files missing drawings
             List<string> filesMissingDrawings = new List<string>();
-            
             // Check if the assembly itself has a drawing
             string assemblyPath = assemblyDoc.GetPathName();
             LogMessage($"======= CHECKING FOR DRAWING OF ASSEMBLY: {assemblyPath} =======");
@@ -577,23 +657,17 @@ namespace RoesleinAddIn
 
             // NEW: Apply property standards to the assembly file itself before processing components
             List<string> summaryMessages = new List<string>();
-            ApplyStandardsToActiveDocument(assemblyDoc, requiredStandardsVersion, silentMode, settings);
+            var topLevelResult = ApplyStandardsToActiveDocument(assemblyDoc, requiredStandardsVersion, silentMode, settings, true);
+            bool topLevelCheckedOutByThisProcess = topLevelResult.CheckedOutByThisProcess;
 
-            // Step 1: Scan assembly and collect all files needing standards
+            // Step 1: Recursively scan assembly and collect all files needing standards
             List<FileCheckoutInfo> filesToCheckout = new List<FileCheckoutInfo>();
             List<FileCheckoutInfo> filesAlreadyCheckedOut = new List<FileCheckoutInfo>();
             List<FileCheckoutInfo> filesWithStandardsUpToDate = new List<FileCheckoutInfo>();
+            List<FileCheckoutInfo> filesNotUpToDate = new List<FileCheckoutInfo>();
             List<string> skippedFiles = new List<string>();
-            
-            int totalComponents = 0;
-            int virtualComponents = 0;
-            int missingModelDocs = 0;
-            int nonPartFiles = 0;
-            int nonSheetMetalParts = 0;
-            int filesMissingPaths = 0;
-            int filesNotInVault = 0;
-            int filesWithPdmErrors = 0;
-            
+
+            StringBuilder combinedSummary = new StringBuilder();
             try
             {
                 // Get the assembly's configuration manager and active configuration
@@ -620,215 +694,107 @@ namespace RoesleinAddIn
                     LogMessage("Unable to get root component from assembly.");
                     return;
                 }
-                
-                // Get all components - need to cast to object[]
-                object[] allComponents = (object[])rootComp.GetChildren();
-                if (allComponents == null || allComponents.Length == 0)
+
+                // RECURSIVE: Scan all components (including subassemblies)
+                ScanComponentsForStandards(rootComp, requiredStandardsVersion, filesWithStandardsUpToDate, filesNotUpToDate, skippedFiles);
+
+                // Also check the top-level assembly itself for standards (if not already included)
+                string topLevelVersion = GetCurrentStandardsVersion(assemblyDoc);
+                if (string.IsNullOrWhiteSpace(topLevelVersion) || topLevelVersion != requiredStandardsVersion)
                 {
-                    LogMessage("No components found in assembly.");
-                    if (!silentMode) MessageBox.Show("No components found in this assembly.", "Standards Application", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
+                    LogMessage($"[Recursive] Top-level assembly is NOT up to date. Found: '{topLevelVersion}', Required: '{requiredStandardsVersion}'");
+                    filesNotUpToDate.Insert(0, new FileCheckoutInfo { Path = assemblyDoc.GetPathName(), File = null, Folder = null, StandardsApplied = false, Document = assemblyDoc });
                 }
-                
-                LogMessage($"Found {allComponents.Length} first-level components in assembly.");
-                
-                // Process each component
-                foreach (object obj in allComponents)
+                else
                 {
-                    totalComponents++;
-                    
-                    if (obj == null)
-                    {
-                        LogMessage($"Component #{totalComponents} is null, skipping");
-                        continue;
-                    }
-                    
-                    Component2 comp = obj as Component2;
-                    if (comp == null)
-                    {
-                        LogMessage($"Component #{totalComponents} could not be cast to Component2, skipping");
-                        continue;
-                    }
-                    
-                    // Skip virtual components - IsVirtual is a property, not a method
-                    if (comp.IsVirtual) 
-                    {
-                        string compName = "<unknown>";
-                        try { compName = comp.Name2; } catch { /* ignore */ }
-                        
-                        LogMessage($"Component #{totalComponents} '{compName}' is virtual, skipping");
-                        virtualComponents++;
-                        continue;
-                    }
-                    
+                    LogMessage($"[Recursive] Top-level assembly is up to date. Version: '{topLevelVersion}'");
+                    filesWithStandardsUpToDate.Insert(0, new FileCheckoutInfo { Path = assemblyDoc.GetPathName(), File = null, Folder = null, StandardsApplied = true, Document = assemblyDoc });
+                }
+
+                // BATCH MODE: Check out all files that need update (not already checked out)
+                List<FileCheckoutInfo> filesCheckedOutByThisProcess = new List<FileCheckoutInfo>();
+                foreach (var fileInfo in filesNotUpToDate)
+                {
                     try
                     {
-                        string compName = "<unknown>";
-                        try { compName = comp.Name2; } catch { /* ignore */ }
-                        LogMessage($"Processing component #{totalComponents}: '{compName}'");
-                        
-                        // Need to cast to ModelDoc2
-                        ModelDoc2 compDoc = comp.GetModelDoc2() as ModelDoc2;
-                        if (compDoc == null) 
+                        // Attempt to check out (suppress popups)
+                        bool checkedOut = pdmFileManager.CheckOutOpenFile(fileInfo.Document, true);
+                        if (checkedOut)
                         {
-                            LogMessage($"Component '{compName}' has no ModelDoc2, may be lightweight or suppressed");
-                            missingModelDocs++;
-                            continue;
+                            fileInfo.CheckedOutByThisProcess = true;
+                            filesCheckedOutByThisProcess.Add(fileInfo);
                         }
-                        
-                        // We only care about part files
-                        if (compDoc.GetType() != (int)swDocumentTypes_e.swDocPART) 
-                        {
-                            LogMessage($"Component '{compName}' is not a part file (type: {compDoc.GetType()}), skipping");
-                            nonPartFiles++;
-                            continue;
-                        }
-                        
-                        // Only process sheet metal parts 
-                        bool isSheetMetal = IsSheetMetalPart(compDoc);
-                        if (!isSheetMetal) 
-                        {
-                            LogMessage($"Component '{compName}' is not a sheet metal part, skipping");
-                            nonSheetMetalParts++;
-                            continue;
-                        }
-                        
-                        string filePath = compDoc.GetPathName();
-                        LogMessage($"Sheet metal component '{compName}' has path: '{filePath}'");
-                        
-                        // Check if this sheet metal part has an associated drawing
-                        LogMessage($"======= CHECKING FOR DRAWING OF SHEET METAL PART: {filePath} =======");
-                        if (!HasAssociatedDrawing(filePath))
-                        {
-                            filesMissingDrawings.Add(Path.GetFileName(filePath));
-                            LogMessage($"*** SHEET METAL PART DOES NOT HAVE AN ASSOCIATED DRAWING: {filePath} ***");
-                        }
-                        else
-                        {
-                            LogMessage($"√√√ SHEET METAL PART HAS AN ASSOCIATED DRAWING: {filePath} √√√");
-                        }
-                        
-                        // Skip if file path is empty
-                        if (string.IsNullOrEmpty(filePath)) 
-                        {
-                            LogMessage($"Component '{compName}' has no file path, skipping");
-                            filesMissingPaths++;
-                            continue;
-                        }
-                        
-                        if (pdmVault == null || !pdmVault.IsLoggedIn)
-                        {
-                            LogMessage($"PDM vault not connected or not logged in. Skipping PDM operations for '{filePath}'");
-                            continue;
-                        }
-                        
-                        // Skip if not in PDM vault
-                        string vaultName = pdmVault.GetVaultNameFromPath(filePath);
-                        if (string.IsNullOrEmpty(vaultName))
-                        {
-                            LogMessage($"File '{filePath}' not in PDM vault, skipping");
-                            filesNotInVault++;
-                            continue;
-                        }
-                        
-                        LogMessage($"File '{filePath}' is in vault '{vaultName}', getting PDM file info");
-                        
-                        // Get PDM file
-                        EPDM.Interop.epdm.IEdmFile5 edmFile = null;
-                        EPDM.Interop.epdm.IEdmFolder5 folder = null;
-                        
-                        try
-                        {
-                            edmFile = pdmVault.GetFileFromPath(filePath, out folder);
-                        }
-                        catch (Exception pdmEx)
-                        {
-                            LogMessage($"PDM error getting file info for '{filePath}': {pdmEx.Message}");
-                            filesWithPdmErrors++;
-                            continue;
-                        }
-                        
-                        if (edmFile == null || folder == null)
-                        {
-                            LogMessage($"Could not get PDM file or folder for: '{filePath}'");
-                            filesWithPdmErrors++;
-                            continue;
-                        }
-                        
-                        LogMessage($"Got PDM file, ID: {edmFile.ID}, checking standards version");
-                        
-                        // Check if standards need to be applied
-                        string currentVersion = GetCurrentStandardsVersion(compDoc);
-                        LogMessage($"Current standards version: '{currentVersion}', Required: '{requiredStandardsVersion}'");
-                        
-                        bool needsStandards = string.IsNullOrEmpty(currentVersion) || 
-                                             currentVersion != requiredStandardsVersion;
-                        
-                        if (!needsStandards)
-                        {
-                            LogMessage($"Standards already up to date for: '{filePath}'");
-                            filesWithStandardsUpToDate.Add(new FileCheckoutInfo 
-                            { 
-                                File = edmFile, 
-                                Folder = folder, 
-                                Path = filePath,
-                                Document = compDoc,
-                                StandardsApplied = true // Already has correct standards
-                            });
-                            continue;
-                        }
-                        
-                        // Determine checked out status - more reliable than IsLockedByCurrentUser
-                        bool isCheckedOut = edmFile.IsLocked;
-                        bool isReadOnly = compDoc.IsOpenedReadOnly();
-                        bool isCheckedOutByCurrentUser = isCheckedOut && !isReadOnly;
-                        bool isCheckedOutByOtherUser = isCheckedOut && isReadOnly;
-                        
-                        LogMessage($"File '{filePath}' checkout status - IsLocked: {isCheckedOut}, IsReadOnly: {isReadOnly}, " +
-                                 $"CheckedOutByCurrentUser: {isCheckedOutByCurrentUser}, CheckedOutByOtherUser: {isCheckedOutByOtherUser}");
-                        
-                        if (isCheckedOutByOtherUser)
-                        {
-                            LogMessage($"File '{filePath}' is checked out by another user, skipping");
-                            skippedFiles.Add($"{Path.GetFileName(filePath)} - checked out by another user");
-                            continue;
-                        }
-                        
-                        // If already checked out by the current user, add to that list
-                        if (isCheckedOutByCurrentUser)
-                        {
-                            LogMessage($"File '{filePath}' is already checked out by current user, will apply standards");
-                            filesAlreadyCheckedOut.Add(new FileCheckoutInfo 
-                            { 
-                                File = edmFile, 
-                                Folder = folder, 
-                                Path = filePath,
-                                IsAlreadyCheckedOut = true,
-                                CheckedOutByThisProcess = false, // Not checked out by this process
-                                Document = compDoc
-                            });
-                            continue;
-                        }
-                        
-                        // Otherwise, add to the checkout list
-                        LogMessage($"File '{filePath}' needs checkout and standards application");
-                        filesToCheckout.Add(new FileCheckoutInfo 
-                        { 
-                            File = edmFile, 
-                            Folder = folder, 
-                            Path = filePath,
-                            IsAlreadyCheckedOut = false,
-                            Document = compDoc
-                        });
                     }
-                    catch (Exception compEx)
+                    catch (Exception ex)
                     {
-                        string compPath = "<unknown>";
-                        try { compPath = comp.Name2; } catch { /* ignore */ }
-                        LogMessage($"Error processing component {compPath}: {compEx.Message}");
-                        skippedFiles.Add($"{compPath} - error: {compEx.Message}");
+                        LogMessage($"Batch checkout failed for {fileInfo.Path}: {ex.Message}");
+                        skippedFiles.Add($"{fileInfo.Path} - checkout failed: {ex.Message}");
                     }
                 }
+
+                // Apply standards to all files that need update (suppress popups)
+                List<string> updatedFiles = new List<string>();
+                foreach (var fileInfo in filesNotUpToDate)
+                {
+                    try
+                    {
+                        var result = ApplyStandardsToActiveDocument(fileInfo.Document, requiredStandardsVersion, true, settings);
+                        if (result.StandardsApplied)
+                        {
+                            updatedFiles.Add(System.IO.Path.GetFileName(fileInfo.Path));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"Batch apply failed for {fileInfo.Path}: {ex.Message}");
+                        skippedFiles.Add($"{fileInfo.Path} - apply failed: {ex.Message}");
+                    }
+                }
+
+                // Batch check-in all files checked out by this process
+                foreach (var fileInfo in filesCheckedOutByThisProcess)
+                {
+                    try
+                    {
+                        string comment = $"Applied Roeslein Standards Version: {requiredStandardsVersion}.";
+                        pdmFileManager.CheckInOpenFile(fileInfo.Document, comment, true);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"Batch check-in failed for {fileInfo.Path}: {ex.Message}");
+                        skippedFiles.Add($"{fileInfo.Path} - check-in failed: {ex.Message}");
+                    }
+                }
+
+                // Show single summary popup
+                int upToDate = filesWithStandardsUpToDate.Count;
+                int notUpToDate = filesNotUpToDate.Count;
+                var summaryBuilder = new StringBuilder();
+                summaryBuilder.AppendLine("Assembly Standards Check Complete:");
+                summaryBuilder.AppendLine($"Files Up to Date: {upToDate}");
+                summaryBuilder.AppendLine($"Not Up To Date: {notUpToDate}");
+                if (notUpToDate > 0)
+                {
+                    summaryBuilder.AppendLine();
+                    summaryBuilder.AppendLine("Parts Not Up To Date:");
+                    foreach (var f in filesNotUpToDate)
+                        summaryBuilder.AppendLine($"- {System.IO.Path.GetFileName(f.Path)}");
+                }
+                if (updatedFiles.Count > 0)
+                {
+                    summaryBuilder.AppendLine();
+                    summaryBuilder.AppendLine("Files Updated:");
+                    foreach (var fname in updatedFiles)
+                        summaryBuilder.AppendLine($"- {fname}");
+                }
+                if (skippedFiles.Count > 0)
+                {
+                    summaryBuilder.AppendLine();
+                    summaryBuilder.AppendLine("Files Skipped (Errors):");
+                    foreach (var fname in skippedFiles)
+                        summaryBuilder.AppendLine($"- {fname}");
+                }
+                combinedSummary.Append(summaryBuilder.ToString());
             }
             catch (Exception ex)
             {
@@ -838,23 +804,12 @@ namespace RoesleinAddIn
                 LogMessage(msg);
                 skippedFiles.Add(msg);
             }
-            
+
             LogMessage($"=== ASSEMBLY SCANNING COMPLETE ===");
-            LogMessage($"Total components scanned: {totalComponents}");
-            LogMessage($"Components by type:");
-            LogMessage($"  - Virtual components: {virtualComponents}");
-            LogMessage($"  - Missing ModelDoc2: {missingModelDocs}");
-            LogMessage($"  - Non-part files: {nonPartFiles}");
-            LogMessage($"  - Non-sheet metal parts: {nonSheetMetalParts}");
-            LogMessage($"  - Files missing paths: {filesMissingPaths}");
-            LogMessage($"  - Files not in vault: {filesNotInVault}");
-            LogMessage($"  - Files with PDM errors: {filesWithPdmErrors}");
-            LogMessage($"Files by action:");
-            LogMessage($"  - Files needing checkout: {filesToCheckout.Count}");
-            LogMessage($"  - Files already checked out by user: {filesAlreadyCheckedOut.Count}");
-            LogMessage($"  - Files with standards up to date: {filesWithStandardsUpToDate.Count}");
-            LogMessage($"  - Skipped files: {skippedFiles.Count}");
-            
+            LogMessage($"Files with standards up to date: {filesWithStandardsUpToDate.Count}");
+            LogMessage($"Files not up to date: {filesNotUpToDate.Count}");
+            LogMessage($"Skipped files: {skippedFiles.Count}");
+
             // Step 2: Show dialog with list of files to check out
             if (filesToCheckout.Count > 0 || filesAlreadyCheckedOut.Count > 0)
             {
@@ -935,10 +890,10 @@ namespace RoesleinAddIn
                         {
                             LogMessage($"Applying standards to: {fileInfo.Path}");
                             
-                            bool success = ApplyStandardsToActiveDocument(fileInfo.Document, requiredStandardsVersion, true, settings);
-                            fileInfo.StandardsApplied = success;
+                            var childResult = ApplyStandardsToActiveDocument(fileInfo.Document, requiredStandardsVersion, true, settings);
+                            fileInfo.StandardsApplied = childResult.StandardsApplied;
                             
-                            if (success)
+                            if (childResult.StandardsApplied)
                             {
                                 successCount++;
                                 LogMessage($"Successfully applied standards to: {fileInfo.Path}");
@@ -1031,11 +986,8 @@ namespace RoesleinAddIn
                             summary.AppendLine("All files have associated drawings.");
                         }
                             
-                        MessageBox.Show(
-                            summary.ToString(),
-                            "Standards Application Complete",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information);
+                        combinedSummary.AppendLine();
+                        combinedSummary.Append(summary.ToString());
                     }
                 }
                 else
@@ -1083,11 +1035,35 @@ namespace RoesleinAddIn
                     message.AppendLine("All files have associated drawings.");
                 }
                 
-                if (!silentMode) MessageBox.Show(
-                    message.ToString(),
-                    "Standards Application", 
-                    MessageBoxButtons.OK, 
-                    MessageBoxIcon.Information);
+                if (!silentMode) combinedSummary.AppendLine(message.ToString());
+            }
+
+            // Save the top-level assembly
+            int saveErrors = 0, saveWarnings = 0;
+            assemblyDoc.Save3((int)swSaveAsOptions_e.swSaveAsOptions_Silent, ref saveErrors, ref saveWarnings);
+
+            // Get the file from the vault before attempting check-in
+            EPDM.Interop.epdm.IEdmFolder5 parentFolder;
+            EPDM.Interop.epdm.IEdmFile5 topLevelEdmFile = pdmVault.GetFileFromPath(assemblyDoc.GetPathName(), out parentFolder);
+            
+            if (topLevelCheckedOutByThisProcess && topLevelEdmFile != null && parentFolder != null && topLevelEdmFile.IsLocked)
+            {
+                // Only attempt check-in if the file is actually checked out by this process
+                string topLevelComment = $"Top-level assembly checked in after all children. Standards v{requiredStandardsVersion} applied.";
+                bool topLevelCheckin = pdmFileManager.CheckInOpenFile(assemblyDoc, topLevelComment, silentMode);
+                if (!topLevelCheckin && !silentMode) {
+                    MessageBox.Show("Failed to check in the top-level assembly. Please check manually.", "Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            else
+            {
+                LogMessage("Top-level assembly was not checked out by this process. Skipping check-in.");
+            }
+
+            // At the very end, show only one popup if not silent
+            if (!silentMode)
+            {
+                new StandardsSummaryForm(combinedSummary.ToString(), "Standards Application").ShowDialog();
             }
         }
 
@@ -2063,6 +2039,117 @@ namespace RoesleinAddIn
                 return false;
             }
         }
+
+        /// <summary>
+        /// Applies property standards to a drawing and its referenced model (part or assembly), with PDM logic.
+        /// </summary>
+        public void ProcessDrawingForStandards(ModelDoc2 drawingDoc, string requiredStandardsVersion, bool silentMode = false)
+        {
+            Settings.LoadSettings();
+            var settings = Settings.LoadSettings();
+            if (drawingDoc == null || drawingDoc.GetType() != (int)swDocumentTypes_e.swDocDRAWING)
+            {
+                LogMessage("ProcessDrawingForStandards: Not a drawing document.");
+                if (!silentMode) MessageBox.Show("The active document is not a drawing.", "Standards Application", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            LogMessage($"=== BEGIN DRAWING STANDARDS PROCESSING ===");
+            LogMessage($"Drawing path: {drawingDoc.GetPathName()}");
+            LogMessage($"Required standards version: {requiredStandardsVersion}");
+
+            List<string> summaryMessages = new List<string>();
+            List<string> errors = new List<string>();
+
+            // 1. Apply standards to the drawing itself
+            var drawingResult = ApplyStandardsToActiveDocument(drawingDoc, requiredStandardsVersion, true, settings);
+            if (drawingResult.StandardsApplied)
+                summaryMessages.Add($"Drawing: {System.IO.Path.GetFileName(drawingDoc.GetPathName())} updated.");
+            else
+                errors.Add($"Drawing: {System.IO.Path.GetFileName(drawingDoc.GetPathName())} not updated.");
+
+            // 2. Find referenced model from first view
+            try
+            {
+                DrawingDoc swDrawing = drawingDoc as DrawingDoc;
+                object firstViewObj = swDrawing?.GetFirstView();
+                SolidWorks.Interop.sldworks.View firstView = firstViewObj as SolidWorks.Interop.sldworks.View;
+                // Skip the sheet view (first view is always the sheet itself)
+                if (firstView != null) firstView = firstView.GetNextView() as SolidWorks.Interop.sldworks.View;
+                if (firstView == null)
+                {
+                    errors.Add("No model views found in drawing.");
+                }
+                else
+                {
+                    string refModelPath = firstView.GetReferencedModelName();
+                    if (string.IsNullOrEmpty(refModelPath) || !File.Exists(refModelPath))
+                    {
+                        errors.Add($"Referenced model not found: {refModelPath ?? "(null)"}");
+                    }
+                    else
+                    {
+                        LogMessage($"Referenced model path: {refModelPath}");
+                        // Try to get the model from open docs, otherwise open it
+                        ModelDoc2 refModel = GetDocumentByPath(refModelPath);
+                        bool openedHere = false;
+                        if (refModel == null)
+                        {
+                            int errorsOpen = 0, warningsOpen = 0;
+                            int docType = (int)swDocumentTypes_e.swDocPART;
+                            string ext = Path.GetExtension(refModelPath).ToLower();
+                            if (ext == ".sldasm") docType = (int)swDocumentTypes_e.swDocASSEMBLY;
+                            else if (ext == ".sldprt") docType = (int)swDocumentTypes_e.swDocPART;
+                            refModel = swApp.OpenDoc6(refModelPath, docType, (int)swOpenDocOptions_e.swOpenDocOptions_Silent, "", ref errorsOpen, ref warningsOpen);
+                            openedHere = refModel != null;
+                        }
+                        if (refModel != null)
+                        {
+                            if (refModel.GetType() == (int)swDocumentTypes_e.swDocASSEMBLY)
+                            {
+                                // If the referenced model is an assembly, process the whole assembly tree
+                                ProcessAssemblyForStandards(refModel, requiredStandardsVersion, true);
+                                summaryMessages.Add($"Assembly: {System.IO.Path.GetFileName(refModelPath)} processed (all children checked).");
+                            }
+                            else
+                            {
+                                var modelResult = ApplyStandardsToActiveDocument(refModel, requiredStandardsVersion, true, settings);
+                                if (modelResult.StandardsApplied)
+                                    summaryMessages.Add($"Model: {System.IO.Path.GetFileName(refModelPath)} updated.");
+                                else
+                                    errors.Add($"Model: {System.IO.Path.GetFileName(refModelPath)} not updated.");
+                            }
+                            // Optionally close the model if we opened it
+                            // if (openedHere) swApp.CloseDoc(refModel.GetTitle());
+                        }
+                        else
+                        {
+                            errors.Add($"Failed to open referenced model: {refModelPath}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"Error processing referenced model: {ex.Message}");
+                LogMessage($"Error processing referenced model: {ex.Message}");
+            }
+
+            // 3. Show summary
+            StringBuilder summary = new StringBuilder();
+            summary.AppendLine("Drawing Standards Application Complete:");
+            foreach (var msg in summaryMessages) summary.AppendLine("  " + msg);
+            if (errors.Count > 0)
+            {
+                summary.AppendLine();
+                summary.AppendLine("Errors:");
+                foreach (var err in errors) summary.AppendLine("  " + err);
+            }
+            if (!silentMode)
+            {
+                new StandardsSummaryForm(summary.ToString(), "Standards Application").ShowDialog();
+            }
+        }
     }
 
     /// <summary>
@@ -2362,5 +2449,14 @@ namespace RoesleinAddIn
                 return false;
             }
         }
+    }
+
+    /// <summary>
+    /// Result object for standards application
+    /// </summary>
+    public class StandardsApplicationResult
+    {
+        public bool StandardsApplied { get; set; }
+        public bool CheckedOutByThisProcess { get; set; }
     }
 } 

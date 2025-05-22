@@ -20,6 +20,7 @@ namespace RoesleinAddIn
         private bool settingsEnabled = true; // Reflects setting from Settings.cs
         private bool debugEnabled = false; // Debug logging setting
         private int maxLogFileSizeBytes = 5242880; // Default 5MB
+        private static bool logPathSetFromSettings = false;
 
         private static readonly string DefaultDebugLogPath = Path.Combine(
             System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyDocuments),
@@ -281,19 +282,21 @@ namespace RoesleinAddIn
 
         private void Log(string level, string message, string callerName, string fileName, int lineNumber)
         {
-            // Check both internal enabled flag AND settings flag
-            if (!isEnabled || !settingsEnabled) return;
-
+            if (!isEnabled || !settingsEnabled || !logPathSetFromSettings)
+            {
+                if (!logPathSetFromSettings)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[Logger] Attempted to log before log file path was set from settings. Message: {message}");
+                }
+                return;
+            }
             try
             {
                 lock (lockObj)
                 {
                     RotateLogFileIfNeeded();
-                    
                     string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture);
                     string logEntry = $"[{timestamp}] [{level}] [{fileName}:{lineNumber}] [{callerName}] {message}";
-                    
-                    // Append to log file
                     using (StreamWriter writer = new StreamWriter(logFilePath, true, Encoding.UTF8))
                     {
                         writer.WriteLine(logEntry);
@@ -302,12 +305,9 @@ namespace RoesleinAddIn
             }
             catch (Exception ex)
             {
-                // Log failure robustly - Try Debug output ONLY
                 string errorMsg = $"[{DateTime.Now:u}] !!! LOGGER FAILED TO WRITE TO FILE !!! {ex.GetType().Name} - {ex.Message}\nStackTrace: {ex.StackTrace}\n";
-                Debug.WriteLine(errorMsg); // Output to debugger
-
-                // Prevent further file write attempts in this session
-                isEnabled = false; 
+                Debug.WriteLine(errorMsg);
+                isEnabled = false;
             }
         }
 
@@ -474,10 +474,14 @@ namespace RoesleinAddIn
 
         public static void Log(string message)
         {
-            if (EnableLogging && !string.IsNullOrEmpty(MainLogFilePath))
+            if (EnableLogging && !string.IsNullOrEmpty(MainLogFilePath) && logPathSetFromSettings)
             {
                 string logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}";
                 File.AppendAllText(MainLogFilePath, logEntry + Environment.NewLine);
+            }
+            else if (!logPathSetFromSettings)
+            {
+                System.Diagnostics.Debug.WriteLine($"[Logger] Attempted to log before log file path was set from settings. Message: {message}");
             }
             System.Diagnostics.Debug.WriteLine(message);
         }
@@ -490,6 +494,18 @@ namespace RoesleinAddIn
                 File.AppendAllText(DebugLogFilePath, logEntry + Environment.NewLine);
             }
             System.Diagnostics.Debug.WriteLine(message);
+        }
+
+        public static void SetMainLogFilePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                logPathSetFromSettings = false;
+                System.Diagnostics.Debug.WriteLine("[Logger] Log file path not set from settings! Logging will be disabled until set.");
+                return;
+            }
+            Instance.SetLogFilePath(path);
+            logPathSetFromSettings = true;
         }
     }
 } 

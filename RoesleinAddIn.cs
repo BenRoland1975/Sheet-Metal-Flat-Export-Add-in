@@ -840,6 +840,8 @@ namespace RoesleinAddIn
 
                 // Now load settings (vault is set and logged in)
                 var loadedSettings = Settings.LoadSettings();
+                Logger.SetMainLogFilePath(loadedSettings.LogFilePath);
+                Logger.Instance.SetDebugLogPath(loadedSettings.DebugLogFilePath);
                 string currentStandardsVersion = !string.IsNullOrEmpty(loadedSettings.SettingsVersion)
                     ? loadedSettings.SettingsVersion
                     : "1.0.0";
@@ -856,6 +858,10 @@ namespace RoesleinAddIn
                 if (activeDoc.GetType() == (int)SolidWorks.Interop.swconst.swDocumentTypes_e.swDocASSEMBLY)
                 {
                     propertyStandardManager.ProcessAssemblyForStandards(activeDoc, currentStandardsVersion, false);
+                }
+                else if (activeDoc.GetType() == (int)SolidWorks.Interop.swconst.swDocumentTypes_e.swDocDRAWING)
+                {
+                    propertyStandardManager.ProcessDrawingForStandards(activeDoc, currentStandardsVersion, false);
                 }
                 else
                 {

@@ -45,6 +45,8 @@ namespace RoesleinAddIn
             {
                 Debug.WriteLine("[DEBUG] Constructor: Loading settings..."); 
                 LoadSettings();
+                Logger.SetMainLogFilePath(settings.LogFilePath);
+                Logger.Instance.SetDebugLogPath(settings.DebugLogFilePath);
                 EnsureDirectoriesExist(); 
                 Debug.WriteLine("[DEBUG] Constructor: Settings loaded and directories verified"); 
             }

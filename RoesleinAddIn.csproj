@@ -107,6 +107,9 @@
     </Compile>
     <Compile Include="SheetMetalProcessor.cs" />
     <Compile Include="SolidWorksUtils.cs" />
+    <Compile Include="StandardsSummaryForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Folder Include="SolidWorksReferences\" />
@@ -176,6 +179,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="SettingsFormV2.resx">
       <DependentUpon>SettingsFormV2.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="StandardsSummaryForm.resx">
+      <DependentUpon>StandardsSummaryForm.cs</DependentUpon>
     </EmbeddedResource>
   </ItemGroup>
   <ItemGroup>

@@ -251,13 +251,8 @@ namespace RoesleinAddIn
         {
             try
             {
-                string logPath = Path.Combine(
-                    System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop),
-                    "RoesleinPdmHelper.log");
-                
-                string entry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}";
-                System.IO.File.AppendAllText(logPath, entry + System.Environment.NewLine);
-                Debug.WriteLine(entry);
+                Logger.Log($"[PdmHelper] {message}");
+                System.Diagnostics.Debug.WriteLine($"[PdmHelper] {message}");
             }
             catch { }
         }

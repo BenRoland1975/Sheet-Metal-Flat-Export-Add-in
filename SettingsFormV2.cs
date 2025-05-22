@@ -1148,6 +1148,7 @@ namespace RoesleinAddIn
                 Logger.DebugLogFilePath = this.currentGeneralSettings.DebugLogFilePath;
                 Logger.EnableLogging = this.currentGeneralSettings.LoggingEnabled;
                 Logger.EnableDebugLogging = this.currentGeneralSettings.DebugLoggingEnabled;
+                Logger.SetMainLogFilePath(this.currentGeneralSettings.LogFilePath);
             }
 
             this.DialogResult = DialogResult.OK;
