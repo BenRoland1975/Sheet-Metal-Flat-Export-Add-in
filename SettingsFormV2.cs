@@ -34,6 +34,9 @@ namespace RoesleinAddIn
         private ContextMenuStrip dgvMaterialMappingContextMenu;
         private ContextMenuStrip dgvThicknessMappingContextMenu;
 
+        private string defaultGaugeTablePath = @"C:\PCSVAULT\SolidWorks Settings\Sheet Metal Gauge Table";
+        private DataGridViewComboBoxColumn gaugeTableComboBoxColumn;
+        private List<string> gaugeTableNames = new List<string>();
 
         public SettingsFormV2(ISldWorks sldWorksApp, EPDM.Interop.epdm.IEdmVault5 vault)
         {
@@ -123,6 +126,19 @@ namespace RoesleinAddIn
             {
                 MessageBox.Show("PDM Vault not available. PDM features will be disabled.", "PDM Not Available", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 // Optionally, disable PDM-dependent controls
+            }
+
+            // Add at the end of the constructor, after InitializeMaterialMappingsGrid and LoadMaterialMappingsData
+            this.Load += SettingsFormV2_Load;
+            if (btnGuageTableLocation != null) btnGuageTableLocation.Click += btnGuageTableLocation_Click;
+            if (dgvMaterialMapping != null) dgvMaterialMapping.RowsAdded += dgvMaterialMapping_RowsAdded;
+            // Add DataError handler to suppress default dialog and log errors
+            if (dgvMaterialMapping != null)
+            {
+                dgvMaterialMapping.DataError += (s, e) => {
+                    Logger.DebugLog($"DataGridView DataError: {e.Exception?.Message}");
+                    e.ThrowException = false;
+                };
             }
         }
 
@@ -333,6 +349,7 @@ namespace RoesleinAddIn
             dgvMaterialMapping.Columns.Add("RowNumber", "Row Number");
             dgvMaterialMapping.Columns.Add("SwMaterial", "SolidWorks Material");
             dgvMaterialMapping.Columns.Add("DxfMaterial", "DXF Output Material");
+            dgvMaterialMapping.Columns.Add("GaugeTable", "Gauge Table");
 
             dgvMaterialMapping.Columns["RowNumber"].Width = 80;
             dgvMaterialMapping.Columns["RowNumber"].ReadOnly = true;
@@ -341,8 +358,6 @@ namespace RoesleinAddIn
             dgvMaterialMapping.RowHeadersVisible = false;
             dgvMaterialMapping.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             dgvMaterialMapping.ContextMenuStrip = dgvMaterialMappingContextMenu;
-            // dgvMaterialMapping.MouseDown += DgvMaterialMappings_MouseDown; // Ensure this handler exists
-
             dgvMaterialMapping.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
             dgvMaterialMapping.Columns["RowNumber"].AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
         }
@@ -358,13 +373,23 @@ namespace RoesleinAddIn
                 {
                     foreach (var mapping in mappings.OrderBy(m => m.RowNumber))
                     {
-                        dgvMaterialMapping.Rows.Add(mapping.RowNumber, mapping.SwMaterial, mapping.DxfMaterial);
+                        int idx = dgvMaterialMapping.Rows.Add(mapping.RowNumber, mapping.SwMaterial, mapping.DxfMaterial, mapping.GaugeTable);
+                        // Auto-fill default if GaugeTable is empty
+                        var dxfMat = mapping.DxfMaterial ?? string.Empty;
+                        if (string.IsNullOrWhiteSpace(mapping.GaugeTable))
+                        {
+                            if (dxfMat.IndexOf("Stainless", StringComparison.OrdinalIgnoreCase) >= 0)
+                                dgvMaterialMapping.Rows[idx].Cells["GaugeTable"].Value = "Stainless Steel - english units";
+                            else
+                                dgvMaterialMapping.Rows[idx].Cells["GaugeTable"].Value = "Mild Steel - english units";
+                        }
                     }
                 }
+                dgvMaterialMapping.RefreshEdit();
             }
             catch (Exception ex)
             {
-                Logger.DebugLog($"Error loading material mappings: {ex.Message}");
+                Logger.DebugLog($"Error loading material mappings: {ex}");
                 MessageBox.Show($"Error loading material mappings: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -1327,42 +1352,20 @@ namespace RoesleinAddIn
         private void SaveMaterialMappingsToPdm()
         {
             if (dgvMaterialMapping == null || pdmVault == null) return;
-            EPDM.Interop.epdm.IEdmFile5 pdmFile = null;
-            EPDM.Interop.epdm.IEdmFolder5 pdmFolder = null;
-            bool wasCheckedOutByThisOperation = false;
-            long parentWndHandle = GetParentWindowHandle();
-            string currentPdmUserName = null;
             try
             {
-                // Get current PDM user name using the same pattern as SavePdmSharedSettings
-                var vault7 = pdmVault as EPDM.Interop.epdm.IEdmVault7;
-                if (vault7 != null)
+                // Ensure any pending edits are committed to the DataGridView
+                if (dgvMaterialMapping.IsCurrentCellInEditMode)
                 {
-                    var userMgr = vault7.CreateUtility(EPDM.Interop.epdm.EdmUtility.EdmUtil_UserMgr) as EPDM.Interop.epdm.IEdmUserMgr5;
-                    if (userMgr != null)
+                    dgvMaterialMapping.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                    if (dgvMaterialMapping.EditingControl != null)
                     {
-                        var pdmUser = userMgr.GetLoggedInUser();
-                        if (pdmUser != null)
-                        {
-                            currentPdmUserName = pdmUser.Name;
-                            Logger.DebugLog($"SaveMaterialMappingsToPdm: Current PDM User: {currentPdmUserName}");
-                        }
-                        else { Logger.DebugLog("SaveMaterialMappingsToPdm: Could not retrieve IEdmUser5 object for current PDM user."); }
+                        dgvMaterialMapping.EditingControl.DataBindings["Text"]?.WriteValue();
                     }
-                    else { Logger.DebugLog("SaveMaterialMappingsToPdm: Could not create IEdmUserMgr5 utility from vault7."); }
                 }
-                else
-                {
-                    Logger.DebugLog("SaveMaterialMappingsToPdm: Could not cast pdmVault to IEdmVault7 (or newer). Unable to get PDM user name via CreateUtility.");
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.DebugLog($"SaveMaterialMappingsToPdm: Error getting current PDM user name: {ex.Message}");
-            }
-            try
-            {
                 dgvMaterialMapping.EndEdit();
+                dgvMaterialMapping.CurrentCell = null; // Force commit of any edit in progress
+
                 var mappings = new List<MaterialMapping>();
                 foreach (DataGridViewRow row in dgvMaterialMapping.Rows)
                 {
@@ -1370,96 +1373,46 @@ namespace RoesleinAddIn
                     string swMat = row.Cells["SwMaterial"].Value?.ToString();
                     string dxfMat = row.Cells["DxfMaterial"].Value?.ToString();
                     string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
+                    string gaugeTable = row.Cells["GaugeTable"]?.Value?.ToString();
+
+                    // Auto-assign default GaugeTable if blank
+                    if (string.IsNullOrWhiteSpace(gaugeTable))
+                    {
+                        if (!string.IsNullOrEmpty(dxfMat) && dxfMat.IndexOf("Stainless", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            gaugeTable = "Stainless Steel - english units";
+                        }
+                        else
+                        {
+                            gaugeTable = "Mild Steel - english units";
+                        }
+                        row.Cells["GaugeTable"].Value = gaugeTable; // Update the grid as well
+                    }
+
+                    Logger.DebugLog($"[Save] Row {rowNumStr}: SwMaterial={swMat}, DxfMaterial={dxfMat}, GaugeTable={gaugeTable}");
                     if (!string.IsNullOrWhiteSpace(swMat) && !string.IsNullOrWhiteSpace(dxfMat) && int.TryParse(rowNumStr, out int rowNum))
                     {
                         mappings.Add(new MaterialMapping
                         {
                             RowNumber = rowNum,
                             SwMaterial = swMat,
-                            DxfMaterial = dxfMat
+                            DxfMaterial = dxfMat,
+                            GaugeTable = gaugeTable
                         });
                     }
                 }
-                // Save to local file first
-                Settings.SaveMaterialMappings(mappings);
-                // Now save to PDM vault
-                pdmFile = pdmVault.GetFileFromPath(pdmMaterialMappingsPath, out pdmFolder);
-                if (pdmFile == null)
+                // Use the robust static method for PDM save
+                bool saveSuccess = Settings.SavePdmMaterialMappings(pdmVault, mappings);
+                if (saveSuccess)
                 {
-                    string directory = Path.GetDirectoryName(pdmMaterialMappingsPath);
-                    if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-                    {
-                        Directory.CreateDirectory(directory);
-                    }
-                    Logger.DebugLog($"PDM material mappings file does not exist in vault. It will be created locally at '{pdmMaterialMappingsPath}' and added.");
+                    MessageBox.Show("Material mappings saved to PDM vault.", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
-                else
-                {
-                    if (!pdmFile.IsLocked)
-                    {
-                        pdmFile.LockFile(pdmFolder.ID, (int)parentWndHandle, (int)EdmLockFlag.EdmLock_Simple);
-                        wasCheckedOutByThisOperation = true;
-                        Logger.DebugLog($"Checked out PDM material mappings file: {pdmMaterialMappingsPath}");
-                    }
-                    else if (pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
-                    {
-                        Logger.DebugLog($"PDM material mappings file '{pdmMaterialMappingsPath}' is already locked by the current user ('{currentPdmUserName}').");
-                    }
-                    else
-                    {
-                        string lockedByUserName = pdmFile.IsLocked ? ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name : "Unknown User";
-                        Logger.DebugLog($"PDM material mappings file '{pdmMaterialMappingsPath}' is locked by another user: {lockedByUserName}. Current user: '{currentPdmUserName ?? "Unknown"}'. Cannot save.");
-                        MessageBox.Show($"Material mappings file '{pdmMaterialMappingsPath}' is locked by user '{lockedByUserName}'. Cannot save changes.", "File Locked", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return;
-                    }
-                }
-                // Serialize to local file
-                using (FileStream stream = new FileStream(pdmMaterialMappingsPath, FileMode.Create, FileAccess.Write))
-                {
-                    var serializer = new System.Xml.Serialization.XmlSerializer(typeof(List<MaterialMapping>));
-                    serializer.Serialize(stream, mappings);
-                }
-                Logger.DebugLog($"Successfully wrote material mappings to local file: {pdmMaterialMappingsPath}");
-                if (pdmFile == null && pdmFolder != null)
-                {
-                    pdmFolder.AddFile((int)parentWndHandle, pdmMaterialMappingsPath, "Added initial material mappings file.");
-                    Logger.DebugLog($"Added new material mappings file to PDM: {pdmMaterialMappingsPath}");
-                    pdmFile = pdmVault.GetFileFromPath(pdmMaterialMappingsPath, out pdmFolder);
-                    if (pdmFile != null)
-                    {
-                        pdmFile.UnlockFile((int)parentWndHandle, "Initial check-in of material mappings file.");
-                        Logger.DebugLog($"Checked in newly added material mappings file: {pdmMaterialMappingsPath}");
-                    }
-                }
-                else if (pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
-                {
-                    pdmFile.UnlockFile((int)parentWndHandle, "Updated material mappings.");
-                    wasCheckedOutByThisOperation = false;
-                    Logger.DebugLog($"Checked in PDM material mappings file: {pdmMaterialMappingsPath}");
-                }
-                MessageBox.Show("Material mappings saved to PDM vault.", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch (System.Runtime.InteropServices.COMException comEx)
-            {
-                Logger.DebugLog($"PDM COMException during save/checkout/checkin for '{pdmMaterialMappingsPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})");
-                MessageBox.Show($"A PDM error occurred while saving material mappings: {comEx.Message}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                // (Error messages are already handled in the static method)
             }
             catch (Exception ex)
             {
                 Logger.DebugLog($"Error saving material mappings to PDM: {ex.Message}");
                 MessageBox.Show($"Error saving material mappings to PDM: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-            finally
-            {
-                if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
-                {
-                    try
-                    {
-                        Logger.DebugLog($"Attempting to undo checkout for {pdmMaterialMappingsPath} due to an error or incomplete save.");
-                        pdmFile.UndoLockFile((int)parentWndHandle);
-                    }
-                    catch (Exception undoEx) { Logger.DebugLog($"Failed to auto-undo PDM checkout: {undoEx.Message}"); }
-                }
             }
         }
 
@@ -1664,6 +1617,55 @@ namespace RoesleinAddIn
                 MessageBox.Show($"An error occurred while saving property standards: {ex.Message}", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+
+        private void SettingsFormV2_Load(object sender, EventArgs e)
+        {
+            // Set default gauge table location if not set
+            if (string.IsNullOrWhiteSpace(txtGuageTableLocation.Text))
+                txtGuageTableLocation.Text = defaultGaugeTablePath;
+
+            // --- Robust logger initialization ---
+            if (this.currentGeneralSettings != null)
+            {
+                Logger.MainLogFilePath = this.currentGeneralSettings.LogFilePath;
+                Logger.DebugLogFilePath = this.currentGeneralSettings.DebugLogFilePath;
+                Logger.EnableLogging = this.currentGeneralSettings.LoggingEnabled;
+                Logger.EnableDebugLogging = this.currentGeneralSettings.DebugLoggingEnabled;
+            }
+        }
+
+        private void btnGuageTableLocation_Click(object sender, EventArgs e)
+        {
+            using (var dialog = new FolderBrowserDialog())
+            {
+                dialog.SelectedPath = txtGuageTableLocation.Text;
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    txtGuageTableLocation.Text = dialog.SelectedPath;
+                }
+            }
+        }
+
+        private void dgvMaterialMapping_RowsAdded(object sender, DataGridViewRowsAddedEventArgs e)
+        {
+            for (int i = e.RowIndex; i < e.RowIndex + e.RowCount; i++)
+            {
+                var row = dgvMaterialMapping.Rows[i];
+                // DXF Output Material is always column 2 (index 2)
+                var dxfOutputMaterial = row.Cells[2].Value?.ToString() ?? "";
+                if (dxfOutputMaterial.Contains("ASTM A1008 Steel") || dxfOutputMaterial.Contains("ASTM A572"))
+                {
+                    row.Cells["GaugeTable"].Value = "Mild Steel - english units";
+                }
+                else if (dxfOutputMaterial.Contains("AISI 304 Stainless Steel"))
+                {
+                    row.Cells["GaugeTable"].Value = "Stainless Steel - english units";
+                }
+            }
+        }
+
+        // Update save/load logic to include Gauge Table column, but do not change first two columns
+        // In LoadMaterialMappingsData and SaveMaterialMappingsData, handle the GaugeTable column as a new property
     }
 
     // The data classes (PropertyMapping, MaterialMapping, ThicknessMapping) are assumed to be defined

@@ -32,7 +32,6 @@
             this.tabControl1 = new System.Windows.Forms.TabControl();
             this.GeneralSettings = new System.Windows.Forms.TabPage();
             this.chkCheckForLaser = new System.Windows.Forms.CheckBox();
-            this.pictureBox1 = new System.Windows.Forms.PictureBox();
             this.lblDXFTextMapping = new System.Windows.Forms.Label();
             this.btnAddNewRow = new System.Windows.Forms.Button();
             this.btnSaveMappings = new System.Windows.Forms.Button();
@@ -71,6 +70,9 @@
             this.dgvThicknessMapping = new System.Windows.Forms.DataGridView();
             this.lblThicknessCrossRefernceTable = new System.Windows.Forms.Label();
             this.tpStandardsSettings = new System.Windows.Forms.TabPage();
+            this.lblSettingsVersionNote = new System.Windows.Forms.Label();
+            this.lblSettingsVersion = new System.Windows.Forms.Label();
+            this.txtSettingsVersion = new System.Windows.Forms.TextBox();
             this.lblDefautFileProp = new System.Windows.Forms.Label();
             this.BtnAddNewFileProp = new System.Windows.Forms.Button();
             this.btnSaveFileProp = new System.Windows.Forms.Button();
@@ -86,12 +88,12 @@
             this.lblRosleinVersonLabel = new System.Windows.Forms.Label();
             this.lblVersionNumber = new System.Windows.Forms.Label();
             this.lblCopyright = new System.Windows.Forms.Label();
-            this.txtSettingsVersion = new System.Windows.Forms.TextBox();
-            this.lblSettingsVersion = new System.Windows.Forms.Label();
-            this.lblSettingsVersionNote = new System.Windows.Forms.Label();
+            this.pictureBox1 = new System.Windows.Forms.PictureBox();
+            this.btnGuageTableLocation = new System.Windows.Forms.Button();
+            this.txtGuageTableLocation = new System.Windows.Forms.TextBox();
+            this.lblGuageTableLocation = new System.Windows.Forms.Label();
             this.tabControl1.SuspendLayout();
             this.GeneralSettings.SuspendLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvPropertyMappings)).BeginInit();
             this.MaterialMappings.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvMaterialMapping)).BeginInit();
@@ -102,6 +104,7 @@
             this.tpRawMaterial.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawLinear)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawSheet)).BeginInit();
+            ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
             this.SuspendLayout();
             // 
             // tabControl1
@@ -168,16 +171,6 @@
             this.chkCheckForLaser.TabIndex = 31;
             this.chkCheckForLaser.Text = "Check For Laser in Route";
             this.chkCheckForLaser.UseVisualStyleBackColor = true;
-            // 
-            // pictureBox1
-            // 
-            this.pictureBox1.Image = global::RoesleinAddIn.Properties.Resources.RoesleinConnex_Small;
-            this.pictureBox1.Location = new System.Drawing.Point(631, 53);
-            this.pictureBox1.Name = "pictureBox1";
-            this.pictureBox1.Size = new System.Drawing.Size(115, 76);
-            this.pictureBox1.SizeMode = System.Windows.Forms.PictureBoxSizeMode.StretchImage;
-            this.pictureBox1.TabIndex = 30;
-            this.pictureBox1.TabStop = false;
             // 
             // lblDXFTextMapping
             // 
@@ -447,6 +440,9 @@
             // 
             // MaterialMappings
             // 
+            this.MaterialMappings.Controls.Add(this.btnGuageTableLocation);
+            this.MaterialMappings.Controls.Add(this.txtGuageTableLocation);
+            this.MaterialMappings.Controls.Add(this.lblGuageTableLocation);
             this.MaterialMappings.Controls.Add(this.BtnAddNewRowMaterial);
             this.MaterialMappings.Controls.Add(this.btnSaveMappingsMaterial);
             this.MaterialMappings.Controls.Add(this.dgvMaterialMapping);
@@ -462,7 +458,7 @@
             // BtnAddNewRowMaterial
             // 
             this.BtnAddNewRowMaterial.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
-            this.BtnAddNewRowMaterial.Location = new System.Drawing.Point(28, 414);
+            this.BtnAddNewRowMaterial.Location = new System.Drawing.Point(28, 446);
             this.BtnAddNewRowMaterial.Name = "BtnAddNewRowMaterial";
             this.BtnAddNewRowMaterial.Size = new System.Drawing.Size(120, 23);
             this.BtnAddNewRowMaterial.TabIndex = 30;
@@ -472,7 +468,7 @@
             // btnSaveMappingsMaterial
             // 
             this.btnSaveMappingsMaterial.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Right)));
-            this.btnSaveMappingsMaterial.Location = new System.Drawing.Point(646, 414);
+            this.btnSaveMappingsMaterial.Location = new System.Drawing.Point(646, 446);
             this.btnSaveMappingsMaterial.Name = "btnSaveMappingsMaterial";
             this.btnSaveMappingsMaterial.Size = new System.Drawing.Size(120, 23);
             this.btnSaveMappingsMaterial.TabIndex = 29;
@@ -565,6 +561,33 @@
             this.tpStandardsSettings.TabIndex = 3;
             this.tpStandardsSettings.Text = "Standards Settings";
             this.tpStandardsSettings.UseVisualStyleBackColor = true;
+            // 
+            // lblSettingsVersionNote
+            // 
+            this.lblSettingsVersionNote.AutoSize = true;
+            this.lblSettingsVersionNote.ForeColor = System.Drawing.SystemColors.AppWorkspace;
+            this.lblSettingsVersionNote.Location = new System.Drawing.Point(211, 447);
+            this.lblSettingsVersionNote.Name = "lblSettingsVersionNote";
+            this.lblSettingsVersionNote.Size = new System.Drawing.Size(389, 13);
+            this.lblSettingsVersionNote.TabIndex = 34;
+            this.lblSettingsVersionNote.Text = "This is places on each file and is used to see if the file has been checked alrea" +
+    "dy";
+            // 
+            // lblSettingsVersion
+            // 
+            this.lblSettingsVersion.AutoSize = true;
+            this.lblSettingsVersion.Location = new System.Drawing.Point(13, 443);
+            this.lblSettingsVersion.Name = "lblSettingsVersion";
+            this.lblSettingsVersion.Size = new System.Drawing.Size(86, 13);
+            this.lblSettingsVersion.TabIndex = 33;
+            this.lblSettingsVersion.Text = "Settings Version:";
+            // 
+            // txtSettingsVersion
+            // 
+            this.txtSettingsVersion.Location = new System.Drawing.Point(105, 440);
+            this.txtSettingsVersion.Name = "txtSettingsVersion";
+            this.txtSettingsVersion.Size = new System.Drawing.Size(100, 20);
+            this.txtSettingsVersion.TabIndex = 32;
             // 
             // lblDefautFileProp
             // 
@@ -711,32 +734,44 @@
             this.lblCopyright.TabIndex = 7;
             this.lblCopyright.Text = "Copyright";
             // 
-            // txtSettingsVersion
+            // pictureBox1
             // 
-            this.txtSettingsVersion.Location = new System.Drawing.Point(105, 440);
-            this.txtSettingsVersion.Name = "txtSettingsVersion";
-            this.txtSettingsVersion.Size = new System.Drawing.Size(100, 20);
-            this.txtSettingsVersion.TabIndex = 32;
+            this.pictureBox1.Image = global::RoesleinAddIn.Properties.Resources.RoesleinConnex_Small;
+            this.pictureBox1.Location = new System.Drawing.Point(631, 53);
+            this.pictureBox1.Name = "pictureBox1";
+            this.pictureBox1.Size = new System.Drawing.Size(115, 76);
+            this.pictureBox1.SizeMode = System.Windows.Forms.PictureBoxSizeMode.StretchImage;
+            this.pictureBox1.TabIndex = 30;
+            this.pictureBox1.TabStop = false;
             // 
-            // lblSettingsVersion
+            // btnGuageTableLocation
             // 
-            this.lblSettingsVersion.AutoSize = true;
-            this.lblSettingsVersion.Location = new System.Drawing.Point(13, 443);
-            this.lblSettingsVersion.Name = "lblSettingsVersion";
-            this.lblSettingsVersion.Size = new System.Drawing.Size(86, 13);
-            this.lblSettingsVersion.TabIndex = 33;
-            this.lblSettingsVersion.Text = "Settings Version:";
+            this.btnGuageTableLocation.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.btnGuageTableLocation.Location = new System.Drawing.Point(541, 412);
+            this.btnGuageTableLocation.Name = "btnGuageTableLocation";
+            this.btnGuageTableLocation.Size = new System.Drawing.Size(75, 23);
+            this.btnGuageTableLocation.TabIndex = 33;
+            this.btnGuageTableLocation.Text = "Browse...";
+            this.btnGuageTableLocation.UseVisualStyleBackColor = true;
             // 
-            // lblSettingsVersionNote
+            // txtGuageTableLocation
             // 
-            this.lblSettingsVersionNote.AutoSize = true;
-            this.lblSettingsVersionNote.ForeColor = System.Drawing.SystemColors.AppWorkspace;
-            this.lblSettingsVersionNote.Location = new System.Drawing.Point(211, 447);
-            this.lblSettingsVersionNote.Name = "lblSettingsVersionNote";
-            this.lblSettingsVersionNote.Size = new System.Drawing.Size(389, 13);
-            this.lblSettingsVersionNote.TabIndex = 34;
-            this.lblSettingsVersionNote.Text = "This is places on each file and is used to see if the file has been checked alrea" +
-    "dy";
+            this.txtGuageTableLocation.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
+            | System.Windows.Forms.AnchorStyles.Right)));
+            this.txtGuageTableLocation.Location = new System.Drawing.Point(161, 413);
+            this.txtGuageTableLocation.Name = "txtGuageTableLocation";
+            this.txtGuageTableLocation.Size = new System.Drawing.Size(374, 20);
+            this.txtGuageTableLocation.TabIndex = 32;
+            // 
+            // lblGuageTableLocation
+            // 
+            this.lblGuageTableLocation.AutoSize = true;
+            this.lblGuageTableLocation.Location = new System.Drawing.Point(34, 417);
+            this.lblGuageTableLocation.Name = "lblGuageTableLocation";
+            this.lblGuageTableLocation.Size = new System.Drawing.Size(121, 13);
+            this.lblGuageTableLocation.TabIndex = 31;
+            this.lblGuageTableLocation.Text = "Guage Tables Location:";
+            this.lblGuageTableLocation.TextAlign = System.Drawing.ContentAlignment.TopRight;
             // 
             // SettingsFormV2
             // 
@@ -755,7 +790,6 @@
             this.tabControl1.ResumeLayout(false);
             this.GeneralSettings.ResumeLayout(false);
             this.GeneralSettings.PerformLayout();
-            ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvPropertyMappings)).EndInit();
             this.MaterialMappings.ResumeLayout(false);
             this.MaterialMappings.PerformLayout();
@@ -770,6 +804,7 @@
             this.tpRawMaterial.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawLinear)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawSheet)).EndInit();
+            ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -837,5 +872,8 @@
         private System.Windows.Forms.TextBox txtSettingsVersion;
         private System.Windows.Forms.Label lblSettingsVersionNote;
         private System.Windows.Forms.Label lblSettingsVersion;
+        private System.Windows.Forms.Button btnGuageTableLocation;
+        private System.Windows.Forms.TextBox txtGuageTableLocation;
+        private System.Windows.Forms.Label lblGuageTableLocation;
     }
 }

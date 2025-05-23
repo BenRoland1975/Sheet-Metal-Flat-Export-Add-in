@@ -964,6 +964,130 @@ namespace RoesleinAddIn
                 UnitOfMeasure = "EA"; // Default
             }
         }
+
+        public static bool SavePdmMaterialMappings(EPDM.Interop.epdm.IEdmVault5 vault, List<MaterialMapping> mappings)
+        {
+            string pdmMaterialMappingsPath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\MaterialMappings.xml";
+            if (vault == null || !vault.IsLoggedIn)
+            {
+                Logger.Error("SavePdmMaterialMappings: No logged in vault available.");
+                return false;
+            }
+            EPDM.Interop.epdm.IEdmFile5 pdmFile = null;
+            EPDM.Interop.epdm.IEdmFolder5 pdmFolder = null;
+            bool wasCheckedOutByThisOperation = false;
+            long parentWndHandle = 0;
+            string currentPdmUserName = null;
+            try
+            {
+                EPDM.Interop.epdm.IEdmVault7 vault7 = vault as EPDM.Interop.epdm.IEdmVault7;
+                if (vault7 != null)
+                {
+                    EPDM.Interop.epdm.IEdmUserMgr5 userMgr = vault7.CreateUtility(EPDM.Interop.epdm.EdmUtility.EdmUtil_UserMgr) as EPDM.Interop.epdm.IEdmUserMgr5;
+                    if (userMgr != null)
+                    {
+                        EPDM.Interop.epdm.IEdmUser5 pdmUser = userMgr.GetLoggedInUser();
+                        if (pdmUser != null)
+                        {
+                            currentPdmUserName = pdmUser.Name;
+                            Logger.Info($"SavePdmMaterialMappings: Current PDM User: {currentPdmUserName}");
+                        }
+                        else { Logger.Warning("SavePdmMaterialMappings: Could not retrieve IEdmUser5 object for current PDM user."); }
+                    }
+                    else { Logger.Warning("SavePdmMaterialMappings: Could not create IEdmUserMgr5 utility from vault7."); }
+                }
+                else
+                {
+                    Logger.Warning("SavePdmMaterialMappings: Could not cast pdmVault to IEdmVault7 (or newer). Unable to get PDM user name via CreateUtility.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"SavePdmMaterialMappings: Error getting current PDM user name: {ex.Message}");
+            }
+            try
+            {
+                pdmFile = vault.GetFileFromPath(pdmMaterialMappingsPath, out pdmFolder);
+                if (pdmFile == null)
+                {
+                    string directory = System.IO.Path.GetDirectoryName(pdmMaterialMappingsPath);
+                    if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory))
+                    {
+                        System.IO.Directory.CreateDirectory(directory);
+                    }
+                    Logger.Info($"PDM material mappings file does not exist in vault. It will be created locally at '{pdmMaterialMappingsPath}' and added.");
+                }
+                else
+                {
+                    if (!pdmFile.IsLocked)
+                    {
+                        pdmFile.LockFile(pdmFolder.ID, (int)parentWndHandle, (int)EdmLockFlag.EdmLock_Simple);
+                        wasCheckedOutByThisOperation = true;
+                        Logger.Info($"Checked out PDM material mappings file: {pdmMaterialMappingsPath}");
+                    }
+                    else if (pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Info($"PDM material mappings file '{pdmMaterialMappingsPath}' is already locked by the current user ('{currentPdmUserName}').");
+                    }
+                    else
+                    {
+                        string lockedByUserName = pdmFile.IsLocked ? ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name : "Unknown User";
+                        Logger.Error($"PDM material mappings file '{pdmMaterialMappingsPath}' is locked by another user: {lockedByUserName}. Current user: '{currentPdmUserName ?? "Unknown"}'. Cannot save.");
+                        MessageBox.Show($"Material mappings file '{pdmMaterialMappingsPath}' is locked by user '{lockedByUserName}'. Cannot save changes.", "File Locked", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return false;
+                    }
+                }
+                // Serialize to local file
+                using (System.IO.FileStream stream = new System.IO.FileStream(pdmMaterialMappingsPath, System.IO.FileMode.Create, System.IO.FileAccess.Write))
+                {
+                    var serializer = new System.Xml.Serialization.XmlSerializer(typeof(List<MaterialMapping>));
+                    serializer.Serialize(stream, mappings);
+                }
+                Logger.Info($"Successfully wrote material mappings to local file: {pdmMaterialMappingsPath}");
+                if (pdmFile == null && pdmFolder != null)
+                {
+                    pdmFolder.AddFile((int)parentWndHandle, pdmMaterialMappingsPath, "Added initial material mappings file.");
+                    Logger.Info($"Added new material mappings file to PDM: {pdmMaterialMappingsPath}");
+                    pdmFile = vault.GetFileFromPath(pdmMaterialMappingsPath, out pdmFolder);
+                    if (pdmFile != null)
+                    {
+                        pdmFile.UnlockFile((int)parentWndHandle, "Initial check-in of material mappings file.");
+                        Logger.Info($"Checked in newly added material mappings file: {pdmMaterialMappingsPath}");
+                    }
+                }
+                else if (pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                {
+                    pdmFile.UnlockFile((int)parentWndHandle, "Updated material mappings.");
+                    wasCheckedOutByThisOperation = false;
+                    Logger.Info($"Checked in PDM material mappings file: {pdmMaterialMappingsPath}");
+                }
+                return true;
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                Logger.Error($"PDM COMException during save/checkout/checkin for '{pdmMaterialMappingsPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})", comEx);
+                MessageBox.Show($"A PDM error occurred while saving material mappings: {comEx.Message}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error saving material mappings to PDM: {ex.Message}", ex);
+                MessageBox.Show($"Error saving material mappings to PDM: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            finally
+            {
+                if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        Logger.Warning($"Attempting to undo checkout for {pdmMaterialMappingsPath} due to an error or incomplete save.");
+                        pdmFile.UndoLockFile((int)parentWndHandle);
+                    }
+                    catch (Exception undoEx) { Logger.Error($"Failed to auto-undo PDM checkout: {undoEx.Message}"); }
+                }
+            }
+        }
     }
 
     // New PdmSharedSettings class definition
