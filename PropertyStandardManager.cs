@@ -1205,6 +1205,16 @@ namespace RoesleinAddIn
             LogMessage($"Assembly path: {assemblyDoc.GetPathName()}");
             LogMessage($"Required standards version: {requiredStandardsVersion}");
 
+            // Create progress form for user feedback (only if not in silent mode)
+            ProgressForm progressForm = null;
+            if (!silentMode)
+            {
+                progressForm = new ProgressForm("Processing Assembly Standards");
+                progressForm.Show();
+                progressForm.UpdateProgress(0, "Initializing...", "Starting assembly processing");
+                System.Windows.Forms.Application.DoEvents();
+            }
+
             // NEW: List to track files missing drawings
             List<string> filesMissingDrawings = new List<string>();
             // NEW: List to track files needing materials assigned
@@ -1294,6 +1304,12 @@ namespace RoesleinAddIn
                 // RECURSIVE: Scan all components (including subassemblies)
                 ScanComponentsForStandards(rootComp, requiredStandardsVersion, filesWithStandardsUpToDate, filesNotUpToDate, skippedFiles);
 
+                if (progressForm != null)
+                {
+                    progressForm.UpdateProgress(30, "Scanning complete", $"Found {filesNotUpToDate.Count} files needing updates");
+                    System.Windows.Forms.Application.DoEvents();
+                }
+
                 // Check if the top-level assembly is already in the lists (to avoid duplicates)
                 bool topLevelAlreadyProcessed = filesNotUpToDate.Any(f => f.Path == assemblyPath) || 
                                                filesWithStandardsUpToDate.Any(f => f.Path == assemblyPath);
@@ -1360,6 +1376,12 @@ namespace RoesleinAddIn
                 }
 
                 // BATCH MODE: Check out all files that need update (not already checked out)
+                if (progressForm != null)
+                {
+                    progressForm.UpdateProgress(40, "Checking out files...", $"Processing {filesNotUpToDate.Count} files");
+                    System.Windows.Forms.Application.DoEvents();
+                }
+                
                 foreach (var fileInfo in filesNotUpToDate)
                 {
                     try
@@ -1403,6 +1425,12 @@ namespace RoesleinAddIn
                 }
 
                 // Apply standards to all files that need update (suppress popups)
+                if (progressForm != null)
+                {
+                    progressForm.UpdateProgress(60, "Applying standards...", $"Processing {filesNotUpToDate.Count} files");
+                    System.Windows.Forms.Application.DoEvents();
+                }
+                
                 List<string> updatedFiles = new List<string>();
                 foreach (var fileInfo in filesNotUpToDate)
                 {
@@ -1539,6 +1567,12 @@ namespace RoesleinAddIn
                 }
 
                 // Batch check-in all files checked out by this process
+                if (progressForm != null)
+                {
+                    progressForm.UpdateProgress(80, "Checking in files...", $"Processing {filesCheckedOutByThisProcess.Count} files");
+                    System.Windows.Forms.Application.DoEvents();
+                }
+                
                 foreach (var fileInfo in filesCheckedOutByThisProcess)
                 {
                     try
@@ -2155,6 +2189,17 @@ namespace RoesleinAddIn
             // At the very end, show only one popup if not silent
             if (!silentMode)
             {
+                // Close progress form and show completion
+                if (progressForm != null)
+                {
+                    progressForm.UpdateProgress(100, "Complete", "Processing finished");
+                    System.Windows.Forms.Application.DoEvents();
+                    System.Threading.Thread.Sleep(500); // Brief pause to show completion
+                    progressForm.Close();
+                    progressForm.Dispose();
+                    progressForm = null;
+                }
+                
                 // Prepare file lists for the enhanced form - only include files that actually still need action
                 var materialFileNames = filesNeedingMaterials.Select(f => f.Split(new[] { " - " }, StringSplitOptions.RemoveEmptyEntries)[0].Trim()).ToList();
                 var shopRouteFileNames = filesNeedingShopRoute.Select(f => f.Split(new[] { " - " }, StringSplitOptions.RemoveEmptyEntries)[0].Trim()).ToList();
