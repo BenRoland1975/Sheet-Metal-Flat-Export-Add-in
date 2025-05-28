@@ -16,7 +16,6 @@ namespace RoesleinAddIn
         public string SwMaterial { get; set; }
         public string DxfMaterial { get; set; }
         public int RowNumber { get; set; }
-        public string GaugeTable { get; set; }
     }
 
     [Serializable]

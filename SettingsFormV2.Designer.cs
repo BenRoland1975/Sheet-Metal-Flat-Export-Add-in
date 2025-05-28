@@ -89,9 +89,6 @@
             this.lblVersionNumber = new System.Windows.Forms.Label();
             this.lblCopyright = new System.Windows.Forms.Label();
             this.pictureBox1 = new System.Windows.Forms.PictureBox();
-            this.btnGuageTableLocation = new System.Windows.Forms.Button();
-            this.txtGuageTableLocation = new System.Windows.Forms.TextBox();
-            this.lblGuageTableLocation = new System.Windows.Forms.Label();
             this.tabControl1.SuspendLayout();
             this.GeneralSettings.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvPropertyMappings)).BeginInit();
@@ -440,9 +437,6 @@
             // 
             // MaterialMappings
             // 
-            this.MaterialMappings.Controls.Add(this.btnGuageTableLocation);
-            this.MaterialMappings.Controls.Add(this.txtGuageTableLocation);
-            this.MaterialMappings.Controls.Add(this.lblGuageTableLocation);
             this.MaterialMappings.Controls.Add(this.BtnAddNewRowMaterial);
             this.MaterialMappings.Controls.Add(this.btnSaveMappingsMaterial);
             this.MaterialMappings.Controls.Add(this.dgvMaterialMapping);
@@ -744,35 +738,6 @@
             this.pictureBox1.TabIndex = 30;
             this.pictureBox1.TabStop = false;
             // 
-            // btnGuageTableLocation
-            // 
-            this.btnGuageTableLocation.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
-            this.btnGuageTableLocation.Location = new System.Drawing.Point(541, 412);
-            this.btnGuageTableLocation.Name = "btnGuageTableLocation";
-            this.btnGuageTableLocation.Size = new System.Drawing.Size(75, 23);
-            this.btnGuageTableLocation.TabIndex = 33;
-            this.btnGuageTableLocation.Text = "Browse...";
-            this.btnGuageTableLocation.UseVisualStyleBackColor = true;
-            // 
-            // txtGuageTableLocation
-            // 
-            this.txtGuageTableLocation.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
-            | System.Windows.Forms.AnchorStyles.Right)));
-            this.txtGuageTableLocation.Location = new System.Drawing.Point(161, 413);
-            this.txtGuageTableLocation.Name = "txtGuageTableLocation";
-            this.txtGuageTableLocation.Size = new System.Drawing.Size(374, 20);
-            this.txtGuageTableLocation.TabIndex = 32;
-            // 
-            // lblGuageTableLocation
-            // 
-            this.lblGuageTableLocation.AutoSize = true;
-            this.lblGuageTableLocation.Location = new System.Drawing.Point(34, 417);
-            this.lblGuageTableLocation.Name = "lblGuageTableLocation";
-            this.lblGuageTableLocation.Size = new System.Drawing.Size(121, 13);
-            this.lblGuageTableLocation.TabIndex = 31;
-            this.lblGuageTableLocation.Text = "Guage Tables Location:";
-            this.lblGuageTableLocation.TextAlign = System.Drawing.ContentAlignment.TopRight;
-            // 
             // SettingsFormV2
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
@@ -872,8 +837,5 @@
         private System.Windows.Forms.TextBox txtSettingsVersion;
         private System.Windows.Forms.Label lblSettingsVersionNote;
         private System.Windows.Forms.Label lblSettingsVersion;
-        private System.Windows.Forms.Button btnGuageTableLocation;
-        private System.Windows.Forms.TextBox txtGuageTableLocation;
-        private System.Windows.Forms.Label lblGuageTableLocation;
     }
 }

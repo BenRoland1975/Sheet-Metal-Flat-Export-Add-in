@@ -34,10 +34,6 @@ namespace RoesleinAddIn
         private ContextMenuStrip dgvMaterialMappingContextMenu;
         private ContextMenuStrip dgvThicknessMappingContextMenu;
 
-        private string defaultGaugeTablePath = @"C:\PCSVAULT\SolidWorks Settings\Sheet Metal Gauge Table";
-        private DataGridViewComboBoxColumn gaugeTableComboBoxColumn;
-        private List<string> gaugeTableNames = new List<string>();
-
         public SettingsFormV2(ISldWorks sldWorksApp, EPDM.Interop.epdm.IEdmVault5 vault)
         {
             InitializeComponent();
@@ -130,8 +126,6 @@ namespace RoesleinAddIn
 
             // Add at the end of the constructor, after InitializeMaterialMappingsGrid and LoadMaterialMappingsData
             this.Load += SettingsFormV2_Load;
-            if (btnGuageTableLocation != null) btnGuageTableLocation.Click += btnGuageTableLocation_Click;
-            if (dgvMaterialMapping != null) dgvMaterialMapping.RowsAdded += dgvMaterialMapping_RowsAdded;
             // Add DataError handler to suppress default dialog and log errors
             if (dgvMaterialMapping != null)
             {
@@ -349,7 +343,7 @@ namespace RoesleinAddIn
             dgvMaterialMapping.Columns.Add("RowNumber", "Row Number");
             dgvMaterialMapping.Columns.Add("SwMaterial", "SolidWorks Material");
             dgvMaterialMapping.Columns.Add("DxfMaterial", "DXF Output Material");
-            dgvMaterialMapping.Columns.Add("GaugeTable", "Gauge Table");
+            // REMOVED: dgvMaterialMapping.Columns.Add("GaugeTable", "Gauge Table");
 
             dgvMaterialMapping.Columns["RowNumber"].Width = 80;
             dgvMaterialMapping.Columns["RowNumber"].ReadOnly = true;
@@ -358,6 +352,7 @@ namespace RoesleinAddIn
             dgvMaterialMapping.RowHeadersVisible = false;
             dgvMaterialMapping.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             dgvMaterialMapping.ContextMenuStrip = dgvMaterialMappingContextMenu;
+            // REMOVED: dgvMaterialMapping.RowsAdded += dgvMaterialMapping_RowsAdded;
             dgvMaterialMapping.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
             dgvMaterialMapping.Columns["RowNumber"].AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
         }
@@ -373,16 +368,8 @@ namespace RoesleinAddIn
                 {
                     foreach (var mapping in mappings.OrderBy(m => m.RowNumber))
                     {
-                        int idx = dgvMaterialMapping.Rows.Add(mapping.RowNumber, mapping.SwMaterial, mapping.DxfMaterial, mapping.GaugeTable);
-                        // Auto-fill default if GaugeTable is empty
-                        var dxfMat = mapping.DxfMaterial ?? string.Empty;
-                        if (string.IsNullOrWhiteSpace(mapping.GaugeTable))
-                        {
-                            if (dxfMat.IndexOf("Stainless", StringComparison.OrdinalIgnoreCase) >= 0)
-                                dgvMaterialMapping.Rows[idx].Cells["GaugeTable"].Value = "Stainless Steel - english units";
-                            else
-                                dgvMaterialMapping.Rows[idx].Cells["GaugeTable"].Value = "Mild Steel - english units";
-                        }
+                        int idx = dgvMaterialMapping.Rows.Add(mapping.RowNumber, mapping.SwMaterial, mapping.DxfMaterial);
+                        // REMOVED: Auto-fill default gauge table logic
                     }
                 }
                 dgvMaterialMapping.RefreshEdit();
@@ -1373,31 +1360,15 @@ namespace RoesleinAddIn
                     string swMat = row.Cells["SwMaterial"].Value?.ToString();
                     string dxfMat = row.Cells["DxfMaterial"].Value?.ToString();
                     string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
-                    string gaugeTable = row.Cells["GaugeTable"]?.Value?.ToString();
 
-                    // Auto-assign default GaugeTable if blank
-                    if (string.IsNullOrWhiteSpace(gaugeTable))
-                    {
-                        if (!string.IsNullOrEmpty(dxfMat) && dxfMat.IndexOf("Stainless", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            gaugeTable = "Stainless Steel - english units";
-                        }
-                        else
-                        {
-                            gaugeTable = "Mild Steel - english units";
-                        }
-                        row.Cells["GaugeTable"].Value = gaugeTable; // Update the grid as well
-                    }
-
-                    Logger.DebugLog($"[Save] Row {rowNumStr}: SwMaterial={swMat}, DxfMaterial={dxfMat}, GaugeTable={gaugeTable}");
+                    Logger.DebugLog($"[Save] Row {rowNumStr}: SwMaterial={swMat}, DxfMaterial={dxfMat}");
                     if (!string.IsNullOrWhiteSpace(swMat) && !string.IsNullOrWhiteSpace(dxfMat) && int.TryParse(rowNumStr, out int rowNum))
                     {
                         mappings.Add(new MaterialMapping
                         {
                             RowNumber = rowNum,
                             SwMaterial = swMat,
-                            DxfMaterial = dxfMat,
-                            GaugeTable = gaugeTable
+                            DxfMaterial = dxfMat
                         });
                     }
                 }
@@ -1620,9 +1591,9 @@ namespace RoesleinAddIn
 
         private void SettingsFormV2_Load(object sender, EventArgs e)
         {
-            // Set default gauge table location if not set
-            if (string.IsNullOrWhiteSpace(txtGuageTableLocation.Text))
-                txtGuageTableLocation.Text = defaultGaugeTablePath;
+            // REMOVED: Set default gauge table location if not set
+            // if (string.IsNullOrWhiteSpace(txtGuageTableLocation.Text))
+            //     txtGuageTableLocation.Text = defaultGaugeTablePath;
 
             // --- Robust logger initialization ---
             if (this.currentGeneralSettings != null)
@@ -1634,37 +1605,9 @@ namespace RoesleinAddIn
             }
         }
 
-        private void btnGuageTableLocation_Click(object sender, EventArgs e)
-        {
-            using (var dialog = new FolderBrowserDialog())
-            {
-                dialog.SelectedPath = txtGuageTableLocation.Text;
-                if (dialog.ShowDialog() == DialogResult.OK)
-                {
-                    txtGuageTableLocation.Text = dialog.SelectedPath;
-                }
-            }
-        }
+        // REMOVED: dgvMaterialMapping_RowsAdded method (only handled gauge table logic)
 
-        private void dgvMaterialMapping_RowsAdded(object sender, DataGridViewRowsAddedEventArgs e)
-        {
-            for (int i = e.RowIndex; i < e.RowIndex + e.RowCount; i++)
-            {
-                var row = dgvMaterialMapping.Rows[i];
-                // DXF Output Material is always column 2 (index 2)
-                var dxfOutputMaterial = row.Cells[2].Value?.ToString() ?? "";
-                if (dxfOutputMaterial.Contains("ASTM A1008 Steel") || dxfOutputMaterial.Contains("ASTM A572"))
-                {
-                    row.Cells["GaugeTable"].Value = "Mild Steel - english units";
-                }
-                else if (dxfOutputMaterial.Contains("AISI 304 Stainless Steel"))
-                {
-                    row.Cells["GaugeTable"].Value = "Stainless Steel - english units";
-                }
-            }
-        }
-
-        // Update save/load logic to include Gauge Table column, but do not change first two columns
+        // REMOVED: Update save/load logic to include Gauge Table column, but do not change first two columns
         // In LoadMaterialMappingsData and SaveMaterialMappingsData, handle the GaugeTable column as a new property
     }
 

@@ -153,6 +153,7 @@ namespace RoesleinAddIn
             TitleBlockText = "";
             LoggingEnabled = true;
             DebugLoggingEnabled = false; // Debug logging off by default
+            CheckForLaser = true; // Default to true for new installs
             
             // Set default log path
             LogFilePath = DefaultLogPath;
