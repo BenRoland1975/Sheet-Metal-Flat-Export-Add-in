@@ -1,0 +1,2053 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+using EPDM.Interop.epdm;
+using System.Drawing;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Linq;
+using System.Data.OleDb;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement;
+using System.Data;
+using System.Threading.Tasks;
+using System.Text;
+using System.Reflection;
+using System.Drawing.Imaging;
+using System.Data.SqlClient;
+using Microsoft.Win32;
+
+
+namespace Estimate_BOM_Tool
+{
+    [Guid("0B32E1A0-7532-4441-9695-73A4E7E23C1B"), ComVisible(true)]
+    public class Class1 : IEdmAddIn5
+    {
+        private bool isLoggingEnabled = true; // Default to true, or load from settings
+        private Dictionary<string, IEdmFile5> searchCache = new Dictionary<string, IEdmFile5>();
+        private FileInfoForm activeForm;
+        private Dictionary<string, string> excludeList = new Dictionary<string, string>();
+        public void GetAddInInfo(ref EdmAddInInfo poInfo, IEdmVault5 poVault, IEdmCmdMgr5 poCmdMgr)
+        {
+            poInfo.mbsAddInName = "Estimate BOM Tool";
+            poInfo.mbsCompany = "Roeslein & Associates, Inc.";
+            poInfo.mbsDescription = "Tool to Get estimate cost on Buy out parts and raw material.";
+            poInfo.mlAddInVersion = 9;
+            poInfo.mlRequiredVersionMajor = 31;
+            poInfo.mlRequiredVersionMinor = 1;
+            poCmdMgr.AddCmd(1, "Estimate BOM Tool", (int)EdmMenuFlags.EdmMenu_Nothing);
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\PrideConveyanceSystems\EstimateBOMTool"))
+            {
+                if (key != null && key.GetValue("IsLoggingEnabled") != null)
+                {
+                    isLoggingEnabled = bool.Parse(key.GetValue("IsLoggingEnabled").ToString());
+                }
+                else
+                {
+                    isLoggingEnabled = true; // Default to true if not found
+                }
+            }
+        }
+
+        public void OnCmd(ref EdmCmd poCmd, ref EdmCmdData[] ppoData)
+        {
+            IEdmVault5 vault = null;
+            IEdmFile5 file = null;
+
+            try
+            {
+                vault = (IEdmVault5)poCmd.mpoVault;
+                file = (IEdmFile5)vault.GetObject(EdmObjectType.EdmObject_File, ppoData[0].mlObjectID1);
+
+                LogMessage($"OnCmd started for file: {file?.Name ?? "null"}");
+
+                // Validate file type
+                if (file == null || !file.Name.EndsWith(".sldasm", StringComparison.OrdinalIgnoreCase))
+                {
+                    LogMessage($"Invalid file type: {file?.Name ?? "null"}");
+                    MessageBox.Show(
+                        "Estimate BOM Tool only works on SolidWorks Assembly Files (.sldasm). Please select a valid assembly file.",
+                        "Invalid File Type", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;  // Stop further execution
+                }
+
+                // Create and show the form using ShowDialog to ensure proper focus and disposal
+                using (FileInfoForm form = new FileInfoForm(vault, this))
+                {
+                    form.ParentFileName = file.Name;
+                    LoadBom(file, vault, form);
+                    LogMessage($"Loaded BOM for: {file.Name}");
+
+                    // Show form as a dialog to ensure proper disposal after closing
+                    form.ShowDialog();
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Unexpected error: {ex.Message}\n{ex.StackTrace}");
+                MessageBox.Show($"An error occurred: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                // Ensure COM objects are released to prevent conflicts
+                if (file != null)
+                {
+                    Marshal.ReleaseComObject(file);
+                    file = null;
+                }
+
+                if (vault != null)
+                {
+                    Marshal.ReleaseComObject(vault);
+                    vault = null;
+                }
+            }
+        }
+
+
+
+        // Load the Exclude List from Excel
+        public void LoadExcludeListFromExcel(string filePath)
+        {
+            try
+            {
+                LogMessage("Loading Exclude List from Excel...");
+                using (OleDbConnection connection = new OleDbConnection(
+                    $"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={filePath};Extended Properties='Excel 12.0 Xml;HDR=YES';"))
+                {
+                    connection.Open();
+                    OleDbCommand command = new OleDbCommand("SELECT * FROM [Exclude List$]", connection);
+                    using (OleDbDataReader reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            string partNumber = reader["Part Numbers to Ignore"].ToString();
+                            string makeBuy = reader["Make/Buy"].ToString();
+                            if (!string.IsNullOrEmpty(partNumber) && !excludeList.ContainsKey(partNumber))
+                            {
+                                excludeList.Add(partNumber, makeBuy);
+                            }
+                        }
+                    }
+                }
+                LogMessage("Exclude List loaded successfully.");
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error loading Exclude List: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+        private string GetVariableValue(IEdmEnumeratorVariable5 varEnum, string variableName)
+        {
+            varEnum.GetVar(variableName, "@", out object value);
+            return value?.ToString() ?? "Unknown";
+        }
+
+        // Helper method to get variable value from BOM cell
+        private string GetVariableValueFromBomCell(IEdmBomCell bomCell, string variableName, IEdmVault5 vault)
+        {
+            try
+            {
+                // Get the variable ID from the vault using its name
+                IEdmVariableMgr5 variableMgr = (IEdmVariableMgr5)vault;
+                IEdmVariable5 variable = variableMgr.GetVariable(variableName);
+
+                if (variable == null)
+                {
+                    LogError($"Variable '{variableName}' not found in the vault.");
+                    return string.Empty;
+                }
+
+                object value;
+                bomCell.GetVar(variable.ID, (int)EdmBomColumnType.EdmBomCol_Variable, out value, out _, out _, out _);
+                return value?.ToString() ?? string.Empty;
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error retrieving variable value '{variableName}' from BOM cell: {ex.Message}\n{ex.StackTrace}");
+                return string.Empty;
+            }
+        }
+
+
+
+
+        // Modify LoadBom to apply Exclude List logic
+        public void LoadBom(IEdmFile5 file, IEdmVault5 vault, FileInfoForm form)
+        {
+            try
+            {
+                LogMessage($"Starting LoadBom method for file: {file.Name}");
+
+                IEdmFile7 file7 = (IEdmFile7)file;
+                IEdmBomView bomView = file7.GetComputedBOM("Estimate BOM", file.CurrentVersion, "Default", (int)(EdmBomFlag.EdmBf_AsBuilt));
+
+                if (bomView == null)
+                {
+                    LogMessage("No BOM data found for 'Default'. Falling back to '@'.");
+                    bomView = file7.GetComputedBOM("Estimate BOM", file.CurrentVersion, "@", (int)(EdmBomFlag.EdmBf_AsBuilt));
+                }
+
+                if (bomView == null)
+                {
+                    LogMessage($"No BOM available for file: {file.Name}");
+                    MessageBox.Show("No BOM available for this file.", "Information", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                // Initialize DataGridView
+                LogMessage($"BOM view retrieved successfully for file: {file.Name}");
+                form.BomDataGridView.Columns.Clear();
+                form.BomDataGridView.Rows.Clear();
+
+                // Retrieve BOM Columns
+                bomView.GetColumns(out EdmBomColumn[] bomColumns);
+
+                // Add columns to DataGridView if they don't already exist
+                foreach (var column in bomColumns)
+                {
+                    if (!form.BomDataGridView.Columns.Contains(column.mbsCaption))
+                    {
+                        form.BomDataGridView.Columns.Add(new DataGridViewTextBoxColumn
+                        {
+                            Name = column.mbsCaption,
+                            HeaderText = column.mbsCaption
+                        });
+                        LogMessage($"Added column: {column.mbsCaption}");
+                    }
+                }
+
+                // Ensure "BOM ID" and "Thumbnail" columns exist
+                if (!form.BomDataGridView.Columns.Contains("BOM ID"))
+                {
+                    form.BomDataGridView.Columns.Insert(0, new DataGridViewTextBoxColumn { Name = "BOM ID", HeaderText = "BOM ID" });
+                }
+                if (!form.BomDataGridView.Columns.Contains("Thumbnail"))
+                {
+                    form.BomDataGridView.Columns.Insert(1, new DataGridViewImageColumn { Name = "Thumbnail", HeaderText = "Thumbnail", Width = 100, ImageLayout = DataGridViewImageCellLayout.Zoom });
+                }
+
+                // Retrieve BOM Rows
+                bomView.GetRows(out object[] bomRows);
+                if (bomRows == null || bomRows.Length == 0)
+                {
+                    LogMessage("No rows found in the BOM.");
+                    MessageBox.Show("No BOM rows found.", "Information", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                // Add Parent File (BOM ID = 1)
+                AddParentFileToBom(file, vault, form.BomDataGridView);
+
+                // Initialize path tracking and quantity map for child rows
+                List<int> currentPath = new List<int> { 1 };
+                Dictionary<string, int> quantityMap = new Dictionary<string, int>
+        {
+            { "1", 1 } // Top-level assembly has a default quantity of 1
+        };
+
+                // Process and add child rows
+                foreach (var row in bomRows)
+                {
+                    IEdmBomCell bomCell = (IEdmBomCell)row;
+                    DataGridViewRow dgvRow = new DataGridViewRow();
+                    dgvRow.CreateCells(form.BomDataGridView);
+
+                    // Update BOM ID path
+                    int treeLevel = bomCell.GetTreeLevel();
+                    UpdatePathForLevel(currentPath, treeLevel);
+
+                    string bomId = GenerateBomId(currentPath);
+                    dgvRow.Cells[0].Value = bomId;
+
+                    // Retrieve Part Number
+                    string partNumber = GetVariableValueFromBomCell(bomCell, "Part Number", vault);
+
+                    // Check if the part number is in the Exclude List
+                    if (excludeList.ContainsKey(partNumber))
+                    {
+                        string makeBuy = excludeList[partNumber];
+                        dgvRow.Cells[form.BomDataGridView.Columns["Make/Buy"].Index].Value = makeBuy;
+                        LogMessage($"Part {partNumber} found in Exclude List. Setting Make/Buy to {makeBuy} and skipping raw material processing.");
+                        continue; // Skip adding raw material row
+                    }
+
+                    // Retrieve and set File ID and Thumbnail
+                    object fileIDValue = null;
+                    foreach (var column in bomColumns)
+                    {
+                        if (column.meType == EdmBomColumnType.EdmBomCol_ID)
+                        {
+                            bomCell.GetVar(column.mlVariableID, column.meType, out fileIDValue, out _, out _, out _);
+                            break;
+                        }
+                    }
+
+                    LogMessage($"Retrieved fileIDValue: {fileIDValue?.ToString() ?? "null"} for BOM row {bomId}");
+                    SetRowThumbnail(dgvRow, fileIDValue, vault);
+
+                    // Populate remaining data into the row
+                    PopulateRowData(dgvRow, bomColumns, bomCell, form.BomDataGridView);
+
+                    // Retrieve the quantity directly from the BOM column
+                    string qtyString = GetBomCellValue(bomCell, "QTY", bomColumns);
+                    int currentQty = int.TryParse(qtyString, out var qty) ? qty : 1;
+
+                    // Calculate cumulative quantity
+                    string parentBomId = GetParentBomId(bomId);
+                    int cumulativeQty = currentQty * (quantityMap.ContainsKey(parentBomId) ? quantityMap[parentBomId] : 1);
+                    quantityMap[bomId] = cumulativeQty;
+
+                    // Update the QTY column in the DataGridView
+                    if (form.BomDataGridView.Columns.Contains("QTY"))
+                    {
+                        dgvRow.Cells[form.BomDataGridView.Columns["QTY"].Index].Value = cumulativeQty.ToString();
+                    }
+
+                    // **Apply Make/Buy Logic Based on Part Number Format**
+                    if (form.BomDataGridView.Columns.Contains("Part Number") && form.BomDataGridView.Columns.Contains("Make/Buy"))
+                    {
+                        if (!string.IsNullOrEmpty(partNumber))
+                        {
+                            string makeOrBuy = System.Text.RegularExpressions.Regex.IsMatch(partNumber, @"^\d{3}-\d{3}$") ? "Buy" : "Make";
+                            dgvRow.Cells[form.BomDataGridView.Columns["Make/Buy"].Index].Value = makeOrBuy;
+                            LogMessage($"Set Make/Buy for BOM row {bomId}: {makeOrBuy}");
+                        }
+                    }
+
+                    // Add the row to DataGridView and update progress
+                    form.BomDataGridView.Rows.Add(dgvRow);
+                    Application.DoEvents();
+                }
+
+                // Apply grid customizations after adding all rows
+                ApplyGridCustomizations(form);
+
+                LogMessage($"Added {form.BomDataGridView.Rows.Count} rows to DataGridView.");
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error in LoadBom: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+        // Helper method to get the parent BOM ID
+        private string GetParentBomId(string bomId)
+        {
+            if (!bomId.Contains(".")) return ""; // Top-level BOM
+            return bomId.Substring(0, bomId.LastIndexOf('.'));
+        }
+
+
+
+        private string GetBomCellValue(IEdmBomCell bomCell, string columnName, EdmBomColumn[] bomColumns)
+        {
+            try
+            {
+                foreach (var column in bomColumns)
+                {
+                    if (string.Equals(column.mbsCaption, columnName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Match found, retrieve the value
+                        object value;
+                        bomCell.GetVar(column.mlVariableID, column.meType, out value, out _, out _, out _);
+
+                        if (value != null)
+                        {
+                            return value.ToString();
+                        }
+                        else
+                        {
+                            LogMessage($"Value for column '{columnName}' is null.");
+                        }
+                    }
+                }
+
+                LogMessage($"Column '{columnName}' not found in BOM.");
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error retrieving value for column '{columnName}': {ex.Message}");
+            }
+
+            return string.Empty; // Default to empty string if column or value is not found
+        }
+
+
+
+        // Modify RefreshSelectedRowRawMaterial to update the row and add raw material if necessary
+        public void RefreshSelectedRowRawMaterial(DataGridViewRow selectedRow)
+        {
+            try
+            {
+                LogMessage($"Refreshing row for part number: {selectedRow.Cells["Part Number"].Value}");
+
+                // Remove red background if present
+                selectedRow.DefaultCellStyle.BackColor = Color.White;
+
+                // Re-check and refresh raw material information
+                string partNumber = selectedRow.Cells["Part Number"].Value?.ToString();
+
+                if (!string.IsNullOrEmpty(partNumber) && !excludeList.ContainsKey(partNumber))
+                {
+                    // Get material, thickness, flat pattern length, and width from the selected row
+                    string material = GetCutListValueFromRow(selectedRow, "Sheet Metal Material");
+                    string thickness = GetCutListValueFromRow(selectedRow, "Sheet Metal Thickness");
+                    string flatPatternLength = GetCutListValueFromRow(selectedRow, "Flat Pattern Length");
+                    string flatPatternWidth = GetCutListValueFromRow(selectedRow, "Flat Pattern Width");
+
+                    // Check if we have enough information to add a raw material row
+                    if (!string.IsNullOrEmpty(material) && !string.IsNullOrEmpty(thickness) &&
+                        !string.IsNullOrEmpty(flatPatternLength) && !string.IsNullOrEmpty(flatPatternWidth))
+                    {
+                        LogMessage($"Material data found for part number: {partNumber}. Adding or refreshing raw material row.");
+                        AddRawMaterialRow(selectedRow);
+                    }
+                    else
+                    {
+                        LogMessage($"Material data incomplete for part number: {partNumber}. Skipping raw material addition.");
+                    }
+                }
+                else
+                {
+                    LogMessage($"Part number {partNumber} is excluded or a 'Buy' part, skipping raw material addition.");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error refreshing raw material for selected row: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+
+        // Helper method to update path based on the tree level
+        private void UpdatePathForLevel(List<int> currentPath, int treeLevel)
+        {
+            if (currentPath.Count > treeLevel + 1)
+            {
+                currentPath.RemoveRange(treeLevel + 1, currentPath.Count - (treeLevel + 1));
+            }
+
+            if (currentPath.Count == treeLevel + 1)
+            {
+                currentPath[treeLevel]++;
+            }
+            else
+            {
+                currentPath.Add(1);
+            }
+        }
+
+        // Helper method to set the row thumbnail
+        private void SetRowThumbnail(DataGridViewRow row, object fileIDValue, IEdmVault5 vault)
+        {
+            if (fileIDValue != null && int.TryParse(fileIDValue.ToString(), out int fileID) && fileID > 0)
+            {
+                if (!searchCache.ContainsKey(fileID.ToString()))
+                {
+                    IEdmFile5 bomFile = (IEdmFile5)vault.GetObject(EdmObjectType.EdmObject_File, fileID);
+                    searchCache[fileID.ToString()] = bomFile;
+                }
+
+                IEdmFile5 cachedFile = searchCache[fileID.ToString()];
+                if (cachedFile != null)
+                {
+                    Image thumbnailImage = GetThumbnail(cachedFile);
+                    row.Cells[1].Value = thumbnailImage ?? CreateFallbackImage();
+                }
+            }
+            else
+            {
+                row.Cells[1].Value = CreateFallbackImage();
+            }
+        }
+
+        // Helper method to populate row data
+        private void PopulateRowData(DataGridViewRow row, EdmBomColumn[] columns, IEdmBomCell cell, DataGridView grid)
+        {
+            try
+            {
+                foreach (var column in columns)
+                {
+                    object cellValue;
+                    cell.GetVar(column.mlVariableID, column.meType, out cellValue, out _, out _, out _);
+
+                    if (column.mbsCaption == "Description")
+                    {
+                        LogMessage($"Description for BOM row: {cellValue?.ToString() ?? "null"}");
+                    }
+
+                    // Ensure the column exists in the DataGridView before accessing it
+                    if (grid.Columns.Contains(column.mbsCaption))
+                    {
+                        row.Cells[grid.Columns[column.mbsCaption].Index].Value = cellValue?.ToString() ?? "N/A";
+                    }
+                    else
+                    {
+                        // Log missing columns for troubleshooting
+                        LogMessage($"WARNING: Column '{column.mbsCaption}' not found in DataGridView.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error in PopulateRowData: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+
+        // Helper method to add default columns to the DataGridView
+        private void AddDefaultColumns(DataGridView grid)
+        {
+            if (!grid.Columns.Contains("BOM ID"))
+                grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "BOM ID", HeaderText = "BOM ID" });
+
+            if (!grid.Columns.Contains("Thumbnail"))
+                grid.Columns.Add(new DataGridViewImageColumn { Name = "Thumbnail", HeaderText = "Thumbnail", Width = 100, ImageLayout = DataGridViewImageCellLayout.Zoom });
+        }
+
+
+        private void ApplyGridCustomizations(FileInfoForm form)
+        {
+            // Apply Description column customizations
+            if (form.BomDataGridView.Columns.Contains("Description"))
+            {
+                form.BomDataGridView.Columns["Description"].AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
+                form.BomDataGridView.Columns["Description"].Width = 300;
+                form.BomDataGridView.Columns["Description"].DefaultCellStyle.WrapMode = DataGridViewTriState.True;
+            }
+
+            // Customize header style
+            DataGridViewCellStyle headerStyle = new DataGridViewCellStyle
+            {
+                BackColor = Color.LightGray,
+                Font = new Font(form.BomDataGridView.Font, FontStyle.Bold)
+            };
+            form.BomDataGridView.ColumnHeadersDefaultCellStyle = headerStyle;
+
+            // Adjust row heights for wrapped text
+            form.BomDataGridView.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCells;
+        }
+
+
+        private void AddParentFileToBom(IEdmFile5 parentFile, IEdmVault5 vault, DataGridView bomDataGridView)
+        {
+            try
+            {
+                LogMessage($"Adding parent file: {parentFile.Name} to BOM as row 1.");
+
+                DataGridViewRow parentRow = new DataGridViewRow();
+                parentRow.CreateCells(bomDataGridView);
+
+                // Set BOM ID to "1" for the parent row
+                parentRow.Cells[0].Value = "1";
+
+                // Set the Thumbnail for the parent file
+                Image parentThumbnail = GetThumbnail(parentFile) ?? CreateFallbackImage();
+                parentRow.Cells[1].Value = parentThumbnail;
+
+                // Set QTY to 1 for the parent file
+                if (bomDataGridView.Columns.Contains("QTY"))
+                {
+                    parentRow.Cells[bomDataGridView.Columns["QTY"].Index].Value = "1";
+                }
+
+                // Retrieve and set Part Number and Description
+                IEdmEnumeratorVariable5 varEnum = parentFile.GetEnumeratorVariable();
+                string partNumber = GetVariableValue(varEnum, "Part Number") ?? "Unknown";
+                string description = GetVariableValue(varEnum, "Description") ?? "Unknown";
+
+                if (bomDataGridView.Columns.Contains("Part Number"))
+                {
+                    parentRow.Cells[bomDataGridView.Columns["Part Number"].Index].Value = partNumber;
+                    LogMessage($"Set Part Number for Parent Row: {partNumber}");
+                }
+
+                if (bomDataGridView.Columns.Contains("Description"))
+                {
+                    parentRow.Cells[bomDataGridView.Columns["Description"].Index].Value = description;
+                    LogMessage($"Set Description for Parent Row: {description}");
+                }
+
+                // Retrieve and set File ID
+                int parentFileId = parentFile.ID;
+                if (bomDataGridView.Columns.Contains("FileID"))
+                {
+                    parentRow.Cells[bomDataGridView.Columns["FileID"].Index].Value = parentFileId.ToString();
+                }
+
+                // Set Type to "sldasm" for the parent row
+                if (bomDataGridView.Columns.Contains("Type"))
+                {
+                    parentRow.Cells[bomDataGridView.Columns["Type"].Index].Value = "sldasm";
+                }
+
+                // Set Material to "N/A" for the parent row
+                if (bomDataGridView.Columns.Contains("Material"))
+                {
+                    parentRow.Cells[bomDataGridView.Columns["Material"].Index].Value = "N/A";
+                }
+
+                // Set Make/Buy to "Make"
+                if (bomDataGridView.Columns.Contains("Make/Buy"))
+                {
+                    parentRow.Cells[bomDataGridView.Columns["Make/Buy"].Index].Value = "Make";
+                }
+
+                // Set Raw Mat Amount to "N/A - Assembly or Weldment"
+                if (bomDataGridView.Columns.Contains("Raw Mat Amount"))
+                {
+                    parentRow.Cells[bomDataGridView.Columns["Raw Mat Amount"].Index].Value = "N/A - Assembly or Weldment";
+                }
+
+                // Add the parent row to the DataGridView
+                bomDataGridView.Rows.Insert(0, parentRow);
+
+                // Hide FileID and Type columns
+                if (bomDataGridView.Columns.Contains("FileID"))
+                {
+                    bomDataGridView.Columns["FileID"].Visible = false;
+                }
+                if (bomDataGridView.Columns.Contains("Type"))
+                {
+                    bomDataGridView.Columns["Type"].Visible = false;
+                }
+
+                LogMessage("Parent file added to BOM.");
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error adding parent file to BOM: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+        private string GenerateBomId(List<int> currentPath)
+        {
+            return string.Join(".", currentPath);
+        }
+
+        private Image GetThumbnail(IEdmFile5 file)
+        {
+            try
+            {
+                IEdmFile18 file18 = (IEdmFile18)file;
+                IntPtr thumbnailPtr = (IntPtr)file18.GetThumbnail3(file.CurrentVersion);
+                if (thumbnailPtr != IntPtr.Zero)
+                {
+                    using (Bitmap bmp = Image.FromHbitmap(thumbnailPtr))
+                    {
+                        return new Bitmap(bmp);  // Ensure the Bitmap is copied to avoid disposal issues
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error getting thumbnail for file {file.Name}: {ex.Message}");
+            }
+            return CreateFallbackImage();
+        }
+
+
+        private Image CreateFallbackImage()
+        {
+            Bitmap fallbackImage = new Bitmap(100, 100);
+            using (Graphics g = Graphics.FromImage(fallbackImage))
+            {
+                g.Clear(Color.Gray);
+                g.DrawString("No Image", new Font("Arial", 10, FontStyle.Bold), Brushes.Black, new PointF(20, 40));
+            }
+            return fallbackImage;
+        }
+
+        public void LogMessage(string message)
+        {
+            if (!isLoggingEnabled) return;
+
+            try
+            {
+                string logFile = "C:\\Temp\\LogFiles\\EstimateBOMToolLog.txt";
+                Directory.CreateDirectory(Path.GetDirectoryName(logFile));
+                using (StreamWriter writer = new StreamWriter(logFile, true))
+                {
+                    writer.WriteLine($"{DateTime.Now}: {message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Failed to write to log file: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        public void LogError(string message)
+        {
+            LogMessage($"ERROR: {message}");
+        }
+        public bool ToggleLogging()
+        {
+            isLoggingEnabled = !isLoggingEnabled;
+
+            // Save state to registry
+            using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\PrideConveyanceSystems\EstimateBOMTool"))
+            {
+                key.SetValue("IsLoggingEnabled", isLoggingEnabled.ToString());
+            }
+
+            return isLoggingEnabled;
+        }
+
+        public bool IsLoggingEnabled()
+        {
+            return isLoggingEnabled;
+        }
+
+
+        public void CheckComputedCutList(IEdmFile5 file)
+        {
+            LogMessage($"CheckComputedCutList method started for File: {file.Name}, ID: {file.ID}");
+            try
+            {
+                IEdmFile7 file7 = file as IEdmFile7;
+                if (file7 == null)
+                {
+                    LogError($"Failed to cast file to IEdmFile7. File name: {file.Name}, ID: {file.ID}");
+                    MessageBox.Show("Error: Unable to process the file.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                bool hasSheetMetalCutList = false;
+                string cutListName = "";
+
+                string[] possibleNames = { "Sheet Metal Cut List", "Cut List", "Sheet Metal Cut list", "Sheetmetal Cut List" };
+                foreach (string name in possibleNames)
+                {
+                    LogMessage($"Attempting to get BOM with name: {name}");
+                    try
+                    {
+                        IEdmBomView bomView = file7.GetComputedBOM(name, -1, "@", (int)(EdmBomFlag.EdmBf_AsBuilt));
+                        if (bomView != null)
+                        {
+                            LogMessage($"BOM view retrieved for name: {name}");
+                            EdmBomColumn[] columns;
+                            bomView.GetColumns(out columns);
+
+                            LogMessage($"Columns found in '{name}':");
+                            foreach (var column in columns)
+                            {
+                                LogMessage($"  - {column.mbsCaption}");
+                            }
+
+                            // Check if it's a valid Sheet Metal Cut List
+                            if (IsValidSheetMetalCutList(bomView))
+                            {
+                                hasSheetMetalCutList = true;
+                                cutListName = name;
+                                LogMessage($"Valid Sheet Metal Cut List found with name: {name}");
+                                break;
+                            }
+                            else
+                            {
+                                LogMessage($"BOM named '{name}' found, but it's not a valid Sheet Metal Cut List");
+                            }
+                        }
+                        else
+                        {
+                            LogMessage($"No BOM view retrieved for name: {name}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"Exception when trying to get Cut List with name '{name}': {ex.Message}");
+                        // Continue to the next possible name
+                    }
+                }
+
+                string message = hasSheetMetalCutList
+                    ? $"The selected file has a Sheet Metal Cut List named '{cutListName}'."
+                    : "The selected file does not have a Sheet Metal Cut List.";
+
+                LogMessage($"Final Result: {message}");
+                MessageBox.Show(message, "Sheet Metal Cut List Check", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error in CheckComputedCutList: {ex.Message}\nStack Trace: {ex.StackTrace}");
+                MessageBox.Show($"Error checking for Sheet Metal Cut List: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+
+        public void ProcessFullBOM(DataGridView bomDataGridView, IEdmVault5 vault)
+        {
+            LogMessage("Starting to process full BOM");
+
+            AddSheetMetalColumns(bomDataGridView);  // This adds the Cost column among others
+
+            // First pass: add costs to all Buy parts
+            foreach (DataGridViewRow row in bomDataGridView.Rows)
+            {
+                try
+                {
+                    string makeOrBuy = row.Cells["Make/Buy"].Value?.ToString();
+                    if (makeOrBuy == "Buy")
+                    {
+                        AddBuyPartCostToParentRow(row);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogError($"Error processing Buy part cost: {ex.Message}");
+                }
+            }
+
+            // Second pass: populate sheet metal data and raw material rows
+            PopulateSheetMetalData(bomDataGridView, vault);
+
+            LogMessage("Finished processing full BOM");
+        }
+
+        private void AddSheetMetalColumns(DataGridView bomDataGridView)
+        {
+            LogMessage("Adding Sheet Metal and Weldment columns to BOM");
+
+            // Define the new columns to add in the desired order
+            string[] newColumns = {
+        "Cost",
+        "Total Cost",
+        "Total Linear Length",
+        "Purchase U/M",
+        "Consuming U/M",
+        "Percent of Sheet Used",  // Moved after U/M columns
+        "Sheet Metal Material",
+        "Sheet Metal Thickness",
+        "Flat Pattern Length",
+        "Flat Pattern Width",
+        "Weight in LBS",
+        "Number of Bends",
+        "Sheet Metal Bend Radius",
+        "Sheet Metal Area",
+        "Sheet Metal Cut Outs",
+        "Sheet Metal Cutting Length Inner",
+        "Sheet Metal Cutting Length Outer"
+    };
+
+            // Add columns to the DataGridView
+            foreach (string columnName in newColumns)
+            {
+                if (!bomDataGridView.Columns.Contains(columnName))
+                {
+                    bomDataGridView.Columns.Add(columnName, columnName);
+                    LogMessage($"Added column: {columnName}");
+                }
+            }
+
+            // Adjust specific column widths after ensuring all columns are added
+            AdjustColumnWidths(bomDataGridView);
+
+            // Refresh the DataGridView to apply changes
+            bomDataGridView.Refresh();
+        }
+
+
+        // Method to adjust column widths
+        private void AdjustColumnWidths(DataGridView bomDataGridView)
+        {
+            LogMessage("Adjusting column widths");
+
+            if (bomDataGridView.Columns.Contains("Raw Mat Amount"))
+            {
+                bomDataGridView.Columns["Raw Mat Amount"].Width = 300; // Set to 2.5x size
+                LogMessage("Adjusted Raw Mat Amount column width to 300px");
+            }
+
+            if (bomDataGridView.Columns.Contains("Material"))
+            {
+                bomDataGridView.Columns["Material"].Width = 150; // Adjust width for Material
+                LogMessage("Adjusted Material column width to 150px");
+            }
+
+            if (bomDataGridView.Columns.Contains("Sheet Metal Material"))
+            {
+                bomDataGridView.Columns["Sheet Metal Material"].Width = 200; // Set to 2x size
+                LogMessage("Adjusted Sheet Metal Material column width to 200px");
+            }
+        }
+
+
+        private void ProcessSingleFile(int fileId, IEdmVault5 vault, DataGridViewRow row)
+        {
+            LogMessage($"Processing file with ID: {fileId}");
+
+            try
+            {
+                string partNumber = row.Cells["Part Number"].Value?.ToString();
+                if (System.Text.RegularExpressions.Regex.IsMatch(partNumber, @"^\d{3}-\d{3}"))
+                {
+                    LogMessage($"Skipping raw material processing for 'Buy' part number: {partNumber}");
+                    return; // Skip processing for parts marked as "Buy"
+                }
+
+                string fileType = row.Cells["Type"].Value?.ToString()?.ToLower();
+
+                if (fileType != "sldprt")
+                {
+                    LogMessage($"File ID {fileId} is not a part file. Skipping processing.");
+                    SetRowValues(row, "N/A");
+                    return;
+                }
+
+                IEdmFile5 file = (IEdmFile5)vault.GetObject(EdmObjectType.EdmObject_File, fileId);
+                IEdmFile7 file7 = file as IEdmFile7;
+
+                if (file7 == null)
+                {
+                    LogError($"Failed to cast file ID {fileId} to IEdmFile7.");
+                    SetRowValues(row, "Unknown");
+                    return;
+                }
+
+                // Check for Sheet Metal Cut List and Weldment Cut List
+                IEdmBomView sheetMetalCutList = GetSheetMetalCutList(file7);
+                IEdmBomView weldmentCutList = GetWeldmentCutList(file7);
+
+                if (sheetMetalCutList == null && weldmentCutList == null)
+                {
+                    LogMessage($"No valid cut lists found for file: {file.Name}. Marking row with color.");
+                    row.DefaultCellStyle.BackColor = Color.Red;  // Set background color to red to indicate an issue
+                    row.Cells["Raw Mat Amount"].Value = "This part does not have any cut list associated with it";  // Add note
+                }
+                else if (sheetMetalCutList != null && IsSheetMetalPart(sheetMetalCutList))
+                {
+                    LogMessage($"Processing as Sheet Metal part: {file.Name}");
+                    PopulateRowWithCutListData(sheetMetalCutList, row);
+                    AddRawMaterialRow(row);
+                    CalculateAndPopulateSheetUsageAndCost(row);
+                }
+                else if (weldmentCutList != null)
+                {
+                    LogMessage($"Processing as Weldment part: {file.Name}");
+                    ProcessWeldmentCutList(weldmentCutList, row);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Unexpected error during file processing: {ex.Message}\n{ex.StackTrace}");
+                SetRowValues(row, "Unknown");
+            }
+        }
+
+
+        private void CalculateAndPopulateSheetUsageAndCost(DataGridViewRow parentRow)
+        {
+            try
+            {
+                LogMessage($"Starting CalculateAndPopulateSheetUsageAndCost for Parent Row with BOM ID: {parentRow.Cells["BOM ID"].Value}");
+
+                // Retrieve material and thickness from the parent row
+                string material = GetCutListValueFromRow(parentRow, "Sheet Metal Material");
+                string thickness = GetCutListValueFromRow(parentRow, "Sheet Metal Thickness");
+                LogMessage($"Retrieved Material: {material}, Thickness: {thickness}");
+
+                // Load the cross-reference table to get part number, cost, and total square inch
+                string filePath = @"C:\PCSVAULT\SolidWorks Settings\Costing Report Template\Estimate BOM Raw Material Cross Ref.xlsx";
+                LogMessage($"Loading cross-reference table from file: {filePath}");
+                var crossReferenceTable = LoadCrossReferenceTableFromExcel(filePath);
+
+                if (crossReferenceTable.TryGetValue((material, thickness), out var referenceData))
+                {
+                    LogMessage($"Found matching entry in cross-reference table for Material: {material}, Thickness: {thickness}");
+
+                    string partNumber = referenceData.PartNumber;
+                    decimal sheetCost = referenceData.Cost;
+                    decimal totalSqInch = referenceData.TotalSqInch;
+
+                    LogMessage($"Cross-reference data - Part Number: {partNumber}, Sheet Cost: {sheetCost:C2}, Total Square Inches: {totalSqInch}");
+
+                    // Retrieve Sheet Metal Area from the parent row
+                    string areaValue = GetCutListValueFromRow(parentRow, "Sheet Metal Area");
+                    if (decimal.TryParse(areaValue, out decimal sheetMetalArea))
+                    {
+                        LogMessage($"Retrieved Sheet Metal Area: {sheetMetalArea}");
+
+                        // Calculate Percent of Sheet Used and Cost
+                        decimal percentUsed = sheetMetalArea / totalSqInch;
+                        string formattedPercent = $"{percentUsed:P2}";
+                        decimal calculatedCost = sheetCost * percentUsed;
+
+                        LogMessage($"Calculated Percent Used: {formattedPercent}, Calculated Cost: {calculatedCost:C2}");
+
+                        // Find the raw material row (below the parent row)
+                        DataGridViewRow rawMaterialRow = parentRow.DataGridView.Rows[parentRow.Index + 1];
+
+                        // Populate Percent of Sheet Used and Cost columns in the raw material row
+                        rawMaterialRow.Cells[parentRow.DataGridView.Columns["Percent of Sheet Used"].Index].Value = formattedPercent;
+                        rawMaterialRow.Cells[parentRow.DataGridView.Columns["Cost"].Index].Value = $"{calculatedCost:C2}";
+
+                        LogMessage($"Populated raw material row with Percent Used: {formattedPercent}, Cost: {calculatedCost:C2}");
+                    }
+                    else
+                    {
+                        LogError($"Invalid 'Sheet Metal Area' value: {areaValue}");
+                    }
+                }
+                else
+                {
+                    LogError($"No matching entry in cross-reference table for Material: {material}, Thickness: {thickness}");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error calculating sheet usage and cost: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+
+        // Modify AddRawMaterialRow to respect the Exclude List and refresh functionality
+        public void AddRawMaterialRow(DataGridViewRow parentRow)
+        {
+            try
+            {
+                string partNumber = parentRow.Cells["Part Number"].Value?.ToString();
+                LogMessage($"Starting AddRawMaterialRow for Part Number: {partNumber}");
+
+                // Call AddBuyPartCostToParentRow to update LastCost for 'Buy' parts
+                string makeOrBuy = parentRow.Cells["Make/Buy"].Value?.ToString();
+                if (makeOrBuy == "Buy")
+                {
+                    LogMessage($"Detected 'Buy' part: {partNumber}. Updating cost from ERP system.");
+                    AddBuyPartCostToParentRow(parentRow);
+                    return; // No need to add raw material row for "Buy" parts
+                }
+
+                string parentBomId = parentRow.Cells["BOM ID"].Value?.ToString();
+                string newBomId = $"{parentBomId}.1";
+                LogMessage($"Generated new BOM ID for raw material row: {newBomId}");
+
+                // Check for existing row
+                bool rowExists = parentRow.DataGridView.Rows
+                    .Cast<DataGridViewRow>()
+                    .Any(row => row.Cells["BOM ID"].Value?.ToString() == newBomId);
+
+                if (rowExists)
+                {
+                    LogMessage($"Raw material row with BOM ID {newBomId} already exists. Refreshing existing row.");
+                    RefreshSelectedRowRawMaterial(parentRow);
+                    return;
+                }
+
+                // Get material data from parent row
+                string material = GetCutListValueFromRow(parentRow, "Sheet Metal Material");
+                string thickness = GetCutListValueFromRow(parentRow, "Sheet Metal Thickness");
+                string flatPatternLength = GetCutListValueFromRow(parentRow, "Flat Pattern Length");
+                string flatPatternWidth = GetCutListValueFromRow(parentRow, "Flat Pattern Width");
+                LogMessage($"Retrieved material data - Material: {material}, Thickness: {thickness}, Length: {flatPatternLength}, Width: {flatPatternWidth}");
+
+                // Create new raw material row
+                DataGridViewRow rawMaterialRow = new DataGridViewRow();
+                rawMaterialRow.CreateCells(parentRow.DataGridView);
+
+                // Copy QTY from parent row
+                decimal qty = 1;
+                if (decimal.TryParse(parentRow.Cells["QTY"].Value?.ToString(), out decimal parentQty))
+                {
+                    qty = parentQty;
+                }
+                rawMaterialRow.Cells[parentRow.DataGridView.Columns["QTY"].Index].Value = qty;
+
+                // Set BOM ID and Raw Mat Amount
+                int bomIdIndex = parentRow.DataGridView.Columns["BOM ID"].Index;
+                rawMaterialRow.Cells[bomIdIndex].Value = newBomId;
+
+                int rawMatAmountIndex = parentRow.DataGridView.Columns["Raw Mat Amount"].Index;
+                rawMaterialRow.Cells[rawMatAmountIndex].Value =
+                    $"{material} {thickness} x {flatPatternLength} x {flatPatternWidth}";
+                LogMessage($"Set Raw Mat Amount: {rawMaterialRow.Cells[rawMatAmountIndex].Value}");
+
+                // Load cross-reference data
+                string filePath = @"C:\\PCSVAULT\\SolidWorks Settings\\Costing Report Template\\Estimate BOM Raw Material Cross Ref.xlsx";
+                var crossReferenceTable = LoadCrossReferenceTableFromExcel(filePath);
+                LogMessage("Loaded cross-reference table successfully.");
+
+                int partNumberIndex = parentRow.DataGridView.Columns["Part Number"].Index;
+                int descriptionIndex = parentRow.DataGridView.Columns["Description"].Index;
+                int percentUsedIndex = parentRow.DataGridView.Columns["Percent of Sheet Used"].Index;
+                int costIndex = parentRow.DataGridView.Columns["Cost"].Index;
+                int totalCostIndex = parentRow.DataGridView.Columns["Total Cost"].Index;
+                int purchaseUMIndex = parentRow.DataGridView.Columns["Purchase U/M"].Index;
+                int consumingUMIndex = parentRow.DataGridView.Columns["Consuming U/M"].Index;
+
+                if (crossReferenceTable.ContainsKey((material, thickness)))
+                {
+                    var (partNumberRef, cost, totalSqInch, description) = crossReferenceTable[(material, thickness)];
+                    LogMessage($"Cross-reference match found - Part Number: {partNumberRef}, Cost: {cost}, Total Sq Inch: {totalSqInch}, Description: {description}");
+
+                    if (totalSqInch > 0)
+                    {
+                        decimal sheetMetalArea = decimal.Parse(GetCutListValueFromRow(parentRow, "Sheet Metal Area"));
+                        decimal percentUsed = sheetMetalArea / totalSqInch;
+                        decimal partCost = percentUsed * cost;
+                        decimal totalCost = partCost * qty;
+
+                        // Tubing-specific logic: Set Total Cost equal to Cost for Tubing
+                        string purchaseUM = parentRow.Cells[purchaseUMIndex].Value?.ToString();
+                        if (purchaseUM == "FT")
+                        {
+                            rawMaterialRow.Cells[totalCostIndex].Value = rawMaterialRow.Cells[costIndex].Value;
+                            LogMessage($"Tubing detected. Total Cost copied from Cost value: {rawMaterialRow.Cells[costIndex].Value}");
+                        }
+                        else
+                        {
+                            rawMaterialRow.Cells[totalCostIndex].Value = totalCost.ToString("C2");
+                        }
+
+                        rawMaterialRow.Cells[percentUsedIndex].Value = $"{percentUsed:P2}";
+                        rawMaterialRow.Cells[costIndex].Value = partCost.ToString("C2");
+                        LogMessage($"Calculated values - Percent Used: {percentUsed:P2}, Cost: {partCost:C2}, Total Cost: {totalCost:C2}");
+                    }
+                    else
+                    {
+                        rawMaterialRow.Cells[percentUsedIndex].Value = "N/A";
+                        rawMaterialRow.Cells[costIndex].Value = "N/A";
+                        rawMaterialRow.Cells[totalCostIndex].Value = "N/A";
+                        LogMessage("TotalSqInch is 0 or invalid, skipping percentage and cost calculations");
+                    }
+
+                    rawMaterialRow.Cells[partNumberIndex].Value = partNumberRef;
+                    rawMaterialRow.Cells[descriptionIndex].Value = description;
+                    int makeBuyIndex = parentRow.DataGridView.Columns["Make/Buy"].Index;
+                    rawMaterialRow.Cells[makeBuyIndex].Value = "Buy - Raw-Mat.";
+                }
+                else
+                {
+                    LogMessage($"No cross-reference found for material: {material}, thickness: {thickness}");
+                    rawMaterialRow.DefaultCellStyle.BackColor = Color.LightCoral;
+                    rawMaterialRow.Cells[partNumberIndex].Value = "Missing Part #";
+                    rawMaterialRow.Cells[descriptionIndex].Value = "Missing Cross Reference";
+                    rawMaterialRow.Cells[percentUsedIndex].Value = "N/A";
+                    rawMaterialRow.Cells[costIndex].Value = "N/A";
+                    rawMaterialRow.Cells[totalCostIndex].Value = "N/A";
+                }
+
+                rawMaterialRow.Cells[purchaseUMIndex].Value = "ea";
+                rawMaterialRow.Cells[consumingUMIndex].Value = "SQ IN";
+
+                Image sheetThumbnail = GenerateSheetThumbnail();
+                int thumbnailIndex = parentRow.DataGridView.Columns["Thumbnail"].Index;
+                rawMaterialRow.Cells[thumbnailIndex].Value = sheetThumbnail;
+
+                parentRow.DataGridView.Rows.Insert(parentRow.Index + 1, rawMaterialRow);
+
+                LogMessage($"Added raw material row with BOM ID: {newBomId}");
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error adding raw material row: {ex.Message}\\n{ex.StackTrace}");
+            }
+        }
+
+        private Image GenerateSheetThumbnail()
+        {
+            try
+            {
+                // Get the assembly that contains the embedded resource
+                Assembly assembly = Assembly.GetExecutingAssembly();
+                string resourceName = "Estimate_BOM_Tool.SheetMetal.jpg";  // Namespace.ImageFileName
+
+                // Load the embedded image
+                using (Stream stream = assembly.GetManifestResourceStream(resourceName))
+                {
+                    if (stream != null)
+                    {
+                        return new Bitmap(stream);
+                    }
+                    else
+                    {
+                        LogError($"Could not find embedded resource: {resourceName}");
+                        return CreateFallbackSheetThumbnail();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error loading sheet metal thumbnail: {ex.Message}");
+                return CreateFallbackSheetThumbnail();
+            }
+        }
+
+        private Image CreateFallbackSheetThumbnail()
+        {
+            int width = 100;
+            int height = 38; // Maintaining the 6:9 ratio for fallback
+
+            Bitmap thumbnail = new Bitmap(width, height);
+            using (Graphics g = Graphics.FromImage(thumbnail))
+            {
+                g.Clear(Color.LightGray);
+            }
+            return thumbnail;
+        }
+
+
+        private void MoveSheetMetalDataToRawRow(DataGridViewRow parentRow, DataGridViewRow rawMaterialRow)
+        {
+            try
+            {
+                string[] sheetMetalColumns =
+                {
+            "Sheet Metal Material", "Sheet Metal Thickness",
+            "Flat Pattern Length", "Flat Pattern Width",
+            "Weight in LBS", "Number of Bends",
+            "Sheet Metal Bend Radius", "Sheet Metal Area",
+            "Sheet Metal Cut Outs", "Sheet Metal Cutting Length Inner",
+            "Sheet Metal Cutting Length Outer"
+        };
+
+                foreach (string column in sheetMetalColumns)
+                {
+                    int columnIndex = parentRow.DataGridView.Columns[column].Index;
+
+                    // Move data to raw material row
+                    rawMaterialRow.Cells[columnIndex].Value = parentRow.Cells[columnIndex].Value;
+
+                    // Set N/A on the parent row
+                    parentRow.Cells[columnIndex].Value = "N/A";
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error moving sheet metal data: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+
+        private string GetCutListValueFromRow(DataGridViewRow row, string columnName)
+        {
+            try
+            {
+                LogMessage($"Attempting to retrieve value for column: {columnName}.");
+
+                if (row.DataGridView.Columns.Contains(columnName))
+                {
+                    var value = row.Cells[columnName]?.Value?.ToString() ?? "Unknown";
+                    LogMessage($"Successfully retrieved value for column '{columnName}': {value}");
+                    return value;
+                }
+                else
+                {
+                    LogError($"Column named '{columnName}' not found.");
+                    return "Unknown";
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error retrieving value for column '{columnName}': {ex.Message}");
+                return "Unknown";
+            }
+        }
+
+
+        // Helper method to set a value for all sheet metal columns in a row.
+        private void SetRowValues(DataGridViewRow row, string value)
+        {
+            string[] sheetMetalColumns = {
+        "Sheet Metal Material", "Sheet Metal Thickness", "Flat Pattern Length",
+        "Flat Pattern Width", "Weight in LBS", "Number of Bends",
+        "Sheet Metal Bend Radius", "Sheet Metal Area", "Sheet Metal Cut Outs",
+        "Sheet Metal Cutting Length Inner", "Sheet Metal Cutting Length Outer"
+    };
+
+            foreach (string columnName in sheetMetalColumns)
+            {
+                if (row.Cells[columnName] != null)
+                {
+                    row.Cells[columnName].Value = value;
+                }
+            }
+        }
+
+
+        private IEdmBomView GetSheetMetalCutList(IEdmFile7 file7)
+        {
+            // List configurations to try, in order of priority.
+            string[] configurations = { "Default", "DefaultSM-FLAT-PATTERN", "@" };
+            string[] possibleNames = { "Sheet Metal Cut List", "Cut List", "Sheet Metal Cut list" };
+
+            foreach (string config in configurations)
+            {
+                foreach (string name in possibleNames)
+                {
+                    LogMessage($"Attempting to get BOM with name: {name} in configuration: {config}");
+                    try
+                    {
+                        IEdmBomView bomView = file7.GetComputedBOM(name, -1, config, (int)EdmBomFlag.EdmBf_AsBuilt);
+                        if (bomView != null && IsValidSheetMetalCutList(bomView))
+                        {
+                            LogMessage($"Valid Sheet Metal Cut List found: {name} in configuration: {config}");
+                            return bomView;
+                        }
+                        else
+                        {
+                            LogMessage($"BOM named '{name}' not valid or empty in configuration: {config}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"Exception when trying to get Cut List '{name}' in config '{config}': {ex.Message}");
+                    }
+                }
+            }
+
+            LogMessage("No valid Sheet Metal Cut List found in any configuration.");
+            return null;
+        }
+
+
+
+        private bool IsValidSheetMetalCutList(IEdmBomView bomView)
+        {
+            bomView.GetColumns(out EdmBomColumn[] columns);
+            LogMessage("Available columns in BOM:");
+            foreach (var col in columns)
+            {
+                LogMessage($" - {col.mbsCaption}");
+            }
+
+            // Use case-insensitive comparison and allow for minor spelling differences
+            string[] requiredColumns = { "Sheet Metal Thickness", "Sheet Metal Material", "Flat Pattern" };
+            var availableColumnNames = columns.Select(c => c.mbsCaption.ToLower());
+
+            var missingColumns = requiredColumns
+                .Where(req => !availableColumnNames.Any(col => col.Contains(req.ToLower()) || IsSimilar(req, col)))
+                .ToArray();
+
+            if (missingColumns.Any())
+            {
+                LogMessage($"Missing required columns: {string.Join(", ", missingColumns)}");
+                return false;
+            }
+
+            bomView.GetRows(out object[] bomRows);
+            if (bomRows == null || bomRows.Length == 0)
+            {
+                LogMessage("BOM contains no rows");
+                return false;
+            }
+
+            LogMessage($"Valid Sheet Metal Cut List found containing {bomRows.Length} rows");
+            return true;
+        }
+
+        // Helper method to allow fuzzy matching for column names
+        private bool IsSimilar(string required, string actual)
+        {
+            return required.ToLower().Replace(" ", "").Contains(actual.ToLower().Replace(" ", ""));
+        }
+
+
+        private void PopulateSheetMetalData(DataGridView bomDataGridView, IEdmVault5 vault)
+        {
+            LogMessage("Populating Sheet Metal data");
+
+            foreach (DataGridViewRow row in bomDataGridView.Rows)
+            {
+                string fileIdString = row.Cells["FileID"].Value?.ToString();
+                if (!string.IsNullOrEmpty(fileIdString) && int.TryParse(fileIdString, out int fileId))
+                {
+                    try
+                    {
+                        ProcessSingleFile(fileId, vault, row);  // Call to process individual file
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError($"Unexpected error during file processing: {ex.Message}\n{ex.StackTrace}");
+                    }
+                }
+                else
+                {
+                    LogMessage("Invalid or missing FileID in DataGridView row.");
+                }
+            }
+        }
+
+
+        private void PopulateRowWithCutListData(IEdmBomView cutListView, DataGridViewRow targetRow)
+        {
+            cutListView.GetColumns(out EdmBomColumn[] columns);
+            cutListView.GetRows(out object[] bomRows);
+
+            if (bomRows.Length > 0)
+            {
+                IEdmBomCell bomCell = (IEdmBomCell)bomRows[0];  // Process only the first row
+
+                foreach (EdmBomColumn column in columns)
+                {
+                    try
+                    {
+                        bomCell.GetVar(column.mlVariableID, column.meType, out object cellValue, out _, out _, out _);
+
+                        // Only populate columns relevant to raw material (skip Part Number for cut lists)
+                        if (column.mbsCaption != "Part Number")
+                        {
+                            if (targetRow.DataGridView.Columns.Contains(column.mbsCaption))
+                            {
+                                targetRow.Cells[column.mbsCaption].Value = cellValue?.ToString() ?? "N/A";
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError($"Error retrieving data for column '{column.mbsCaption}': {ex.Message}");
+                    }
+                }
+            }
+        }
+
+        private IEdmBomView GetWeldmentCutList(IEdmFile7 file7)
+        {
+            // First try configurations that start with "Default"
+            LogMessage($"Attempting to get Weldment Cutlist with Default* configurations");
+            try
+            {
+                IEdmBomView bomView = file7.GetComputedBOM("Weldment Cutlist", -1, "Default", (int)EdmBomFlag.EdmBf_AsBuilt);
+                if (bomView != null)
+                {
+                    bomView.GetRows(out object[] bomRows);
+                    if (bomRows != null && bomRows.Length > 0)
+                    {
+                        LogMessage($"Valid Weldment Cutlist found in Default configuration");
+                        return bomView;
+                    }
+                    else
+                    {
+                        LogMessage($"Weldment Cutlist empty in Default configuration");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Exception when trying to get Weldment Cutlist in Default config: {ex.Message}");
+            }
+
+            // If not found, try "@" configuration
+            try
+            {
+                IEdmBomView bomView = file7.GetComputedBOM("Weldment Cutlist", -1, "@", (int)EdmBomFlag.EdmBf_AsBuilt);
+                if (bomView != null)
+                {
+                    bomView.GetRows(out object[] bomRows);
+                    if (bomRows != null && bomRows.Length > 0)
+                    {
+                        LogMessage($"Valid Weldment Cutlist found in @ configuration");
+                        return bomView;
+                    }
+                    else
+                    {
+                        LogMessage($"Weldment Cutlist empty in @ configuration");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Exception when trying to get Weldment Cutlist in @ config: {ex.Message}");
+            }
+
+            LogMessage("No valid Weldment Cutlist found in any configuration.");
+            return null;
+        }
+
+
+        private void ProcessWeldmentCutList(IEdmBomView cutListView, DataGridViewRow parentRow)
+        {
+            try
+            {
+                LogMessage($"Processing Weldment Cut List for BOM ID: {parentRow.Cells["BOM ID"].Value}");
+                cutListView.GetColumns(out EdmBomColumn[] columns);
+                cutListView.GetRows(out object[] bomRows);
+                LogMessage($"Found {bomRows?.Length ?? 0} rows in Weldment Cut List");
+
+                if (bomRows == null || bomRows.Length == 0)
+                {
+                    LogMessage("No rows found in Weldment Cut List");
+                    return;
+                }
+
+                LogMessage("Available columns in Weldment Cut List:");
+                foreach (var col in columns)
+                {
+                    LogMessage($" - {col.mbsCaption}");
+                }
+
+                // Get material from parent row
+                string material = parentRow.Cells["Material"].Value?.ToString() ?? "Unknown";
+                LogMessage($"Found material from BOM: {material}");
+
+                // Dictionary to store unique descriptions and their total lengths
+                var uniqueDescriptions = new Dictionary<string, (string Description, string TotalLength)>();
+
+                // Process each row in the cut list
+                foreach (object row in bomRows)
+                {
+                    IEdmBomCell bomCell = (IEdmBomCell)row;
+                    string description = GetCellValue(bomCell, columns, "Description");
+                    string totalLength = GetCellValue(bomCell, columns, "TOTAL LENGTH");
+                    LogMessage($"Processing row - Description: {description}, TOTAL LENGTH: {totalLength}");
+
+                    if (!string.IsNullOrEmpty(totalLength) && !uniqueDescriptions.ContainsKey(description))
+                    {
+                        uniqueDescriptions[description] = (description, totalLength);
+                        LogMessage($"Found unique description: {description} with total length: {totalLength}");
+                    }
+                }
+
+                LogMessage($"Found {uniqueDescriptions.Count} unique descriptions");
+
+                // Create raw material rows for each unique description
+                int rawMaterialIndex = 1;
+                foreach (var item in uniqueDescriptions)
+                {
+                    string newBomId = $"{parentRow.Cells["BOM ID"].Value}.{rawMaterialIndex}";
+                    LogMessage($"Creating raw material row with BOM ID: {newBomId}");
+                    AddWeldmentRawMaterialRow(parentRow, newBomId, item.Value.Description, item.Value.TotalLength, material);
+                    rawMaterialIndex++;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error processing Weldment Cut List: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+        private string GetCellValue(IEdmBomCell bomCell, EdmBomColumn[] columns, string columnName)
+        {
+            try
+            {
+                var column = columns.FirstOrDefault(c => c.mbsCaption == columnName);
+                // Check if the column was found by checking if its ID is valid
+                if (column.mlVariableID > 0)  // Using mlVariableID to check if column exists
+                {
+                    bomCell.GetVar(column.mlVariableID, column.meType, out object value, out _, out _, out _);
+                    return value?.ToString() ?? string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error getting cell value for column {columnName}: {ex.Message}");
+            }
+            return string.Empty;
+        }
+
+        private void AddWeldmentRawMaterialRow(DataGridViewRow parentRow, string bomId, string description, string totalLength, string material)
+        {
+            try
+            {
+                LogMessage($"Adding Weldment raw material row with BOM ID: {bomId}");
+                DataGridViewRow rawMaterialRow = new DataGridViewRow();
+                rawMaterialRow.CreateCells(parentRow.DataGridView);
+
+                // Load cross-reference table from Excel
+                string filePath = @"C:\PCSVAULT\SolidWorks Settings\Costing Report Template\Estimate BOM Raw Material Cross Ref.xlsx";
+                var crossReferenceTable = LoadCrossReferenceTableFromExcel(filePath);
+
+                // Find all necessary column indices
+                int bomIdIndex = parentRow.DataGridView.Columns["BOM Id"].Index;
+                int rawMatAmountIndex = parentRow.DataGridView.Columns["Raw Mat Amount"].Index;
+                int totalLengthIndex = parentRow.DataGridView.Columns["Total Linear Length"].Index;
+                int descriptionIndex = parentRow.DataGridView.Columns["Description"].Index;
+                int thumbnailIndex = parentRow.DataGridView.Columns["Thumbnail"].Index;
+                int partNumberIndex = parentRow.DataGridView.Columns["Part Number"].Index;
+                int purchaseUMIndex = parentRow.DataGridView.Columns["Purchase U/M"].Index;
+                int consumingUMIndex = parentRow.DataGridView.Columns["Consuming U/M"].Index;
+                int costIndex = parentRow.DataGridView.Columns["Cost"].Index;
+                int qtyIndex = parentRow.DataGridView.Columns["QTY"].Index;
+                int totalCostIndex = parentRow.DataGridView.Columns["Total Cost"].Index;
+
+                // Set basic values
+                rawMaterialRow.Cells[bomIdIndex].Value = bomId;
+                rawMaterialRow.Cells[rawMatAmountIndex].Value = $"{description} x {totalLength}";
+                rawMaterialRow.Cells[totalLengthIndex].Value = totalLength;
+                rawMaterialRow.Cells[descriptionIndex].Value = description;
+                rawMaterialRow.Cells[purchaseUMIndex].Value = "FT";
+                rawMaterialRow.Cells[consumingUMIndex].Value = "IN";
+                rawMaterialRow.Cells[qtyIndex].Value = "1"; // Set QTY to 1 for tubing
+
+                // Get parent quantity for total cost calculation
+                decimal parentQty = 1;
+                if (decimal.TryParse(parentRow.Cells[qtyIndex].Value?.ToString(), out decimal pQty))
+                {
+                    parentQty = pQty;
+                }
+
+                // Try to find part number and calculate cost
+                LogMessage($"Looking up cross reference for Material: {material}, Description: {description}");
+                if (crossReferenceTable.ContainsKey((material, description)))
+                {
+                    var (partNumber, costPerFoot, _, descrip) = crossReferenceTable[(material, description)];
+                    rawMaterialRow.Cells[partNumberIndex].Value = partNumber;
+                    LogMessage($"Found matching part number: {partNumber} with cost per foot: {costPerFoot:C2}");
+
+                    // Calculate cost if we have valid length and cost per foot
+                    if (decimal.TryParse(totalLength, out decimal lengthInInches))
+                    {
+                        decimal lengthInFeet = lengthInInches / 12m;  // Convert inches to feet
+                        decimal cost = lengthInFeet * costPerFoot;  // Cost per foot × length in feet
+                        decimal totalCost = cost * parentQty;  // Multiply by parent quantity
+
+                        LogMessage($"Calculating cost: {lengthInInches}IN = {lengthInFeet:F4}FT × ${costPerFoot}/FT × {parentQty} qty = {totalCost:C2}");
+                        rawMaterialRow.Cells[costIndex].Value = cost.ToString("C2");
+                        rawMaterialRow.Cells[totalCostIndex].Value = totalCost.ToString("C2");
+
+                        // Add Make/Buy logic
+                        int makeBuyIndex = parentRow.DataGridView.Columns["Make/Buy"].Index;
+                        rawMaterialRow.Cells[makeBuyIndex].Value = "Buy - Raw-Mat.";  // Raw material is always Buy
+                    }
+                    else
+                    {
+                        rawMaterialRow.Cells[costIndex].Value = "N/A";
+                        rawMaterialRow.Cells[totalCostIndex].Value = "N/A";
+                        LogMessage($"Could not parse length value: {totalLength}");
+                    }
+                }
+                else
+                {
+                    rawMaterialRow.Cells[partNumberIndex].Value = "Missing Part #";
+                    rawMaterialRow.Cells[costIndex].Value = "N/A";
+                    rawMaterialRow.Cells[totalCostIndex].Value = "N/A";
+                    LogMessage("No matching part number found in cross reference");
+                }
+
+                // Generate and assign the weldment thumbnail
+                Image weldmentThumbnail = GenerateWeldmentThumbnail();
+                rawMaterialRow.Cells[thumbnailIndex].Value = weldmentThumbnail;
+
+                // Insert the raw material row just below the parent row
+                int insertIndex = parentRow.Index + 1;
+                parentRow.DataGridView.Rows.Insert(insertIndex, rawMaterialRow);
+                LogMessage($"Added Weldment raw material row: {description}");
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error adding Weldment raw material row: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+        private Image GenerateWeldmentThumbnail()
+        {
+            try
+            {
+                // Get the assembly that contains the embedded resource
+                Assembly assembly = Assembly.GetExecutingAssembly();
+                string resourceName = "Estimate_BOM_Tool.Tubing.jpg";  // Namespace.ImageFileName
+
+                // Load the embedded image
+                using (Stream stream = assembly.GetManifestResourceStream(resourceName))
+                {
+                    if (stream != null)
+                    {
+                        return new Bitmap(stream);
+                    }
+                    else
+                    {
+                        LogError($"Could not find embedded resource: {resourceName}");
+                        return CreateFallbackThumbnail();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error loading weldment thumbnail: {ex.Message}");
+                return CreateFallbackThumbnail();
+            }
+        }
+
+        private Image CreateFallbackThumbnail()
+        {
+            // Use 4:3 ratio - if width is 100, height should be 75
+            int width = 100;
+            int height = 75;
+
+            Bitmap thumbnail = new Bitmap(width, height);
+            using (Graphics g = Graphics.FromImage(thumbnail))
+            {
+                g.Clear(Color.LightGray);
+            }
+            return thumbnail;
+        }
+
+
+        private Dictionary<(string Material, string Thickness), (string PartNumber, decimal Cost, decimal TotalSqInch, string Description)> LoadCrossReferenceTableFromExcel(string filePath)
+        {
+            var table = new Dictionary<(string, string), (string, decimal, decimal, string)>();
+
+            try
+            {
+                LogMessage($"Starting to load cross-reference table from file: {filePath}");
+
+                string connectionString =
+                    $"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={filePath};Extended Properties='Excel 12.0 Xml;HDR=YES;'";
+                using (OleDbConnection connection = new OleDbConnection(connectionString))
+                {
+                    // Load Sheet Metal data (Sheet1)
+                    connection.Open();
+                    LogMessage("Opened connection to Excel file.");
+
+                    OleDbCommand command = new OleDbCommand("SELECT * FROM [Sheet1$]", connection);
+                    OleDbDataAdapter adapter = new OleDbDataAdapter(command);
+                    DataTable sheetDataTable = new DataTable();
+                    adapter.Fill(sheetDataTable);
+
+                    LogMessage($"Loaded {sheetDataTable.Rows.Count} rows from 'Sheet1$'.");
+
+                    foreach (DataRow row in sheetDataTable.Rows)
+                    {
+                        string material = row["Material"].ToString().Trim();
+                        string thickness = row["Thickness"].ToString().Trim();
+                        string partNumber = row["PartNumber"].ToString().Trim();
+                        decimal cost = decimal.Parse(row["Cost"].ToString().Trim());
+                        decimal totalSqInch = decimal.Parse(row["Total SQ Inch"].ToString().Trim());
+                        string description = row["Description"].ToString().Trim();
+
+                        table[(material, thickness)] = (partNumber, cost, totalSqInch, description);
+
+                        LogMessage($"Added Sheet Metal entry - Material: {material}, Thickness: {thickness}, PartNumber: {partNumber}, Cost: {cost:C2}, TotalSqInch: {totalSqInch}, Description: {description}");
+                    }
+
+                    // Load Tubing data
+                    command = new OleDbCommand("SELECT * FROM [Tubing$]", connection);
+                    adapter = new OleDbDataAdapter(command);
+                    DataTable tubingDataTable = new DataTable();
+                    adapter.Fill(tubingDataTable);
+
+                    LogMessage($"Loaded {tubingDataTable.Rows.Count} rows from 'Tubing$'.");
+
+                    foreach (DataRow row in tubingDataTable.Rows)
+                    {
+                        string material = row["SW Material"].ToString().Trim();
+                        string swDescription = row["SW Description"].ToString().Trim();
+                        string partNumber = row["PartNumber"].ToString().Trim();
+                        decimal cost = decimal.Parse(row["Cost"].ToString().Trim());
+                        string description = row["Description"].ToString().Trim();
+
+                        LogMessage($"Added Tubing entry - Material: {material}, SW Description: {swDescription}, PartNumber: {partNumber}, Cost: {cost:C2}, Description: {description}");
+                        // Using swDescription as the second key (instead of thickness)
+                        table[(material, swDescription)] = (partNumber, cost, 0.00m, description);
+                    }
+
+                    LogMessage("Successfully loaded cross-reference table from Excel.");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error loading cross-reference table from Excel: {ex.Message}");
+            }
+
+            return table;
+        }
+
+
+        private bool IsSheetMetalPart(IEdmBomView sheetMetalCutList)
+        {
+            try
+            {
+                sheetMetalCutList.GetColumns(out EdmBomColumn[] columns);
+                sheetMetalCutList.GetRows(out object[] rows);
+
+                if (rows != null && rows.Length > 0)
+                {
+                    IEdmBomCell cell = (IEdmBomCell)rows[0];
+                    string thickness = GetCellValue(cell, columns, "Sheet Metal Thickness");
+                    string flatPatternLength = GetCellValue(cell, columns, "Flat Pattern Length");
+                    string flatPatternWidth = GetCellValue(cell, columns, "Flat Pattern Width");
+
+                    // If these key sheet metal properties are empty, it's not a sheet metal part
+                    if (string.IsNullOrEmpty(thickness) &&
+                        string.IsNullOrEmpty(flatPatternLength) &&
+                        string.IsNullOrEmpty(flatPatternWidth))
+                    {
+                        LogMessage("Sheet Metal Cut List exists but key properties are empty - treating as Weldment");
+                        return false;
+                    }
+
+                    LogMessage("Found valid Sheet Metal properties - treating as Sheet Metal part");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error checking if part is sheet metal: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        public void RefreshBOMDataForRow(DataGridViewRow row, IEdmVault5 vault)
+        {
+            // The method content remains the same, just updated to public
+            try
+            {
+                if (int.TryParse(row.Cells["FileID"].Value?.ToString(), out int fileId) && fileId > 0)
+                {
+                    IEdmFile5 file = (IEdmFile5)vault.GetObject(EdmObjectType.EdmObject_File, fileId);
+                    IEdmFile7 file7 = file as IEdmFile7;
+
+                    if (file7 != null)
+                    {
+                        IEdmBomView bomView = file7.GetComputedBOM("Estimate BOM", file.CurrentVersion, "Default", (int)(EdmBomFlag.EdmBf_AsBuilt));
+
+                        if (bomView != null)
+                        {
+                            bomView.GetColumns(out EdmBomColumn[] columns);
+                            bomView.GetRows(out object[] bomRows);
+
+                            if (bomRows.Length > 0)
+                            {
+                                IEdmBomCell bomCell = (IEdmBomCell)bomRows[0];
+                                foreach (EdmBomColumn column in columns)
+                                {
+                                    object cellValue;
+                                    bomCell.GetVar(column.mlVariableID, column.meType, out cellValue, out _, out _, out _);
+
+                                    if (row.DataGridView.Columns.Contains(column.mbsCaption))
+                                    {
+                                        row.Cells[column.mbsCaption].Value = cellValue?.ToString() ?? "N/A";
+                                    }
+                                }
+                                LogMessage($"BOM data refreshed for row with FileID: {fileId}");
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    LogMessage("Invalid FileID in row for BOM data refresh.");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error refreshing BOM data for row: {ex.Message}");
+            }
+        }
+
+        public void RefreshRawMaterialDataForRow(DataGridViewRow row, IEdmVault5 vault)
+        {
+            try
+            {
+                if (row.Cells["FileID"].Value == null || !int.TryParse(row.Cells["FileID"].Value.ToString(), out int fileId))
+                {
+                    LogMessage("Invalid or missing FileID in DataGridView row.");
+                    return;
+                }
+
+                // Check if the FilePath column exists and retrieve the file path
+                if (!row.DataGridView.Columns.Contains("FilePath") || row.Cells["FilePath"].Value == null)
+                {
+                    LogMessage("FilePath column is missing or file path is null in the selected row.");
+                    return;
+                }
+
+                string filePath = row.Cells["FilePath"].Value.ToString();
+                LogMessage($"Refreshing raw material data for row with FileID: {fileId}");
+
+                // Retrieve the file object based on the file path
+                IEdmFile5 file;
+                IEdmFolder5 parentFolder;
+                file = vault.GetFileFromPath(filePath, out parentFolder);
+
+                if (file == null)
+                {
+                    LogMessage($"File with FileID: {fileId} could not be found.");
+                    return;
+                }
+
+                IEdmEnumeratorVariable5 varEnum = file.GetEnumeratorVariable();
+
+                var material = GetVariableValue(varEnum, "Sheet Metal Material");
+                var thickness = GetVariableValue(varEnum, "Sheet Metal Thickness");
+                var flatPatternLength = GetVariableValue(varEnum, "Flat Pattern Length");
+                var flatPatternWidth = GetVariableValue(varEnum, "Flat Pattern Width");
+                var weight = GetVariableValue(varEnum, "Weight in LBS");
+                var numberOfBends = GetVariableValue(varEnum, "Number of Bends");
+                var bendRadius = GetVariableValue(varEnum, "Sheet Metal Bend Radius");
+                var area = GetVariableValue(varEnum, "Sheet Metal Area");
+                var cutOuts = GetVariableValue(varEnum, "Sheet Metal Cut Outs");
+                var cuttingLengthInner = GetVariableValue(varEnum, "Sheet Metal Cutting Length Inner");
+                var cuttingLengthOuter = GetVariableValue(varEnum, "Sheet Metal Cutting Length Outer");
+
+                // Set the values to the appropriate cells in the row
+                row.Cells["Sheet Metal Material"].Value = material;
+                row.Cells["Sheet Metal Thickness"].Value = thickness;
+                row.Cells["Flat Pattern Length"].Value = flatPatternLength;
+                row.Cells["Flat Pattern Width"].Value = flatPatternWidth;
+                row.Cells["Weight in LBS"].Value = weight;
+                row.Cells["Number of Bends"].Value = numberOfBends;
+                row.Cells["Sheet Metal Bend Radius"].Value = bendRadius;
+                row.Cells["Sheet Metal Area"].Value = area;
+                row.Cells["Sheet Metal Cut Outs"].Value = cutOuts;
+                row.Cells["Sheet Metal Cutting Length Inner"].Value = cuttingLengthInner;
+                row.Cells["Sheet Metal Cutting Length Outer"].Value = cuttingLengthOuter;
+
+                LogMessage($"Raw material data refreshed for row with FileID: {fileId}");
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error refreshing raw material data: {ex.Message}");
+            }
+        }
+
+        public class ERPDatabaseHelper
+        {
+            string connectionString = "Server=viewpointsql;Database=Viewpoint;User ID=BRoland;Password=conveyor;Trusted_Connection=False;";
+
+            public (decimal? AvgCost, decimal? LastCost, string Description, string InventoryInfo) GetBuyPartCost(string partNumber)
+            {
+                using (SqlConnection connection = new SqlConnection(connectionString))
+                {
+                    try
+                    {
+                        connection.Open();
+                        string query = @"
+            SELECT bHQMT.Material, bHQMT.Description, bINMT.Loc, bINLM.Description AS Warehouse_Name, 
+                   bINMT.PhyLoc, bINMT.LastVendor, bAPVM.Name AS Last_Vendor_Name, bINMT.OnHand, 
+                   bINMT.OnOrder, bINMT.Booked, bINMT.LastCost, bINMT.AvgCost, bINMT.StdCost, 
+                   bINMT.Alloc, bHQMT.Notes
+            FROM bHQMT 
+            INNER JOIN bINMT ON bHQMT.Material = bINMT.Material 
+            INNER JOIN bINLM ON bINMT.Loc = bINLM.Loc 
+            INNER JOIN bAPVM ON bINMT.LastVendor = bAPVM.Vendor
+            WHERE (bHQMT.Material = @partNumber) 
+            AND (bHQMT.MatlGroup = 10) 
+            AND (bINLM.INCo = 10) 
+            AND (bAPVM.VendorGroup = 10)";
+
+                        using (SqlCommand command = new SqlCommand(query, connection))
+                        {
+                            command.Parameters.AddWithValue("@partNumber", partNumber);
+                            using (SqlDataReader reader = command.ExecuteReader())
+                            {
+                                if (reader.Read())
+                                {
+                                    decimal? avgCost = reader.IsDBNull(reader.GetOrdinal("AvgCost"))
+                                        ? null
+                                        : (decimal?)reader.GetDecimal(reader.GetOrdinal("AvgCost"));
+
+                                    decimal? lastCost = reader.IsDBNull(reader.GetOrdinal("LastCost"))
+                                        ? null
+                                        : (decimal?)reader.GetDecimal(reader.GetOrdinal("LastCost"));
+
+                                    string description = reader.IsDBNull(reader.GetOrdinal("Description"))
+                                        ? string.Empty
+                                        : reader.GetString(reader.GetOrdinal("Description"));
+
+                                    string inventoryInfo = $"Qty On Hand {Math.Floor(reader.GetDecimal(reader.GetOrdinal("OnHand")))}\n" +
+                                        $"Qty Booked {Math.Floor(reader.GetDecimal(reader.GetOrdinal("Booked")))}\n" +
+                                        $"Warehouse Location {reader.GetString(reader.GetOrdinal("Loc"))} " +
+                                        $"{reader.GetString(reader.GetOrdinal("Warehouse_Name"))} " +
+                                        $"Zone {reader.GetString(reader.GetOrdinal("PhyLoc"))}";
+
+                                    return (avgCost, lastCost, description, inventoryInfo);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError($"Error retrieving data for part number {partNumber}: {ex.Message}");
+                    }
+                }
+                return (null, null, string.Empty, null);
+            }
+
+
+            private void LogError(string message)
+            {
+                try
+                {
+                    string logFile = "C:\\Temp\\LogFiles\\EstimateBOMToolLog.txt";
+                    Directory.CreateDirectory(Path.GetDirectoryName(logFile));
+                    using (StreamWriter writer = new StreamWriter(logFile, true))
+                    {
+                        writer.WriteLine($"{DateTime.Now}: ERROR: {message}");
+                    }
+                }
+                catch
+                {
+                    // If logging fails, silently ignore
+                }
+            }
+        }
+
+        public void AddBuyPartCostToParentRow(DataGridViewRow parentRow)
+        {
+            try
+            {
+                // Retrieve part number from parent row
+                string partNumber = parentRow.Cells["Part Number"].Value?.ToString();
+
+                // Log the part number retrieved
+                LogMessage($"Retrieved part number from row: '{partNumber}'");
+
+                // Check if part number matches the expected pattern for 'Buy' parts
+                if (System.Text.RegularExpressions.Regex.IsMatch(partNumber, @"^\d{3}-\d{3}$"))
+                {
+                    LogMessage($"Validated part number '{partNumber}' as a 'Buy' part. Proceeding to fetch cost data.");
+
+                    ERPDatabaseHelper dbHelper = new ERPDatabaseHelper();
+
+                    // Log before calling GetBuyPartCost
+                    LogMessage($"Calling GetBuyPartCost with part number: {partNumber}");
+
+                    var (avgCost, lastCost, description, inventoryInfo) = dbHelper.GetBuyPartCost(partNumber);
+
+                    // Log the data retrieved from the database
+                    LogMessage($"Data retrieved for part number '{partNumber}': AvgCost = {avgCost}, LastCost = {lastCost}, Description = {description}");
+
+                    if (avgCost.HasValue || lastCost.HasValue)
+                    {
+                        decimal? costToUse = lastCost ?? avgCost;
+
+                        parentRow.Cells["Cost"].Value = $"{costToUse.Value:C2}";
+                        parentRow.Cells["Raw Mat Amount"].Value = inventoryInfo;
+                        parentRow.Cells["Description"].Value = description;
+
+                        if (decimal.TryParse(parentRow.Cells["QTY"].Value?.ToString(), out decimal qty))
+                        {
+                            decimal totalCost = costToUse.Value * qty;
+                            parentRow.Cells["Total Cost"].Value = $"{totalCost:C2}";
+                        }
+
+                        LogMessage($"Set cost for 'Buy' part number '{partNumber}': {costToUse.Value:C2}");
+                    }
+                    else
+                    {
+                        parentRow.DefaultCellStyle.BackColor = Color.FromArgb(255, 220, 220);
+                        parentRow.Cells["Raw Mat Amount"].Value = "Could not find a match to the part number in the ERP system";
+                        parentRow.Cells["Cost"].Value = null;
+                        parentRow.Cells["Total Cost"].Value = null;
+                        LogMessage($"No data found for 'Buy' part number: {partNumber}");
+                    }
+                }
+                else
+                {
+                    LogMessage($"Part number '{partNumber}' does not match 'Buy' part pattern. Skipping retrieval.");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error in AddBuyPartCostToParentRow: {ex.Message}\n{ex.StackTrace}");
+            }
+        }
+
+
+        public void Dispose()
+        {
+            if (activeForm != null && !activeForm.IsDisposed)
+            {
+                activeForm.Close();
+                activeForm = null;
+            }
+        }
+
+
+
+
+    }
+}

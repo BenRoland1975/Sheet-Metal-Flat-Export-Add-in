@@ -1,0 +1,525 @@
+' ========================================================
+' SOLIDWORKS Shipping Label Manager - Windows Forms UI
+' Professional interface with DataGridView for managing shipping label blocks
+' ========================================================
+
+Imports System.Windows.Forms
+Imports System.Drawing
+Imports System.Data
+Imports SldWorks
+
+Public Class ShippingLabelManagerForm
+    Inherits Form
+    
+    ' UI Controls
+    Private WithEvents dgvShippingLabels As DataGridView
+    Private WithEvents btnRefresh As Button
+    Private WithEvents btnExportCSV As Button
+    Private WithEvents btnExportDatabase As Button
+    Private WithEvents btnEditSelected As Button
+    Private WithEvents btnDeleteSelected As Button
+    Private WithEvents btnCreateNew As Button
+    Private WithEvents btnClose As Button
+    Private WithEvents lblStatus As Label
+    Private WithEvents progressBar As ProgressBar
+    
+    ' Data
+    Private shippingData As DataTable
+    Private swApp As SldWorks.SldWorks
+    Private swModel As SldWorks.ModelDoc2
+    
+    Public Sub New(ByVal solidWorksApp As SldWorks.SldWorks)
+        swApp = solidWorksApp
+        swModel = swApp.ActiveDoc
+        InitializeComponent()
+        SetupDataGrid()
+        LoadShippingLabels()
+    End Sub
+    
+    Private Sub InitializeComponent()
+        ' Form settings
+        Me.Text = "SOLIDWORKS Shipping Label Manager"
+        Me.Size = New Size(1200, 800)
+        Me.StartPosition = FormStartPosition.CenterScreen
+        Me.FormBorderStyle = FormBorderStyle.Sizable
+        Me.MinimumSize = New Size(800, 600)
+        
+        ' Create main panel
+        Dim mainPanel As New TableLayoutPanel()
+        mainPanel.Dock = DockStyle.Fill
+        mainPanel.RowCount = 3
+        mainPanel.ColumnCount = 1
+        
+        ' Set row styles
+        mainPanel.RowStyles.Add(New RowStyle(SizeType.AutoSize)) ' Toolbar
+        mainPanel.RowStyles.Add(New RowStyle(SizeType.Percent, 100)) ' DataGrid
+        mainPanel.RowStyles.Add(New RowStyle(SizeType.AutoSize)) ' Status bar
+        
+        ' Create toolbar panel
+        Dim toolbarPanel As New FlowLayoutPanel()
+        toolbarPanel.Height = 40
+        toolbarPanel.Dock = DockStyle.Fill
+        toolbarPanel.FlowDirection = FlowDirection.LeftToRight
+        
+        ' Create buttons
+        btnRefresh = New Button()
+        btnRefresh.Text = "Refresh"
+        btnRefresh.Size = New Size(80, 30)
+        btnRefresh.Image = SystemIcons.Asterisk.ToBitmap()
+        
+        btnCreateNew = New Button()
+        btnCreateNew.Text = "Create New"
+        btnCreateNew.Size = New Size(100, 30)
+        
+        btnEditSelected = New Button()
+        btnEditSelected.Text = "Edit Selected"
+        btnEditSelected.Size = New Size(100, 30)
+        btnEditSelected.Enabled = False
+        
+        btnDeleteSelected = New Button()
+        btnDeleteSelected.Text = "Delete Selected"
+        btnDeleteSelected.Size = New Size(110, 30)
+        btnDeleteSelected.Enabled = False
+        
+        btnExportCSV = New Button()
+        btnExportCSV.Text = "Export CSV"
+        btnExportCSV.Size = New Size(90, 30)
+        
+        btnExportDatabase = New Button()
+        btnExportDatabase.Text = "Export to DB"
+        btnExportDatabase.Size = New Size(100, 30)
+        
+        btnClose = New Button()
+        btnClose.Text = "Close"
+        btnClose.Size = New Size(70, 30)
+        
+        ' Add buttons to toolbar
+        toolbarPanel.Controls.AddRange({btnRefresh, btnCreateNew, btnEditSelected, btnDeleteSelected, btnExportCSV, btnExportDatabase, btnClose})
+        
+        ' Create DataGridView
+        dgvShippingLabels = New DataGridView()
+        dgvShippingLabels.Dock = DockStyle.Fill
+        dgvShippingLabels.AutoGenerateColumns = False
+        dgvShippingLabels.SelectionMode = DataGridViewSelectionMode.FullRowSelect
+        dgvShippingLabels.MultiSelect = True
+        dgvShippingLabels.AllowUserToAddRows = False
+        dgvShippingLabels.AllowUserToDeleteRows = False
+        dgvShippingLabels.ReadOnly = False ' Allow editing
+        dgvShippingLabels.AlternatingRowsDefaultCellStyle.BackColor = Color.LightGray
+        dgvShippingLabels.RowHeadersVisible = True
+        
+        ' Create status panel
+        Dim statusPanel As New Panel()
+        statusPanel.Height = 25
+        statusPanel.Dock = DockStyle.Fill
+        statusPanel.BorderStyle = BorderStyle.FixedSingle
+        
+        lblStatus = New Label()
+        lblStatus.Text = "Ready"
+        lblStatus.Dock = DockStyle.Left
+        lblStatus.AutoSize = True
+        lblStatus.TextAlign = ContentAlignment.MiddleLeft
+        
+        progressBar = New ProgressBar()
+        progressBar.Dock = DockStyle.Right
+        progressBar.Width = 200
+        progressBar.Visible = False
+        
+        statusPanel.Controls.AddRange({lblStatus, progressBar})
+        
+        ' Add panels to main layout
+        mainPanel.Controls.Add(toolbarPanel, 0, 0)
+        mainPanel.Controls.Add(dgvShippingLabels, 0, 1)
+        mainPanel.Controls.Add(statusPanel, 0, 2)
+        
+        Me.Controls.Add(mainPanel)
+    End Sub
+    
+    Private Sub SetupDataGrid()
+        ' Create data table structure
+        shippingData = New DataTable("ShippingLabels")
+        
+        ' Add columns
+        shippingData.Columns.Add("InstanceID", GetType(String))
+        shippingData.Columns.Add("JobNumber", GetType(String))
+        shippingData.Columns.Add("SystemNumber", GetType(String))
+        shippingData.Columns.Add("IDNumber", GetType(String))
+        shippingData.Columns.Add("Description", GetType(String))
+        shippingData.Columns.Add("Quantity", GetType(String))
+        shippingData.Columns.Add("XPosition", GetType(Double))
+        shippingData.Columns.Add("YPosition", GetType(Double))
+        shippingData.Columns.Add("SheetName", GetType(String))
+        shippingData.Columns.Add("HasLeader", GetType(Boolean))
+        shippingData.Columns.Add("ComponentName", GetType(String))
+        shippingData.Columns.Add("PartFileName", GetType(String))
+        shippingData.Columns.Add("MaterialName", GetType(String))
+        shippingData.Columns.Add("PartNumber", GetType(String))
+        shippingData.Columns.Add("PartDescription", GetType(String))
+        shippingData.Columns.Add("Mass", GetType(String))
+        
+        ' Setup DataGridView columns
+        dgvShippingLabels.Columns.Clear()
+        
+        ' Add columns with specific properties
+        dgvShippingLabels.Columns.Add(CreateTextColumn("InstanceID", "Instance ID", True))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("JobNumber", "Job Number", False))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("SystemNumber", "System Number", False))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("IDNumber", "ID Number", False))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("Description", "Description", False))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("Quantity", "Quantity", False))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("XPosition", "X Position", True))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("YPosition", "Y Position", True))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("SheetName", "Sheet", True))
+        dgvShippingLabels.Columns.Add(CreateCheckBoxColumn("HasLeader", "Has Leader"))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("ComponentName", "Component", True))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("PartFileName", "Part File", True))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("MaterialName", "Material", True))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("PartNumber", "Part Number", True))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("PartDescription", "Part Description", True))
+        dgvShippingLabels.Columns.Add(CreateTextColumn("Mass", "Mass", True))
+        
+        ' Bind data source
+        dgvShippingLabels.DataSource = shippingData
+        
+        ' Auto-size columns
+        dgvShippingLabels.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells)
+    End Sub
+    
+    Private Function CreateTextColumn(dataPropertyName As String, headerText As String, isReadOnly As Boolean) As DataGridViewTextBoxColumn
+        Dim column As New DataGridViewTextBoxColumn()
+        column.DataPropertyName = dataPropertyName
+        column.HeaderText = headerText
+        column.ReadOnly = isReadOnly
+        Return column
+    End Function
+    
+    Private Function CreateCheckBoxColumn(dataPropertyName As String, headerText As String) As DataGridViewCheckBoxColumn
+        Dim column As New DataGridViewCheckBoxColumn()
+        column.DataPropertyName = dataPropertyName
+        column.HeaderText = headerText
+        column.ReadOnly = True
+        Return column
+    End Function
+    
+    Private Sub LoadShippingLabels()
+        Try
+            UpdateStatus("Loading shipping labels...")
+            ShowProgress(True)
+            
+            ' Clear existing data
+            shippingData.Clear()
+            
+            If swModel Is Nothing OrElse swModel.GetType() <> swDocumentTypes_e.swDocDRAWING Then
+                UpdateStatus("Please open a drawing document")
+                ShowProgress(False)
+                Return
+            End If
+            
+            Dim swDraw As SldWorks.DrawingDoc = swModel
+            Dim swSketchMgr As SldWorks.SketchManager = swModel.SketchManager
+            
+            ' Extract shipping labels using the existing extraction logic
+            Dim shippingLabels() As ShippingLabelData
+            Call ExtractAllShippingLabelsUI(swDraw, swSketchMgr, shippingLabels)
+            
+            ' Populate data table
+            If UBound(shippingLabels) >= 0 Then
+                For i As Integer = 0 To UBound(shippingLabels)
+                    Dim row As DataRow = shippingData.NewRow()
+                    With shippingLabels(i)
+                        row("InstanceID") = .InstanceName
+                        row("JobNumber") = .JobNumber
+                        row("SystemNumber") = .SystemNumber
+                        row("IDNumber") = .IDNumber
+                        row("Description") = .Description
+                        row("Quantity") = .Quantity
+                        row("XPosition") = .XPosition
+                        row("YPosition") = .YPosition
+                        row("SheetName") = .SheetName
+                        row("HasLeader") = .HasLeader
+                        row("ComponentName") = .ComponentName
+                        row("PartFileName") = .PartFileName
+                        row("MaterialName") = .MaterialName
+                        row("PartNumber") = .PartNumber
+                        row("PartDescription") = .Description_Part
+                        row("Mass") = .Mass
+                    End With
+                    shippingData.Rows.Add(row)
+                Next
+            End If
+            
+            UpdateStatus($"Loaded {shippingData.Rows.Count} shipping labels")
+            ShowProgress(False)
+            
+        Catch ex As Exception
+            MessageBox.Show($"Error loading shipping labels: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            UpdateStatus("Error loading data")
+            ShowProgress(False)
+        End Try
+    End Sub
+    
+    Private Sub UpdateStatus(message As String)
+        lblStatus.Text = message
+        Application.DoEvents()
+    End Sub
+    
+    Private Sub ShowProgress(show As Boolean)
+        progressBar.Visible = show
+        If show Then
+            progressBar.Style = ProgressBarStyle.Marquee
+        End If
+        Application.DoEvents()
+    End Sub
+    
+    ' Event Handlers
+    Private Sub btnRefresh_Click(sender As Object, e As EventArgs) Handles btnRefresh.Click
+        LoadShippingLabels()
+    End Sub
+    
+    Private Sub btnCreateNew_Click(sender As Object, e As EventArgs) Handles btnCreateNew.Click
+        ' Open dialog to create new shipping label
+        Dim createForm As New CreateShippingLabelForm(swApp)
+        If createForm.ShowDialog() = DialogResult.OK Then
+            LoadShippingLabels() ' Refresh after creation
+        End If
+    End Sub
+    
+    Private Sub btnEditSelected_Click(sender As Object, e As EventArgs) Handles btnEditSelected.Click
+        If dgvShippingLabels.SelectedRows.Count > 0 Then
+            Dim selectedRow As DataGridViewRow = dgvShippingLabels.SelectedRows(0)
+            Dim instanceID As String = selectedRow.Cells("InstanceID").Value.ToString()
+            
+            ' Open edit dialog
+            Dim editForm As New EditShippingLabelForm(swApp, instanceID, selectedRow)
+            If editForm.ShowDialog() = DialogResult.OK Then
+                LoadShippingLabels() ' Refresh after edit
+            End If
+        End If
+    End Sub
+    
+    Private Sub btnDeleteSelected_Click(sender As Object, e As EventArgs) Handles btnDeleteSelected.Click
+        If dgvShippingLabels.SelectedRows.Count > 0 Then
+            Dim result As DialogResult = MessageBox.Show($"Are you sure you want to delete {dgvShippingLabels.SelectedRows.Count} shipping label(s)?", "Confirm Delete", MessageBoxButtons.YesNo, MessageBoxIcon.Question)
+            
+            If result = DialogResult.Yes Then
+                ' Delete selected blocks from SOLIDWORKS
+                For Each row As DataGridViewRow In dgvShippingLabels.SelectedRows
+                    Dim instanceID As String = row.Cells("InstanceID").Value.ToString()
+                    ' Implement delete logic here
+                    DeleteShippingLabelBlock(instanceID)
+                Next
+                
+                LoadShippingLabels() ' Refresh after deletion
+            End If
+        End If
+    End Sub
+    
+    Private Sub btnExportCSV_Click(sender As Object, e As EventArgs) Handles btnExportCSV.Click
+        Dim saveDialog As New SaveFileDialog()
+        saveDialog.Filter = "CSV Files|*.csv"
+        saveDialog.Title = "Export Shipping Labels to CSV"
+        saveDialog.FileName = "ShippingLabels_" & DateTime.Now.ToString("yyyyMMdd_HHmmss") & ".csv"
+        
+        If saveDialog.ShowDialog() = DialogResult.OK Then
+            Try
+                ExportDataTableToCSV(shippingData, saveDialog.FileName)
+                MessageBox.Show("Data exported successfully!", "Export Complete", MessageBoxButtons.OK, MessageBoxIcon.Information)
+                UpdateStatus($"Exported to {saveDialog.FileName}")
+            Catch ex As Exception
+                MessageBox.Show($"Error exporting data: {ex.Message}", "Export Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            End Try
+        End If
+    End Sub
+    
+    Private Sub btnExportDatabase_Click(sender As Object, e As EventArgs) Handles btnExportDatabase.Click
+        ' Open database configuration dialog
+        Dim dbForm As New DatabaseExportForm(shippingData)
+        dbForm.ShowDialog()
+    End Sub
+    
+    Private Sub btnClose_Click(sender As Object, e As EventArgs) Handles btnClose.Click
+        Me.Close()
+    End Sub
+    
+    Private Sub dgvShippingLabels_SelectionChanged(sender As Object, e As EventArgs) Handles dgvShippingLabels.SelectionChanged
+        Dim hasSelection As Boolean = dgvShippingLabels.SelectedRows.Count > 0
+        btnEditSelected.Enabled = hasSelection AndAlso dgvShippingLabels.SelectedRows.Count = 1
+        btnDeleteSelected.Enabled = hasSelection
+    End Sub
+    
+    Private Sub dgvShippingLabels_CellDoubleClick(sender As Object, e As DataGridViewCellEventArgs) Handles dgvShippingLabels.CellDoubleClick
+        If e.RowIndex >= 0 Then
+            btnEditSelected_Click(sender, e)
+        End If
+    End Sub
+    
+    Private Sub dgvShippingLabels_CellEndEdit(sender As Object, e As DataGridViewCellEventArgs) Handles dgvShippingLabels.CellEndEdit
+        ' Update the SOLIDWORKS block when user edits a cell
+        Try
+            Dim row As DataGridViewRow = dgvShippingLabels.Rows(e.RowIndex)
+            Dim instanceID As String = row.Cells("InstanceID").Value.ToString()
+            Dim columnName As String = dgvShippingLabels.Columns(e.ColumnIndex).DataPropertyName
+            Dim newValue As String = row.Cells(e.ColumnIndex).Value?.ToString() ?? ""
+            
+            ' Update the block attribute in SOLIDWORKS
+            UpdateShippingLabelAttributeUI(instanceID, columnName, newValue)
+            
+            UpdateStatus($"Updated {columnName} for {instanceID}")
+            
+        Catch ex As Exception
+            MessageBox.Show($"Error updating block: {ex.Message}", "Update Error", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            LoadShippingLabels() ' Reload to revert changes
+        End Try
+    End Sub
+    
+    ' Utility Methods
+    Private Sub ExportDataTableToCSV(dt As DataTable, filePath As String)
+        Using writer As New System.IO.StreamWriter(filePath)
+            ' Write headers
+            Dim headers() As String = dt.Columns.Cast(Of DataColumn)().Select(Function(column) column.ColumnName).ToArray()
+            writer.WriteLine(String.Join(",", headers))
+            
+            ' Write data rows
+            For Each row As DataRow In dt.Rows
+                Dim fields() As String = row.ItemArray.Select(Function(field) $"""{field}""").ToArray()
+                writer.WriteLine(String.Join(",", fields))
+            Next
+        End Using
+    End Sub
+    
+    Private Sub DeleteShippingLabelBlock(instanceID As String)
+        ' Implement block deletion logic
+        ' This would find and delete the specific block instance
+        UpdateStatus($"Deleting block {instanceID}...")
+    End Sub
+    
+    Private Sub UpdateShippingLabelAttributeUI(instanceID As String, attributeName As String, newValue As String)
+        ' Map UI column names to block attribute names
+        Dim blockAttributeName As String = ""
+        Select Case attributeName
+            Case "JobNumber"
+                blockAttributeName = "JOB_NUMBER"
+            Case "SystemNumber"
+                blockAttributeName = "SYSTEM_NUMBER"
+            Case "IDNumber"
+                blockAttributeName = "ID_NUMBER"
+            Case "Description"
+                blockAttributeName = "DESCRIPTION"
+            Case "Quantity"
+                blockAttributeName = "QUANTITY"
+            Case Else
+                Return ' Don't update read-only or unmapped fields
+        End Select
+        
+        ' Call the existing update function
+        UpdateShippingLabelAttribute(instanceID, blockAttributeName, newValue)
+    End Sub
+    
+    ' Helper method to extract shipping labels (simplified version of existing code)
+    Private Sub ExtractAllShippingLabelsUI(swDraw As SldWorks.DrawingDoc, swSketchMgr As SldWorks.SketchManager, ByRef shippingLabels() As ShippingLabelData)
+        ' This would call the existing extraction logic from the original code
+        ' For brevity, I'll reference the existing functions
+        ' Call ExtractAllShippingLabels(swDraw, swSketchMgr, shippingLabels)
+    End Sub
+End Class
+
+' ========================================================
+' Create New Shipping Label Dialog
+' ========================================================
+Public Class CreateShippingLabelForm
+    Inherits Form
+    
+    Private swApp As SldWorks.SldWorks
+    Private WithEvents btnOK As Button
+    Private WithEvents btnCancel As Button
+    Private txtJobNumber As TextBox
+    Private txtSystemNumber As TextBox
+    Private txtIDNumber As TextBox
+    private txtDescription As TextBox
+    Private txtQuantity As TextBox
+    
+    Public Sub New(solidWorksApp As SldWorks.SldWorks)
+        swApp = solidWorksApp
+        InitializeComponent()
+    End Sub
+    
+    Private Sub InitializeComponent()
+        Me.Text = "Create New Shipping Label"
+        Me.Size = New Size(400, 300)
+        Me.StartPosition = FormStartPosition.CenterParent
+        Me.FormBorderStyle = FormBorderStyle.FixedDialog
+        Me.MaximizeBox = False
+        Me.MinimizeBox = False
+        
+        ' Create controls and layout
+        ' Implementation would include form layout for creating new shipping labels
+        
+        btnOK = New Button()
+        btnOK.Text = "OK"
+        btnOK.DialogResult = DialogResult.OK
+        
+        btnCancel = New Button()
+        btnCancel.Text = "Cancel"
+        btnCancel.DialogResult = DialogResult.Cancel
+        
+        ' Add controls to form
+        ' Layout implementation here...
+    End Sub
+End Class
+
+' ========================================================
+' Edit Shipping Label Dialog
+' ========================================================
+Public Class EditShippingLabelForm
+    Inherits Form
+    
+    Private swApp As SldWorks.SldWorks
+    Private instanceID As String
+    Private currentRow As DataGridViewRow
+    
+    Public Sub New(solidWorksApp As SldWorks.SldWorks, blockInstanceID As String, row As DataGridViewRow)
+        swApp = solidWorksApp
+        instanceID = blockInstanceID
+        currentRow = row
+        InitializeComponent()
+        LoadCurrentData()
+    End Sub
+    
+    Private Sub InitializeComponent()
+        ' Implementation for edit dialog
+    End Sub
+    
+    Private Sub LoadCurrentData()
+        ' Load current block data into form controls
+    End Sub
+End Class
+
+' ========================================================
+' Database Export Configuration Dialog
+' ========================================================
+Public Class DatabaseExportForm
+    Inherits Form
+    
+    Private dataToExport As DataTable
+    
+    Public Sub New(data As DataTable)
+        dataToExport = data
+        InitializeComponent()
+    End Sub
+    
+    Private Sub InitializeComponent()
+        ' Implementation for database export configuration
+    End Sub
+End Class
+
+' ========================================================
+' MAIN ENTRY POINT - Add this to your existing VBA code
+' ========================================================
+Sub ShowShippingLabelManager()
+    Dim swApp As SldWorks.SldWorks
+    Set swApp = Application.SldWorks
+    
+    ' Show the Windows Forms UI
+    Dim managerForm As New ShippingLabelManagerForm(swApp)
+    managerForm.ShowDialog()
+End Sub

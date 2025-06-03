@@ -1140,6 +1140,13 @@ namespace RoesleinAddIn
 
         private bool IsLaserCuttingPart(ModelDoc2 doc)
         {
+            // Reload settings to get the latest CheckForLaser value
+            var currentSettings = AppSettings.LoadSettings();
+            if (currentSettings != null)
+            {
+                settings = currentSettings;
+            }
+            
             if (!settings.CheckForLaser) 
             {
                 Logger.Info($"Part {doc.GetTitle()} automatically passed laser check (CheckForLaser setting is off)");

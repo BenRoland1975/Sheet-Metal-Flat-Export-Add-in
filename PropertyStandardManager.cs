@@ -827,45 +827,62 @@ namespace RoesleinAddIn
                     // Log all validation failures
                     if (materialFailed)
                     {
-                        LogMessage($"Material validation failed: {materialValidation.ErrorMessage}. Standards application cannot continue.");
+                        LogMessage($"Material validation failed: {materialValidation.ErrorMessage}. Attempting interactive fix...");
                     }
                     if (shopRouteFailed)
                     {
-                        LogMessage($"Shop Route validation failed: {shopRouteValidation.ErrorMessage}. Standards application cannot continue.");
+                        LogMessage($"Shop Route validation failed: {shopRouteValidation.ErrorMessage}. Attempting interactive fix...");
                     }
                     
-                    // Show popup for single file processing (not silent mode)
+                    // Show interactive popup for single file processing (not silent mode)
                     if (!silentMode)
                     {
-                        string errorMessage = "";
-                        string checkoutNote = "";
+                        LogMessage("Showing validation popup for interactive fix...");
                         
-                        // Add checkout note based on who checked out the file
-                        if (wasCheckedOutByThisProcess)
+                        // Get the actual part path for thumbnail generation
+                        string actualPartPath = swModel.GetPathName();
+                        
+                        bool fixApplied = ShowValidationPopupAndApplyFix(swModel, materialFailed, shopRouteFailed, actualPartPath);
+                        
+                        if (fixApplied)
                         {
-                            checkoutNote = "\n\n📝 NOTE: The file has been checked out for you and is ready for editing. After fixing the issues above, please run the standards application again or manually check the file back in.";
+                            LogMessage("User applied fixes through validation popup. Re-validating...");
+                            
+                            // Re-validate after user fixes
+                            if (materialFailed)
+                            {
+                                materialValidation = CheckAndMapMaterial(swModel, settings);
+                                materialFailed = materialValidation.IsApplicable && !materialValidation.IsValid;
+                            }
+                            if (shopRouteFailed)
+                            {
+                                shopRouteValidation = CheckAndValidateShopRoute(swModel, settings);
+                                shopRouteFailed = shopRouteValidation.IsApplicable && !shopRouteValidation.IsValid;
+                            }
+                            
+                            // Check if fixes resolved the issues
+                            if (!materialFailed && !shopRouteFailed)
+                            {
+                                LogMessage("Validation issues resolved through popup. Continuing with standards application.");
+                                // Continue with standards application - don't return false
+                            }
+                            else
+                            {
+                                LogMessage("Some validation issues remain after popup fixes.");
+                                return false;
+                            }
                         }
                         else
                         {
-                            checkoutNote = "\n\n📝 NOTE: After fixing the issues above, please run the standards application again.";
+                            LogMessage("User skipped validation popup or fixes failed.");
+                            return false;
                         }
-                        
-                        if (materialFailed && shopRouteFailed)
-                        {
-                            errorMessage = $"Multiple validation failures:\n\n• Material: {materialValidation.ErrorMessage}\n• Shop Route: {shopRouteValidation.ErrorMessage}\n\nPlease fix these issues before applying standards.{checkoutNote}";
-                        }
-                        else if (materialFailed)
-                        {
-                            errorMessage = $"Material validation failed: {materialValidation.ErrorMessage}\n\nPlease assign a proper material to this sheet metal part before applying standards.{checkoutNote}";
-                        }
-                        else if (shopRouteFailed)
-                        {
-                            errorMessage = $"Shop Route validation failed: {shopRouteValidation.ErrorMessage}\n\nPlease assign a proper Shop Route to this sheet metal part before applying standards.{checkoutNote}";
-                        }
-                        
-                        MessageBox.Show(errorMessage, "Validation Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
-                    return false;
+                    else
+                    {
+                        LogMessage("Silent mode: Cannot show validation popup. Standards application failed.");
+                        return false;
+                    }
                 }
                 
                 // --- Re-enabled: Check and set gauge table with improved approach ---
@@ -1045,7 +1062,8 @@ namespace RoesleinAddIn
             string requiredVersion,
             List<FileCheckoutInfo> filesWithStandardsUpToDate,
             List<FileCheckoutInfo> filesNotUpToDate,
-            List<string> skippedFiles)
+            List<string> skippedFiles,
+            List<string> filesMissingDrawings = null)
         {
             try
             {
@@ -1068,11 +1086,33 @@ namespace RoesleinAddIn
                     if (isSheetMetal)
                     {
                         string filePath = compDoc.GetPathName();
+                        
+                        // Check if this part has an associated drawing
+                        if (filesMissingDrawings != null)
+                        {
+                            LogMessage($"======= CHECKING FOR DRAWING OF PART: {filePath} =======");
+                            if (!HasAssociatedDrawing(filePath))
+                            {
+                                filesMissingDrawings.Add(System.IO.Path.GetFileName(filePath));
+                                LogMessage($"*** PART FILE DOES NOT HAVE AN ASSOCIATED DRAWING: {filePath} ***");
+                            }
+                            else
+                            {
+                                LogMessage($"√√√ PART FILE HAS AN ASSOCIATED DRAWING: {filePath} √√√");
+                            }
+                        }
+                        
                         string partVersion = GetCurrentStandardsVersion(compDoc);
                         if (string.IsNullOrWhiteSpace(partVersion) || partVersion != requiredVersion)
                         {
                             LogMessage($"[Recursive] Component '{comp.Name2}' is NOT up to date. Found: '{partVersion}', Required: '{requiredVersion}'");
-                            filesNotUpToDate.Add(new FileCheckoutInfo { Path = filePath, File = null, Folder = null, StandardsApplied = false, Document = compDoc });
+                            var fileInfo = new FileCheckoutInfo { Path = filePath, File = null, Folder = null, StandardsApplied = false, Document = compDoc };
+                            // Set the drawing status if we checked for it
+                            if (filesMissingDrawings != null)
+                            {
+                                fileInfo.HasAssociatedDrawing = HasAssociatedDrawing(filePath);
+                            }
+                            filesNotUpToDate.Add(fileInfo);
                         }
                         else
                         {
@@ -1080,6 +1120,12 @@ namespace RoesleinAddIn
                             
                             // Create FileCheckoutInfo and check if component is newer than any parent assembly
                             var fileInfo = new FileCheckoutInfo { Path = filePath, File = null, Folder = null, StandardsApplied = true, Document = compDoc };
+                            
+                            // Set the drawing status if we checked for it
+                            if (filesMissingDrawings != null)
+                            {
+                                fileInfo.HasAssociatedDrawing = HasAssociatedDrawing(filePath);
+                            }
                             
                             // Mark if this component might need the parent assembly to be rebuilt
                             // We'll check this later in the assembly processing logic
@@ -1097,6 +1143,22 @@ namespace RoesleinAddIn
                 {
                     // Check the subassembly itself (not just the root)
                     string subAsmPath = compDoc.GetPathName();
+                    
+                    // Check if this subassembly has an associated drawing
+                    if (filesMissingDrawings != null)
+                    {
+                        LogMessage($"======= CHECKING FOR DRAWING OF SUBASSEMBLY: {subAsmPath} =======");
+                        if (!HasAssociatedDrawing(subAsmPath))
+                        {
+                            filesMissingDrawings.Add(System.IO.Path.GetFileName(subAsmPath));
+                            LogMessage($"*** SUBASSEMBLY FILE DOES NOT HAVE AN ASSOCIATED DRAWING: {subAsmPath} ***");
+                        }
+                        else
+                        {
+                            LogMessage($"√√√ SUBASSEMBLY FILE HAS AN ASSOCIATED DRAWING: {subAsmPath} √√√");
+                        }
+                    }
+                    
                     string subAsmVersion = GetCurrentStandardsVersion(compDoc);
                     bool subAsmNeedsStandardsUpdate = string.IsNullOrWhiteSpace(subAsmVersion) || subAsmVersion != requiredVersion;
                     
@@ -1110,7 +1172,7 @@ namespace RoesleinAddIn
                     {
                         foreach (Component2 child in children)
                         {
-                            ScanComponentsForStandards(child, requiredVersion, childFilesWithStandardsUpToDate, childFilesNotUpToDate, childSkippedFiles);
+                            ScanComponentsForStandards(child, requiredVersion, childFilesWithStandardsUpToDate, childFilesNotUpToDate, childSkippedFiles, filesMissingDrawings);
                         }
                     }
                     
@@ -1159,7 +1221,13 @@ namespace RoesleinAddIn
                     if (subAsmNeedsStandardsUpdate)
                     {
                         LogMessage($"[Recursive] Subassembly '{comp.Name2}' is NOT up to date. Found: '{subAsmVersion}', Required: '{requiredVersion}'");
-                        filesNotUpToDate.Add(new FileCheckoutInfo { Path = subAsmPath, File = null, Folder = null, StandardsApplied = false, Document = compDoc });
+                        var fileInfo = new FileCheckoutInfo { Path = subAsmPath, File = null, Folder = null, StandardsApplied = false, Document = compDoc };
+                        // Set the drawing status if we checked for it
+                        if (filesMissingDrawings != null)
+                        {
+                            fileInfo.HasAssociatedDrawing = HasAssociatedDrawing(subAsmPath);
+                        }
+                        filesNotUpToDate.Add(fileInfo);
                     }
                     else if (subAssemblyNeedsRebuild)
                     {
@@ -1171,12 +1239,24 @@ namespace RoesleinAddIn
                         {
                             LogMessage($"[Recursive] Subassembly '{comp.Name2}' standards are up to date ('{subAsmVersion}'), but children have been updated more recently. Assembly will be checked out for rebuild.");
                         }
-                        filesNotUpToDate.Add(new FileCheckoutInfo { Path = subAsmPath, File = null, Folder = null, StandardsApplied = true, Document = compDoc, RequiresRebuildOnly = true });
+                        var fileInfo = new FileCheckoutInfo { Path = subAsmPath, File = null, Folder = null, StandardsApplied = true, Document = compDoc, RequiresRebuildOnly = true };
+                        // Set the drawing status if we checked for it
+                        if (filesMissingDrawings != null)
+                        {
+                            fileInfo.HasAssociatedDrawing = HasAssociatedDrawing(subAsmPath);
+                        }
+                        filesNotUpToDate.Add(fileInfo);
                     }
                     else
                     {
                         LogMessage($"[Recursive] Subassembly '{comp.Name2}' is up to date. Version: '{subAsmVersion}'");
-                        filesWithStandardsUpToDate.Add(new FileCheckoutInfo { Path = subAsmPath, File = null, Folder = null, StandardsApplied = true, Document = compDoc });
+                        var fileInfo = new FileCheckoutInfo { Path = subAsmPath, File = null, Folder = null, StandardsApplied = true, Document = compDoc };
+                        // Set the drawing status if we checked for it
+                        if (filesMissingDrawings != null)
+                        {
+                            fileInfo.HasAssociatedDrawing = HasAssociatedDrawing(subAsmPath);
+                        }
+                        filesWithStandardsUpToDate.Add(fileInfo);
                     }
                 }
             }
@@ -1302,7 +1382,7 @@ namespace RoesleinAddIn
                 }
 
                 // RECURSIVE: Scan all components (including subassemblies)
-                ScanComponentsForStandards(rootComp, requiredStandardsVersion, filesWithStandardsUpToDate, filesNotUpToDate, skippedFiles);
+                ScanComponentsForStandards(rootComp, requiredStandardsVersion, filesWithStandardsUpToDate, filesNotUpToDate, skippedFiles, filesMissingDrawings);
 
                 if (progressForm != null)
                 {
@@ -1516,19 +1596,18 @@ namespace RoesleinAddIn
                                 }
                             }
                             
-                            var result = ApplyStandardsToActiveDocument(documentToUse, requiredStandardsVersion, true, settings);
-                            fileInfo.MaterialValidation = result.MaterialValidation; // Store material validation result
-                            fileInfo.ShopRouteValidation = result.ShopRouteValidation; // Store shop route validation result
+                            var result = ApplyStandardsToActiveDocument(documentToUse, requiredStandardsVersion, false, settings, true);
                             
-                            // UPDATE: Set the StandardsApplied flag on the FileCheckoutInfo object
-                            fileInfo.StandardsApplied = result.StandardsApplied;
-                            
-                            // Small delay to reduce COM timing issues
-                            System.Threading.Thread.Sleep(100);
+                            // Update the FileCheckoutInfo with the latest validation results
+                            fileInfo.MaterialValidation = result.MaterialValidation;
+                            fileInfo.ShopRouteValidation = result.ShopRouteValidation;
                             
                             if (result.StandardsApplied)
                             {
-                                updatedFiles.Add(System.IO.Path.GetFileName(fileInfo.Path));
+                                fileInfo.StandardsApplied = true;
+                                string fileName = System.IO.Path.GetFileName(fileInfo.Path);
+                                updatedFiles.Add(fileName);
+                                LogMessage($"Successfully applied standards to {fileName}");
                             }
                             else
                             {
@@ -1600,8 +1679,8 @@ namespace RoesleinAddIn
                         string comment = $"Applied Roeslein Standards Version: {requiredStandardsVersion}.";
                         pdmFileManager.CheckInOpenFile(documentToUse, comment, true);
                         
-                        // Small delay to reduce COM timing issues
-                        System.Threading.Thread.Sleep(100);
+                        // Increased delay to reduce COM timing issues
+                        System.Threading.Thread.Sleep(200);
                     }
                     catch (Exception ex)
                     {
@@ -1615,6 +1694,30 @@ namespace RoesleinAddIn
                 var actuallyNotUpToDate = filesNotUpToDate.Where(f => !f.RequiresRebuildOnly).ToList();
                 var needingRebuild = filesNotUpToDate.Where(f => f.RequiresRebuildOnly).ToList();
                 
+                // Filter validation issues to only show unresolved ones
+                var currentMaterialIssues = new List<string>();
+                var currentShopRouteIssues = new List<string>();
+                
+                // Check all processed files for remaining validation issues
+                foreach (var fileInfo in filesNotUpToDate.Where(f => !f.RequiresRebuildOnly))
+                {
+                    string fileName = System.IO.Path.GetFileName(fileInfo.Path);
+                    
+                    // Only add to issues list if standards were NOT successfully applied and validation failed
+                    if (!fileInfo.StandardsApplied)
+                    {
+                        if (fileInfo.MaterialValidation != null && fileInfo.MaterialValidation.IsApplicable && !fileInfo.MaterialValidation.IsValid)
+                        {
+                            currentMaterialIssues.Add($"{fileName} - {fileInfo.MaterialValidation.ErrorMessage}");
+                        }
+                        
+                        if (fileInfo.ShopRouteValidation != null && fileInfo.ShopRouteValidation.IsApplicable && !fileInfo.ShopRouteValidation.IsValid)
+                        {
+                            currentShopRouteIssues.Add($"{fileName} - {fileInfo.ShopRouteValidation.ErrorMessage}");
+                        }
+                    }
+                }
+                
                 var summaryBuilder = new StringBuilder();
                 summaryBuilder.AppendLine("Assembly Standards Check Complete:");
                 summaryBuilder.AppendLine($"Files Up to Date: {upToDate}");
@@ -1625,15 +1728,45 @@ namespace RoesleinAddIn
                 {
                     summaryBuilder.AppendLine();
                     summaryBuilder.AppendLine("Files Needing Standards Updates:");
-                    foreach (var f in actuallyNotUpToDate)
-                        summaryBuilder.AppendLine($"- {System.IO.Path.GetFileName(f.Path)}");
+                    
+                    // Group files by name and show quantities
+                    var groupedNotUpToDate = actuallyNotUpToDate
+                        .GroupBy(f => System.IO.Path.GetFileName(f.Path))
+                        .OrderBy(g => g.Key);
+                    
+                    foreach (var group in groupedNotUpToDate)
+                    {
+                        if (group.Count() == 1)
+                        {
+                            summaryBuilder.AppendLine($"- {group.Key}");
+                        }
+                        else
+                        {
+                            summaryBuilder.AppendLine($"- {group.Key} (Qty {group.Count()})");
+                        }
+                    }
                 }
                 if (updatedFiles.Count > 0)
                 {
                     summaryBuilder.AppendLine();
                     summaryBuilder.AppendLine("Files Updated:");
-                    foreach (var fname in updatedFiles)
-                        summaryBuilder.AppendLine($"- {fname}");
+                    
+                    // Group files by name and show quantities
+                    var groupedUpdatedFiles = updatedFiles
+                        .GroupBy(fname => fname)
+                        .OrderBy(g => g.Key);
+                    
+                    foreach (var group in groupedUpdatedFiles)
+                    {
+                        if (group.Count() == 1)
+                        {
+                            summaryBuilder.AppendLine($"- {group.Key}");
+                        }
+                        else
+                        {
+                            summaryBuilder.AppendLine($"- {group.Key} (Qty {group.Count()})");
+                        }
+                    }
                 }
                 if (rebuiltAssemblies.Count > 0)
                 {
@@ -1709,15 +1842,45 @@ namespace RoesleinAddIn
                 {
                     summaryBuilder.AppendLine();
                     summaryBuilder.AppendLine("Files Needing Materials Assigned:");
-                    foreach (var fname in filesNeedingMaterials)
-                        summaryBuilder.AppendLine($"- {fname}");
+                    
+                    // Group files by name and show quantities
+                    var groupedMaterialFiles = filesNeedingMaterials
+                        .GroupBy(fname => fname)
+                        .OrderBy(g => g.Key);
+                    
+                    foreach (var group in groupedMaterialFiles)
+                    {
+                        if (group.Count() == 1)
+                        {
+                            summaryBuilder.AppendLine($"- {group.Key}");
+                        }
+                        else
+                        {
+                            summaryBuilder.AppendLine($"- {group.Key} (Qty {group.Count()})");
+                        }
+                    }
                 }
                 if (filesNeedingShopRoute.Count > 0)
                 {
                     summaryBuilder.AppendLine();
                     summaryBuilder.AppendLine("Files Needing Shop Route Assigned:");
-                    foreach (var fname in filesNeedingShopRoute)
-                        summaryBuilder.AppendLine($"- {fname}");
+                    
+                    // Group files by name and show quantities
+                    var groupedShopRouteFiles = filesNeedingShopRoute
+                        .GroupBy(fname => fname)
+                        .OrderBy(g => g.Key);
+                    
+                    foreach (var group in groupedShopRouteFiles)
+                    {
+                        if (group.Count() == 1)
+                        {
+                            summaryBuilder.AppendLine($"- {group.Key}");
+                        }
+                        else
+                        {
+                            summaryBuilder.AppendLine($"- {group.Key} (Qty {group.Count()})");
+                        }
+                    }
                 }
                 combinedSummary.Append(summaryBuilder.ToString());
             }
@@ -1815,7 +1978,7 @@ namespace RoesleinAddIn
                         {
                             LogMessage($"Applying standards to: {fileInfo.Path}");
                             
-                            var childResult = ApplyStandardsToActiveDocument(fileInfo.Document, requiredStandardsVersion, true, settings);
+                            var childResult = ApplyStandardsToActiveDocument(fileInfo.Document, requiredStandardsVersion, false, settings, true);
                             fileInfo.StandardsApplied = childResult.StandardsApplied;
                             
                             if (childResult.StandardsApplied)
@@ -1900,9 +2063,22 @@ namespace RoesleinAddIn
                         {
                             summary.AppendLine();
                             summary.AppendLine($"===== FILES MISSING DRAWINGS ({filesMissingDrawings.Count}) =====");
-                            foreach (string missingDrawingFile in filesMissingDrawings)
+                            
+                            // Group files by name and show quantities
+                            var groupedMissingDrawings = filesMissingDrawings
+                                .GroupBy(fileName => System.IO.Path.GetFileName(fileName))
+                                .OrderBy(g => g.Key);
+                            
+                            foreach (var group in groupedMissingDrawings)
                             {
-                                summary.AppendLine($"• {missingDrawingFile}");
+                                if (group.Count() == 1)
+                                {
+                                    summary.AppendLine($"• {group.Key}");
+                                }
+                                else
+                                {
+                                    summary.AppendLine($"• {group.Key} (Qty {group.Count()})");
+                                }
                             }
                         }
                         else
@@ -2006,9 +2182,22 @@ namespace RoesleinAddIn
                 {
                     message.AppendLine();
                     message.AppendLine($"===== FILES MISSING DRAWINGS ({filesMissingDrawings.Count}) =====");
-                    foreach (string missingDrawingFile in filesMissingDrawings)
+                    
+                    // Group files by name and show quantities
+                    var groupedMissingDrawings = filesMissingDrawings
+                        .GroupBy(fileName => System.IO.Path.GetFileName(fileName))
+                        .OrderBy(g => g.Key);
+                    
+                    foreach (var group in groupedMissingDrawings)
                     {
-                        message.AppendLine($"• {missingDrawingFile}");
+                        if (group.Count() == 1)
+                        {
+                            message.AppendLine($"• {group.Key}");
+                        }
+                        else
+                        {
+                            message.AppendLine($"• {group.Key} (Qty {group.Count()})");
+                        }
                     }
                 }
                 else
@@ -2087,9 +2276,22 @@ namespace RoesleinAddIn
                     {
                         combinedSummary.AppendLine();
                         combinedSummary.AppendLine($"===== FILES MISSING DRAWINGS ({filesMissingDrawings.Count}) =====");
-                        foreach (string missingDrawingFile in filesMissingDrawings)
+                        
+                        // Group files by name and show quantities
+                        var groupedMissingDrawings = filesMissingDrawings
+                            .GroupBy(fileName => System.IO.Path.GetFileName(fileName))
+                            .OrderBy(g => g.Key);
+                        
+                        foreach (var group in groupedMissingDrawings)
                         {
-                            combinedSummary.AppendLine($"• {missingDrawingFile}");
+                            if (group.Count() == 1)
+                            {
+                                combinedSummary.AppendLine($"• {group.Key}");
+                            }
+                            else
+                            {
+                                combinedSummary.AppendLine($"• {group.Key} (Qty {group.Count()})");
+                            }
                         }
                     }
                     else
@@ -2162,7 +2364,17 @@ namespace RoesleinAddIn
 
             // Get the file from the vault before attempting check-in
             EPDM.Interop.epdm.IEdmFolder5 parentFolder;
-            EPDM.Interop.epdm.IEdmFile5 topLevelEdmFile = pdmVault.GetFileFromPath(assemblyDoc.GetPathName(), out parentFolder);
+            EPDM.Interop.epdm.IEdmFile5 topLevelEdmFile = null;
+            
+            try
+            {
+                topLevelEdmFile = pdmVault.GetFileFromPath(assemblyDoc.GetPathName(), out parentFolder);
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error getting top-level assembly from PDM vault: {ex.Message}");
+                topLevelEdmFile = null;
+            }
             
             // Check if the top-level assembly was checked out by this process
             bool topLevelCheckedOutByThisProcess = filesCheckedOutByThisProcess.Any(f => f.Path == assemblyDoc.GetPathName());
@@ -2176,6 +2388,27 @@ namespace RoesleinAddIn
                 // Assembly might have been checked out outside of our tracking (shouldn't happen, but handle it)
                 LogMessage("Top-level assembly is checked out but not tracked by this process. Attempting check-in.");
                 string topLevelComment = $"Top-level assembly checked in after processing. Standards v{requiredStandardsVersion} applied.";
+                
+                // Validate document reference before check-in
+                if (!IsDocumentReferenceValid(assemblyDoc))
+                {
+                    LogMessage("Top-level assembly document reference is stale, attempting to refresh...");
+                    ModelDoc2 refreshedAssemblyDoc = RefreshDocumentReference(assemblyDoc.GetPathName());
+                    if (refreshedAssemblyDoc != null)
+                    {
+                        assemblyDoc = refreshedAssemblyDoc;
+                        LogMessage("Successfully refreshed top-level assembly document reference");
+                    }
+                    else
+                    {
+                        LogMessage("Failed to refresh top-level assembly document reference");
+                        if (!silentMode) {
+                            MessageBox.Show("Failed to check in the top-level assembly due to document reference issues. Please check manually.", "Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
+                        return; // Exit early to avoid further issues
+                    }
+                }
+                
                 bool topLevelCheckin = pdmFileManager.CheckInOpenFile(assemblyDoc, topLevelComment, silentMode);
                 if (!topLevelCheckin && !silentMode) {
                     MessageBox.Show("Failed to check in the top-level assembly. Please check manually.", "Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -2350,6 +2583,13 @@ namespace RoesleinAddIn
                 {
                     LogMessage("ERROR: Sheet metal part has no Shop Route assigned.");
                     return new ShopRouteValidationResult { IsValid = false, ErrorMessage = "No Shop Route assigned", IsApplicable = true };
+                }
+
+                // Check if laser validation is disabled in settings
+                if (!settings.CheckForLaser)
+                {
+                    LogMessage($"Shop Route validation passed (CheckForLaser setting is disabled): '{shopRoute}'");
+                    return new ShopRouteValidationResult { IsValid = true, IsApplicable = true };
                 }
 
                 // Check 2: Does the value contain "Laser" or "Shear"?
@@ -2882,19 +3122,17 @@ namespace RoesleinAddIn
                                     CustomPropertyManager clPropMgr = subFeat.CustomPropertyManager;
                                     // Use file property values if available, otherwise fallback
                                     string fileMaterial = null;
-                                    string fileThickness = null;
                                     string val, resolvedVal;
                                     bool clWasResolved;
                                     int resMat = swModel.Extension.CustomPropertyManager[""]
                                         .Get5("Material", true, out val, out resolvedVal, out clWasResolved);
                                     if ((resMat == 0 || resMat == 2) && clWasResolved && !string.IsNullOrEmpty(resolvedVal))
                                         fileMaterial = resolvedVal;
-                                    int resThk = swModel.Extension.CustomPropertyManager[""]
-                                        .Get5("Sheet Metal Thickness", true, out val, out resolvedVal, out clWasResolved);
-                                    if ((resThk == 0 || resThk == 2) && clWasResolved && !string.IsNullOrEmpty(resolvedVal))
-                                        fileThickness = resolvedVal;
+                                    
+                                    // Use the already-calculated values instead of trying to get from file properties
+                                    // which may have incorrect expressions pointing to assembly instead of part
                                     string materialValue = !string.IsNullOrEmpty(fileMaterial) ? fileMaterial : partMaterial;
-                                    string thicknessValue = !string.IsNullOrEmpty(fileThickness) ? fileThickness : sheetMetalThickness.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
+                                    string thicknessValue = sheetMetalThickness.ToString("F3", System.Globalization.CultureInfo.InvariantCulture);
                                     string descValue = $"Sheet, {materialValue}, {thicknessValue} Thick, {boundingBoxLength:F3} X {boundingBoxWidth:F3}";
                                     clPropMgr.Add3("Raw Material Number", (int)swCustomInfoType_e.swCustomInfoText, partNumber, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
                                     clPropMgr.Add3("Description", (int)swCustomInfoType_e.swCustomInfoText, descValue, (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
@@ -2960,7 +3198,7 @@ namespace RoesleinAddIn
                 // Apply to Custom tab if checked
                 if (standard.IsCustomProperty)
                 {
-                    ApplyOrUpdateProperty(swModel.Extension.CustomPropertyManager[""], standard, standard.DefaultValueExpr, "Custom", settings);
+                    ApplyOrUpdateProperty(swModel.Extension.CustomPropertyManager[""], standard, standard.DefaultValueExpr, "Custom", settings, swModel);
                 }
                 // Apply to ALL Config tabs if checked
                 if (standard.IsConfigSpecific && swModel.GetConfigurationNames() != null)
@@ -2968,7 +3206,7 @@ namespace RoesleinAddIn
                     foreach (string configName in (string[])swModel.GetConfigurationNames())
                     {
                         if (!string.IsNullOrEmpty(configName))
-                            ApplyOrUpdateProperty(swModel.Extension.CustomPropertyManager[configName], standard, standard.DefaultValueExpr, $"Configuration ({configName})", settings);
+                            ApplyOrUpdateProperty(swModel.Extension.CustomPropertyManager[configName], standard, standard.DefaultValueExpr, $"Configuration ({configName})", settings, swModel);
                     }
                 }
             }
@@ -3024,12 +3262,11 @@ namespace RoesleinAddIn
         /// <summary>
         /// Adds or updates a property in the given property manager, using the correct logic for default values and property existence.
         /// </summary>
-        private void ApplyOrUpdateProperty(CustomPropertyManager propMgr, PropertyStandardSetting standard, string defaultExpr, string tabName, Settings settings)
+        private void ApplyOrUpdateProperty(CustomPropertyManager propMgr, PropertyStandardSetting standard, string defaultExpr, string tabName, Settings settings, ModelDoc2 swModel)
         {
             try
             {
-                // Get document type from the model - ensure we're getting the actual type
-                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+                // Get document type from the passed model - ensure we're getting the actual type
                 swDocumentTypes_e docType = (swDocumentTypes_e)swModel.GetType();
                 
                 // First try to get all properties to check case-sensitively
@@ -3058,7 +3295,7 @@ namespace RoesleinAddIn
 
                 // Use expressions from settings form if they're properly formatted, 
                 // or format them correctly if they need to be adjusted
-                string formattedExpression = FormatPropertyExpression(standard.PropertyName, defaultExpr, docType);
+                string formattedExpression = FormatPropertyExpression(standard.PropertyName, defaultExpr, docType, swModel);
 
                 // CASE 1: Property exists AND "Use Default Value" is checked - UPDATE it
                 if (propertyExists && standard.UseDefaultValue)
@@ -3075,9 +3312,8 @@ namespace RoesleinAddIn
                         string.IsNullOrWhiteSpace(existingValue))
                     {
                         shouldSetValue = true;
-                        // Get filename without extension
-                        ModelDoc2 activeModel = swApp.ActiveDoc as ModelDoc2;
-                        string filename = System.IO.Path.GetFileNameWithoutExtension(activeModel.GetPathName());
+                        // Get filename without extension from the correct model
+                        string filename = System.IO.Path.GetFileNameWithoutExtension(swModel.GetPathName());
                         valueToAdd = filename;
                         LogMessage($"Property '{standard.PropertyName}' exists but is blank. Setting to filename: '{valueToAdd}' in {tabName} tab.");
                     }
@@ -3130,14 +3366,13 @@ namespace RoesleinAddIn
         /// <summary>
         /// Formats property expressions correctly based on property name and document type
         /// </summary>
-        private string FormatPropertyExpression(string propertyName, string defaultExpr, swDocumentTypes_e docType)
+        private string FormatPropertyExpression(string propertyName, string defaultExpr, swDocumentTypes_e docType, ModelDoc2 swModel)
         {
             // If defaultExpr is empty, return empty
             if (string.IsNullOrEmpty(defaultExpr))
                 return defaultExpr;
 
-            // Get the model to extract the filename if needed
-            ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+            // Get the filename from the correct model (not swApp.ActiveDoc)
             string filename = System.IO.Path.GetFileNameWithoutExtension(swModel.GetPathName());
             
             // Get the correct file extension based on document type
@@ -3217,9 +3452,98 @@ namespace RoesleinAddIn
                     wireframeQualityInt);
                 LogMessage($"SetUserPreferenceInteger (wireframe/high quality) to: {wireframeQualityInt}");
 
-                // (Optional) Remove or comment out the old swApp.SetUserPreferenceDoubleValue calls
-                // swApp.SetUserPreferenceDoubleValue(73, shadedResolution);
-                // swApp.SetUserPreferenceDoubleValue(72, wireframeResolution);
+                // Set scene to "Plain White" to standardize background appearance
+                try
+                {
+                    LogMessage("Setting scene to 'Plain White'...");
+                    
+                    // Method 1: Try to remove all appearances first to get a clean slate
+                    try
+                    {
+                        LogMessage("Removing existing appearances...");
+                        swModel.Extension.RemoveMaterialProperty((int)swInConfigurationOpts_e.swThisConfiguration, null);
+                        swModel.GraphicsRedraw2();
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"Could not remove appearances: {ex.Message}");
+                    }
+                    
+                    // Method 2: Try SceneName property with multiple scene names
+                    string[] sceneNames = { "Plain White", "Basic White", "White", "01 Plain White", "Scene1", "" };
+                    bool sceneSet = false;
+                    
+                    foreach (string sceneName in sceneNames)
+                    {
+                        try
+                        {
+                            string originalScene = swModel.SceneName;
+                            swModel.SceneName = sceneName;
+                            swModel.GraphicsRedraw2();
+                            
+                            if (swModel.SceneName == sceneName || string.IsNullOrEmpty(sceneName))
+                            {
+                                LogMessage($"Successfully set scene to: '{sceneName}'");
+                                sceneSet = true;
+                                break;
+                            }
+                            else
+                            {
+                                LogMessage($"Scene '{sceneName}' not available, trying next...");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            LogMessage($"Failed to set scene '{sceneName}': {ex.Message}");
+                        }
+                    }
+                    
+                    // Method 3: Try setting viewport background color using valid preferences
+                    if (!sceneSet)
+                    {
+                        try
+                        {
+                            LogMessage("Trying to set viewport background preferences...");
+                            
+                            // Try to set viewport background to white using direct integer ID
+                            // Use direct integer values for compatibility across SW versions
+                            swApp.SetUserPreferenceIntegerValue((int)SolidWorks.Interop.swconst.swUserPreferenceIntegerValue_e.swSystemColorsViewportBackground, 16777215); // Viewport background color
+                            swModel.GraphicsRedraw2();
+                            LogMessage("Set viewport background color preference to white");
+                            sceneSet = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            LogMessage($"Failed to set viewport background color: {ex.Message}");
+                        }
+                    }
+                    
+                    // Method 4: Try using ModelDocExtension with valid display settings
+                    if (!sceneSet)
+                    {
+                        try
+                        {
+                            LogMessage("Trying ModelDocExtension display settings...");
+                            
+                            // Try to set tessellation quality using valid method
+                            swModel.SetTessellationQuality(25);
+                            swModel.GraphicsRedraw2();
+                            LogMessage("Set tessellation quality via ModelDoc");
+                        }
+                        catch (Exception ex)
+                        {
+                            LogMessage($"ModelDocExtension method failed: {ex.Message}");
+                        }
+                    }
+                    
+                    // Final redraw to ensure changes are visible
+                    swModel.GraphicsRedraw2();
+                    LogMessage("Scene standardization completed");
+                }
+                catch (Exception ex)
+                {
+                    LogMessage($"Scene setting failed: {ex.Message}");
+                }
 
                 // Enable "Use isometric, zoom to fit view for document preview"
                 LogMessage("Enabling 'Use isometric, zoom to fit view for document preview'");
@@ -3795,6 +4119,431 @@ namespace RoesleinAddIn
                 return false;
             }
         }
+
+        /// <summary>
+        /// Get unique DXF Output materials from the Material Mapping settings
+        /// </summary>
+        private List<string> GetUniqueMaterialsFromPDM()
+        {
+            var materials = new List<string>();
+            
+            try
+            {
+                LogMessage("Retrieving DXF Output materials from Material Mapping settings...");
+                
+                // Load material mappings from settings
+                var materialMappings = Settings.LoadMaterialMappings();
+                if (materialMappings != null && materialMappings.Count > 0)
+                {
+                    // Extract unique DXF Output Material values
+                    materials = materialMappings
+                        .Where(m => !string.IsNullOrWhiteSpace(m.DxfMaterial))
+                        .Select(m => m.DxfMaterial.Trim())
+                        .Distinct()
+                        .OrderBy(m => m)
+                        .ToList();
+                    
+                    LogMessage($"Retrieved {materials.Count} unique DXF Output materials from settings");
+                }
+                else
+                {
+                    LogMessage("No material mappings found in settings, using fallback materials");
+                    // Add fallback materials if no mappings are configured
+                    materials.AddRange(new[]
+                    {
+                        "ASTM A1008 Steel- Cold Rolled Sheet",
+                        "AISI 304 Stainless Steel Sheet", 
+                        "ASTM A36 Steel- Hot Rolled Sheet",
+                        "ASTM A572 Steel- Hot Rolled plate"
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error getting materials from settings: {ex.Message}");
+                // Add fallback materials
+                materials.AddRange(new[]
+                {
+                    "ASTM A1008 Steel- Cold Rolled Sheet",
+                    "AISI 304 Stainless Steel Sheet", 
+                    "ASTM A36 Steel- Hot Rolled Sheet",
+                    "ASTM A572 Steel- Hot Rolled plate"
+                });
+            }
+            
+            return materials;
+        }
+
+        /// <summary>
+        /// Get the predefined shop routes list
+        /// </summary>
+        private List<string> GetShopRouteOptions()
+        {
+            return new List<string>
+            {
+                "101 - Laser Cutting, Welding",
+                "102 - Laser Cutting, Painting, Kitting, Assembly",
+                "103 - Laser Cutting, Deburring, Press Brake, Welding",
+                "104 - Laser Cutting, Deburring, Kitting, Assembly",
+                "105 - Laser Cutting, Deburring, Plating - Outside Vendor, Kitting, Assembly",
+                "106 - Laser Cutting, Press Brake, Welding",
+                "107 - Laser Cutting, Press Brake, Painting, Kitting, Assembly",
+                "108 - Laser Cutting, Press Brake, Deburring, Plating - Outside Vendor, Kitting, Assembly",
+                "109 - Laser Cutting, Metal Cleaning, Press Brake, Kitting, Assembly",
+                "110 - Laser Cutting, Machine Shop, Polishing, Kitting, Assembly",
+                "111 - Laser Cutting, Machine Shop, Polishing, Chrome - Outside Vendor, Polishing, Kitting, Assembly",
+                "112 - Laser Cutting, Machine Shop, Polishing, Chrome - Outside Vendor , Polishing, Master Shield - Outside Vendor, Polishing, Kitting, Assembly",
+                "113 - Laser Cutting, Machine Shop, Kitting, Assembly",
+                "114 - Laser Cutting, Machine Shop, Welding, Kitting, Assembly",
+                "115 - Laser Cutting, Machine Shop, Welding, Painting, Kitting, Assembly",
+                "116 - Laser Cutting, NC Punching, Air Deck, Kitting, Assembly",
+                "117 - Laser Cutting, Press Brake, Air Deck",
+                "118 - Laser Cutting, Fitting",
+                "119 - Laser Cutting, Machine Shop, Deburring, Press Brake, Kitting, Assembly",
+                "120 - Laser Cutting, Press Brake, Welding, Painting, Kitting, Assembly",
+                "121 - Laser Cutting, Press Brake, Welding, Metal Cleaning, Kitting, Assembly",
+                "122 - Laser Cutting, Machine Shop, Plating - Outside Vendor, Kitting, Assembly",
+                "123 - Laser Cutting, Press Brake, Fitting",
+                "124 - Laser Cutting, Welding, Painting, Kitting, Assembly",
+                "125 - Laser Cutting, Welding, Metal Cleaning, Kitting, Assembly",
+                "126 - Laser Cutting, Machine Shop, Painting, Kitting, Assembly",
+                "127 - Laser Cutting, Air Deck",
+                "128 - Laser Cutting, Machine Shop",
+                "129 - Laser Cutting, Machine Shop, Welding",
+                "130 - Laser Cutting, NC Punching, Press Brake, Welding",
+                "131 - Laser Cutting, Press Brake, Kitting",
+                "132 - Laser Cutting, Press Brake, Plating - Outside Vendor",
+                "133 - Laser Cutting, NC Punching, Press Brake, Air Deck",
+                "134 - Laser Cutting, Machine Shop, Deburring, Press Brake, Fitting",
+                "135 - Laser Cutting, Metal Cleaning, Polishing, Kitting, Assembly",
+                "136 - Laser Cutting, Machine Shop, Deburring, Press Brake, Welding",
+                "137 - Laser Cutting, Deburring, Kitting",
+                "138 - Laser Cutting, Deburring, Press Brake, Polishing, Kitting, Assembly",
+                "139 - Laser Cutting, Machine Shop, Press Brake, Plating - Outside Vendor, Kitting, Assembly",
+                "140 - Laser Cutting, Press Brake, Inventory",
+                "141 - Laser Cutting, Press Brake, Painting, Inventory",
+                "142 - Laser Cutting, Deburring, Press Brake, Inventory",
+                "143 - Laser Cutting, Welding, Fitting",
+                "144 - Laser Cutting, Press Brake, Welding, Fitting",
+                "145 - Laser Cutting, Machine Shop, Deburring, Press Brake, Welding, Fitting",
+                "146 - Laser Cutting, NC Punching, Press Brake, Painting, Kitting, Assembly",
+                "147 - Laser Cutting, Deburring, Inventory",
+                "148 - Laser Cutting, Inventory",
+                
+                // 300-series routes (Shear Cutting)
+                "301 - Shear Cutting, Press Brake, Welding, Metal Cleaning, Kitting, Assembly",
+                "302 - Shear Cutting, Welding",
+                "303 - Shear Cutting, Press Brake, Air Deck",
+                "304 - Shear Cutting, Press Brake, Metal Cleaning, Kitting, Assembly",
+                "305 - Shear Cutting, NC Punching, Polishing, Kitting, Assembly",
+                "306 - Shear Cutting, NC Punching, Press Brake, Polishing, Kitting, Assembly",
+                "307 - Shear Cutting, NC Punching, Polishing, Chrome - Outside Vendor , Polishing, Kitting, Assembly",
+                "308 - Shear Cutting, NC Punching, Press Brake, Polishing, Chrome - Outside Vendor , Polishing, Kitting, As",
+                "309 - Shear Cutting, NC Punching, Polishing, Chrome - Outside Vendor, Polishing, Master Shield - Outside Vendor, Polishing, Kitting, Assembly",
+                "310 - Shear Cutting, NC Punching, Press Brake, Polishing, Chrome - Outside Vendor , Polishing, Master Shield - Outside Vendor, Polishing, Kitting, Assembly",
+                "311 - Shear Cutting, NC Punching, Polishing, Master Shield - Outside Vendor, Polishing, Kitting, Assembly",
+                "312 - Shear Cutting, NC Punching, Press Brake, Polishing, Master Shield - Outside Vendor, Polishing, Kitting, Assembly",
+                "313 - Shear Cutting, NC Punching, Press Brake, Air Deck",
+                "314 - Shear Cutting, NC Punching, Welding",
+                "315 - Shear Cutting, NC Punching, Press Brake, Welding",
+                "316 - Shear Cutting, Air Deck",
+                "317 - Shear Cutting, NC Punching, Metal Cleaning, Press Brake, Kitting, Assembly",
+                "318 - Shear Cutting, NC Punching, Kitting, Assembly",
+                "319 - Shear Cutting, NC Punching, Press Brake, Painting, Kitting, Assembly",
+                "320 - Shear Cutting, NC Punching, Air Deck, Kitting, Assembly",
+                "321 - Shear Cutting, NC Punching, Painting, Kitting, Assembly",
+                "322 - Shear Cutting, NC Punching, Press Brake, Polishing, Chrome - Outside Vendor, Polishing, Master Shield - Outside Vendor, Polishing, Welding",
+                "323 - Shear Cutting, NC Punching, Press Brake, Polishing, Master Shield - Outside Vendor, Polishing, Welding",
+                "324 - Shear Cutting, Press Brake, Welding",
+                "325 - Shear Cutting, NC Punching, Metal Cleaning, Press Brake, Inventory",
+                "326 - Shear Cutting, NC Punching, Metal Cleaning, Fitting"
+            };
+        }
+
+        /// <summary>
+        /// Clear remembered ValidationPopupForm selections (useful when starting a new batch of different parts)
+        /// </summary>
+        public void ClearRememberedValidationSelections()
+        {
+            ValidationPopupForm.ClearRememberedSelections();
+            LogMessage("Cleared remembered validation popup selections");
+        }
+
+        /// <summary>
+        /// Get information about currently remembered ValidationPopupForm selections
+        /// </summary>
+        public string GetRememberedValidationSelectionsInfo()
+        {
+            return ValidationPopupForm.GetRememberedSelectionsInfo();
+        }
+
+        /// <summary>
+        /// Show validation popup and apply fixes for missing material/shop route
+        /// </summary>
+        private bool ShowValidationPopupAndApplyFix(ModelDoc2 swModel, bool needsMaterial, bool needsShopRoute, string actualPartPath = null)
+        {
+            try
+            {
+                // Log remembered selections info
+                string rememberedInfo = GetRememberedValidationSelectionsInfo();
+                LogMessage($"Showing validation popup. {rememberedInfo}");
+                
+                // Use the provided part path or fall back to the model's path
+                string filePath = actualPartPath ?? swModel.GetPathName();
+                string partNumber = System.IO.Path.GetFileNameWithoutExtension(filePath);
+                string description = "";
+                
+                // Try to get description from custom properties
+                try
+                {
+                    CustomPropertyManager propMgr = swModel.Extension.CustomPropertyManager[""];
+                    string valOut = "";
+                    string resolvedValOut = "";
+                    bool wasResolved = false;
+                    bool linkToProperty = false;
+                    
+                    int result = propMgr.Get6("Description", false, out valOut, out resolvedValOut, out wasResolved, out linkToProperty);
+                    if (result == 0 || result == 2)
+                    {
+                        description = resolvedValOut ?? "";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogMessage($"Error getting description property: {ex.Message}");
+                }
+                
+                // Always try to open the actual part file for thumbnail generation
+                // This ensures we get the part thumbnail, not assembly context
+                ModelDoc2 documentForThumbnail = swModel; // Just use the original document - PDM will handle thumbnail
+                
+                // Get dropdown options
+                var materialOptions = GetUniqueMaterialsFromPDM();
+                var shopRouteOptions = GetShopRouteOptions();
+                
+                // Show the validation popup with PDM thumbnail extraction
+                using (var popup = new ValidationPopupForm(documentForThumbnail, partNumber, description, actualPartPath ?? swModel.GetPathName(), 
+                                                         materialOptions, shopRouteOptions, needsMaterial, needsShopRoute, pdmVault, LogMessage, swApp))
+                {
+                    DialogResult result = popup.ShowDialog();
+                    
+                    try
+                    {
+                        if (result == DialogResult.OK && popup.UserAction == ValidationAction.Apply)
+                        {
+                            // Apply the selected values to the original swModel
+                            bool success = true;
+                            
+                            if (needsMaterial && !string.IsNullOrEmpty(popup.SelectedMaterial))
+                            {
+                                success &= SetPartMaterialAllConfigurations(swModel, popup.SelectedMaterial);
+                                LogMessage($"Applied material to all configurations: {popup.SelectedMaterial}");
+                            }
+                            
+                            if (needsShopRoute && !string.IsNullOrEmpty(popup.SelectedShopRoute))
+                            {
+                                success &= SetShopRoutePropertyAllConfigurations(swModel, popup.SelectedShopRoute);
+                                LogMessage($"Applied shop route to all configurations: {popup.SelectedShopRoute}");
+                            }
+                            
+                            // Log what selections were saved for next time
+                            LogMessage($"Selections saved for next popup: {GetRememberedValidationSelectionsInfo()}");
+                            
+                            return success;
+                        }
+                        else
+                        {
+                            // User skipped
+                            LogMessage("User chose to skip validation popup");
+                            return false;
+                        }
+                    }
+                    finally
+                    {
+                        // No temporary documents to close
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error in ShowValidationPopupAndApplyFix: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Set the Shop Route property on a part for all configurations
+        /// </summary>
+        private bool SetShopRoutePropertyAllConfigurations(ModelDoc2 swModel, string shopRoute)
+        {
+            try
+            {
+                if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
+                    return false;
+
+                bool allSuccess = true;
+                
+                // Apply to default/summary tab (file properties)
+                CustomPropertyManager summaryPropMgr = swModel.Extension.CustomPropertyManager[""];
+                int summaryResult = summaryPropMgr.Add3("Shop Route", (int)swCustomInfoType_e.swCustomInfoText, shopRoute, 
+                                        (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                
+                if (summaryResult == 0)
+                {
+                    LogMessage($"Successfully set Shop Route in summary tab to: {shopRoute}");
+                }
+                else
+                {
+                    LogMessage($"Failed to set Shop Route in summary tab. Result code: {summaryResult}");
+                    allSuccess = false;
+                }
+                
+                // Apply to all configurations
+                ConfigurationManager configMgr = swModel.ConfigurationManager;
+                string[] configNames = swModel.GetConfigurationNames() as string[];
+                
+                if (configNames != null)
+                {
+                    foreach (string configName in configNames)
+                    {
+                        try
+                        {
+                            CustomPropertyManager configPropMgr = swModel.Extension.CustomPropertyManager[configName];
+                            int configResult = configPropMgr.Add3("Shop Route", (int)swCustomInfoType_e.swCustomInfoText, shopRoute, 
+                                                    (int)swCustomPropertyAddOption_e.swCustomPropertyDeleteAndAdd);
+                            
+                            if (configResult == 0)
+                            {
+                                LogMessage($"Successfully set Shop Route in configuration '{configName}' to: {shopRoute}");
+                            }
+                            else
+                            {
+                                LogMessage($"Failed to set Shop Route in configuration '{configName}'. Result code: {configResult}");
+                                allSuccess = false;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            LogMessage($"Error setting Shop Route in configuration '{configName}': {ex.Message}");
+                            allSuccess = false;
+                        }
+                    }
+                }
+                
+                return allSuccess;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error setting Shop Route property to all configurations: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Set the material on a part for all configurations
+        /// </summary>
+        private bool SetPartMaterialAllConfigurations(ModelDoc2 swModel, string materialName)
+        {
+            try
+            {
+                if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
+                    return false;
+
+                bool allSuccess = true;
+                PartDoc partDoc = swModel as PartDoc;
+                
+                if (partDoc == null)
+                {
+                    LogMessage("Failed to cast ModelDoc2 to PartDoc for material assignment");
+                    return false;
+                }
+                
+                // Get all configuration names
+                string[] configNames = swModel.GetConfigurationNames() as string[];
+                
+                if (configNames != null)
+                {
+                    foreach (string configName in configNames)
+                    {
+                        try
+                        {
+                            // Set material for each configuration
+                            // SetMaterialPropertyName2(configName, databaseName, materialName)
+                            partDoc.SetMaterialPropertyName2(configName, "", materialName);
+                            LogMessage($"Set material for configuration '{configName}' to: {materialName}");
+                            
+                            // Verify the material was set by checking the current material
+                            // Note: We'll check after all configurations are set since GetPartMaterial might return the active config
+                        }
+                        catch (Exception ex)
+                        {
+                            LogMessage($"Error setting material in configuration '{configName}': {ex.Message}");
+                            allSuccess = false;
+                        }
+                    }
+                    
+                    // Verify material was set by checking current material
+                    try
+                    {
+                        string currentMaterial = GetPartMaterial(swModel);
+                        bool materialSet = !string.IsNullOrEmpty(currentMaterial) && 
+                                         currentMaterial.IndexOf(materialName, StringComparison.OrdinalIgnoreCase) >= 0;
+                        
+                        if (materialSet)
+                        {
+                            LogMessage($"Successfully verified material is set to: {materialName}");
+                        }
+                        else
+                        {
+                            LogMessage($"Warning: Could not verify material was set. Current material: {currentMaterial}");
+                            // Don't fail completely as the material might still be set correctly
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"Error verifying material: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    // Fallback to default configuration
+                    LogMessage("No configurations found, applying material to default configuration");
+                    
+                    try
+                    {
+                        partDoc.SetMaterialPropertyName2("", "", materialName);
+                        LogMessage($"Set material for default configuration to: {materialName}");
+                        
+                        // Verify the material was set
+                        string currentMaterial = GetPartMaterial(swModel);
+                        bool materialSet = !string.IsNullOrEmpty(currentMaterial) && 
+                                         currentMaterial.IndexOf(materialName, StringComparison.OrdinalIgnoreCase) >= 0;
+                        
+                        if (materialSet)
+                        {
+                            LogMessage($"Successfully verified material is set to: {materialName}");
+                        }
+                        else
+                        {
+                            LogMessage($"Warning: Could not verify material was set. Current material: {currentMaterial}");
+                            // Don't fail completely as the material might still be set correctly
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"Error setting material to default configuration: {ex.Message}");
+                        allSuccess = false;
+                    }
+                }
+                
+                return allSuccess;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"Error setting material to all configurations: {ex.Message}");
+                return false;
+            }
+        }
     }
 
     /// <summary>
@@ -4013,86 +4762,113 @@ namespace RoesleinAddIn
 
             LogMessage($"CheckInOpenFile: Starting check-in process for '{filePath}'");
 
-            try
+            // Retry logic for check-in failures
+            int maxRetries = 2;
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
-                // Get the file from the vault
-                EPDM.Interop.epdm.IEdmFolder5 parentFolder;
-                EPDM.Interop.epdm.IEdmFile5 edmFile = pdmVault.GetFileFromPath(filePath, out parentFolder);
-                if (edmFile == null || parentFolder == null)
+                try
                 {
-                    LogMessage($"CheckInOpenFile: File '{filePath}' not found in the current PDM vault view.");
-                    if (!silentMode) MessageBox.Show($"File '{Path.GetFileName(filePath)}' not found in the PDM vault.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return false;
-                }
-
-                // Check if file is checked out
-                if (!edmFile.IsLocked)
-                {
-                    LogMessage($"CheckInOpenFile: File '{filePath}' is not checked out.");
-                    if (!silentMode) MessageBox.Show($"File '{Path.GetFileName(filePath)}' is not checked out.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return false;
-                }
-
-                // Save the file before checking in
-                LogMessage($"CheckInOpenFile: Saving file before check-in");
-                int saveErrors = 0;
-                int saveWarnings = 0;
-                if (!(swModel.Save3((int)swSaveAsOptions_e.swSaveAsOptions_Silent, ref saveErrors, ref saveWarnings) as bool? ?? false))
-                {
-                    LogMessage($"CheckInOpenFile: Failed to save file. Errors: {saveErrors}, Warnings: {saveWarnings}");
-                    if (!silentMode) MessageBox.Show($"Failed to save file before check-in. Please save the file manually and try again.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return false;
-                }
-
-                // Prepare to check in - get main window handle for PDM dialogs
-                int swWindowHandle = GetSolidWorksMainWindowHandle();
-
-                // 1. Force SolidWorks to release its file locks
-                LogMessage($"CheckInOpenFile: Calling ForceReleaseLocks on '{filePath}'");
-                if (swModel.ForceReleaseLocks() != 0)
-                {
-                    // 2. Perform PDM check-in
-                    LogMessage($"CheckInOpenFile: ForceReleaseLocks successful. Now checking in file with comment: '{comment}'");
-                    edmFile.UnlockFile(swWindowHandle, comment);
-                    LogMessage($"CheckInOpenFile: File '{filePath}' checked in successfully.");
-
-                    // 3. Reload the document to update its status
-                    LogMessage($"CheckInOpenFile: Reloading document after check-in");
-                    int reloadResult = swModel.ReloadOrReplace(false, filePath, true);
-                    
-                    if (reloadResult == SW_RELOAD_REPLACE_SUCCESS)
+                    // Add delay between attempts
+                    if (attempt > 1)
                     {
-                        LogMessage($"CheckInOpenFile: Document reload successful");
-                        if (!silentMode) MessageBox.Show($"File '{Path.GetFileName(filePath)}' checked in successfully.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        return true;
+                        LogMessage($"CheckInOpenFile: Retry attempt {attempt} for '{filePath}' after 500ms delay");
+                        System.Threading.Thread.Sleep(500);
+                    }
+
+                    // Get the file from the vault
+                    EPDM.Interop.epdm.IEdmFolder5 parentFolder;
+                    EPDM.Interop.epdm.IEdmFile5 edmFile = pdmVault.GetFileFromPath(filePath, out parentFolder);
+                    if (edmFile == null || parentFolder == null)
+                    {
+                        LogMessage($"CheckInOpenFile: File '{filePath}' not found in the current PDM vault view.");
+                        if (!silentMode) MessageBox.Show($"File '{Path.GetFileName(filePath)}' not found in the PDM vault.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return false;
+                    }
+
+                    // Check if file is checked out
+                    if (!edmFile.IsLocked)
+                    {
+                        LogMessage($"CheckInOpenFile: File '{filePath}' is not checked out.");
+                        if (!silentMode) MessageBox.Show($"File '{Path.GetFileName(filePath)}' is not checked out.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return false;
+                    }
+
+                    // Save the file before checking in
+                    LogMessage($"CheckInOpenFile: Saving file before check-in");
+                    int saveErrors = 0;
+                    int saveWarnings = 0;
+                    if (!(swModel.Save3((int)swSaveAsOptions_e.swSaveAsOptions_Silent, ref saveErrors, ref saveWarnings) as bool? ?? false))
+                    {
+                        LogMessage($"CheckInOpenFile: Failed to save file. Errors: {saveErrors}, Warnings: {saveWarnings}");
+                        if (!silentMode) MessageBox.Show($"Failed to save file before check-in. Please save the file manually and try again.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return false;
+                    }
+
+                    // Prepare to check in - get main window handle for PDM dialogs
+                    int swWindowHandle = GetSolidWorksMainWindowHandle();
+
+                    // 1. Force SolidWorks to release its file locks
+                    LogMessage($"CheckInOpenFile: Calling ForceReleaseLocks on '{filePath}'");
+                    if (swModel.ForceReleaseLocks() != 0)
+                    {
+                        // 2. Perform PDM check-in
+                        LogMessage($"CheckInOpenFile: ForceReleaseLocks successful. Now checking in file with comment: '{comment}'");
+                        edmFile.UnlockFile(swWindowHandle, comment);
+                        LogMessage($"CheckInOpenFile: File '{filePath}' checked in successfully.");
+
+                        // 3. Reload the document to update its status
+                        LogMessage($"CheckInOpenFile: Reloading document after check-in");
+                        int reloadResult = swModel.ReloadOrReplace(false, filePath, true);
+                        
+                        if (reloadResult == SW_RELOAD_REPLACE_SUCCESS)
+                        {
+                            LogMessage($"CheckInOpenFile: Document reload successful");
+                            if (!silentMode) MessageBox.Show($"File '{Path.GetFileName(filePath)}' checked in successfully.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return true;
+                        }
+                        else
+                        {
+                            LogMessage($"CheckInOpenFile: WARNING - Document reload failed with status {reloadResult}");
+                            // Still return true since check-in was successful even if reload had issues
+                            if (!silentMode) MessageBox.Show($"File '{Path.GetFileName(filePath)}' was checked in, but there was an issue reloading the file. You may need to close and reopen it.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            return true;
+                        }
                     }
                     else
                     {
-                        LogMessage($"CheckInOpenFile: WARNING - Document reload failed with status {reloadResult}");
-                        // Still return true since check-in was successful even if reload had issues
-                        if (!silentMode) MessageBox.Show($"File '{Path.GetFileName(filePath)}' was checked in, but there was an issue reloading the file. You may need to close and reopen it.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return true;
+                        LogMessage($"CheckInOpenFile: ForceReleaseLocks failed. Cannot proceed with check-in.");
+                        if (!silentMode) MessageBox.Show($"Could not release SolidWorks locks on file '{Path.GetFileName(filePath)}'. Check-in aborted.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return false;
                     }
                 }
-                else
+                catch (System.Runtime.InteropServices.COMException comEx)
                 {
-                    LogMessage($"CheckInOpenFile: ForceReleaseLocks failed. Cannot proceed with check-in.");
-                    if (!silentMode) MessageBox.Show($"Could not release SolidWorks locks on file '{Path.GetFileName(filePath)}'. Check-in aborted.", "PDM Check-in", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return false;
+                    LogMessage($"CheckInOpenFile: COM Exception during check-in (attempt {attempt}): HRESULT=0x{comEx.ErrorCode:X}, Msg={comEx.Message}");
+                    
+                    // If this is the last attempt or it's not a "file not found" error, fail
+                    if (attempt >= maxRetries || comEx.ErrorCode != unchecked((int)0x80040213))
+                    {
+                        if (!silentMode) MessageBox.Show($"Error checking in file: {comEx.Message}", "PDM Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return false;
+                    }
+                    // Otherwise, continue to retry
+                }
+                catch (Exception ex)
+                {
+                    LogMessage($"CheckInOpenFile: Exception during check-in (attempt {attempt}): {ex.Message}");
+                    
+                    // If this is the last attempt, fail
+                    if (attempt >= maxRetries)
+                    {
+                        if (!silentMode) MessageBox.Show($"Error checking in file: {ex.Message}", "PDM Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return false;
+                    }
+                    // Otherwise, continue to retry
                 }
             }
-            catch (System.Runtime.InteropServices.COMException comEx)
-            {
-                LogMessage($"CheckInOpenFile: COM Exception during check-in: HRESULT=0x{comEx.ErrorCode:X}, Msg={comEx.Message}");
-                if (!silentMode) MessageBox.Show($"Error checking in file: {comEx.Message}", "PDM Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
-            }
-            catch (Exception ex)
-            {
-                LogMessage($"CheckInOpenFile: Exception during check-in: {ex.Message}");
-                if (!silentMode) MessageBox.Show($"Error checking in file: {ex.Message}", "PDM Check-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
-            }
+
+            LogMessage($"CheckInOpenFile: All retry attempts failed for '{filePath}'");
+            return false;
         }
     }
 

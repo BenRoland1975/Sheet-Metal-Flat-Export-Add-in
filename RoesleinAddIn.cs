@@ -34,7 +34,9 @@ namespace RoesleinAddIn
         private const int CMD_SETTINGS_ID = 1;
         private const int CMD_PROCESS_ID = 2;
         private const int CMD_BOM_ID = 3;
-        private const int CMD_APPLY_PROPS_ID = 4;
+        private const int CMD_ID_TAG_ID = 4;
+        private const int CMD_APPLY_PROPS_ID = 5;
+        private const int CMD_CREATE_EDRAWING_ID = 6;
 
         // Resources
         private string addinPath;
@@ -332,25 +334,49 @@ namespace RoesleinAddIn
                         CMD_BOM_ID,
                         cmdItemType);
 
-                    // 4. Apply Property Standards (position 4)
+                    // 4. ID Tag (position 4)
+                    cmdGroup.AddCommandItem2(
+                        "ID Tag",
+                        -1,
+                        "Generate ID Tag for the active drawing",
+                        "Generate ID Tag for the active drawing",
+                        3,
+                        "ID_Tag",
+                        "Enable_ID_Tag",
+                        CMD_ID_TAG_ID,
+                        cmdItemType);
+
+                    // 5. Apply Property Standards (position 5)
                     cmdGroup.AddCommandItem2(
                         "Apply Property Standards",
                         -1,
                         "Apply defined file property standards to the active document",
                         "Apply Property Standards",
-                        3,
+                        4,
                         "ApplyPropertyStandards",
                         "EnableApplyPropertyStandards",
                         CMD_APPLY_PROPS_ID,
                         cmdItemType);
 
-                    // 5. Settings (position 5 - last)
+                    // 6. Create eDrawings (position 6)
+                    cmdGroup.AddCommandItem2(
+                        "Create eDrawings",
+                        -1,
+                        "Create eDrawings from the active document",
+                        "Create eDrawings from the active document",
+                        5,
+                        "Create_eDrawings",
+                        "Enable_Create_eDrawings",
+                        CMD_CREATE_EDRAWING_ID,
+                        cmdItemType);
+
+                    // 7. Settings (position 7 - last)
                     cmdGroup.AddCommandItem2(
                         "Settings",
                         -1,
                         "Connex Add-in Settings",
                         "Configure Connex add-in settings",
-                        4,
+                        6,
                         "Show_Settings",
                         "Enable_Settings",
                         CMD_SETTINGS_ID,
@@ -418,12 +444,22 @@ namespace RoesleinAddIn
                     "Export BOM 32x32.bmp",
                     "Export BOM 40x40.bmp",
 
-                    // 4. Property Standards icons
-                    "Property Standards 20x20.bmp",
-                    "Property Standards 32x32.bmp",
-                    "Property Standards 40x40.bmp",
+                    // 4. ID Tag icons
+                    "ID_Tag 20X20.bmp",
+                    "ID_Tag 32X32.bmp",
+                    "ID_Tag 40X40.bmp",
+
+                    // 5. Property Standards icons
+                    "FileProp 20x20.bmp",
+                    "FileProp 32x32.bmp",
+                    "FileProp 40x40.bmp",
+
+                    // 6. Create eDrawings icons
+                    "Create_eDrawing 20x20.bmp",
+                    "Create_eDrawing 32x32.bmp",
+                    "Create_eDrawing 40x40.bmp",
                     
-                    // 5. Settings icons (last)
+                    // 7. Settings icons (last)
                     "Settings 20x20.bmp",
                     "Settings 32x32.bmp",
                     "Settings 40x40.bmp"
@@ -455,7 +491,9 @@ namespace RoesleinAddIn
                     Path.Combine(iconPath, "Produce Assy 20x20.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 20x20.bmp"),
                     Path.Combine(iconPath, "Export BOM 20x20.bmp"),
-                    Path.Combine(iconPath, "Property Standards 20x20.bmp"),
+                    Path.Combine(iconPath, "ID_Tag 20X20.bmp"),
+                    Path.Combine(iconPath, "FileProp 20x20.bmp"),
+                    Path.Combine(iconPath, "Create_eDrawing 20x20.bmp"),
                     Path.Combine(iconPath, "Settings 20x20.bmp")
                 };
 
@@ -464,7 +502,9 @@ namespace RoesleinAddIn
                     Path.Combine(iconPath, "Produce Assy 32x32.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 32x32.bmp"),
                     Path.Combine(iconPath, "Export BOM 32x32.bmp"),
-                    Path.Combine(iconPath, "Property Standards 32x32.bmp"),
+                    Path.Combine(iconPath, "ID_Tag 32X32.bmp"),
+                    Path.Combine(iconPath, "FileProp 32x32.bmp"),
+                    Path.Combine(iconPath, "Create_eDrawing 32x32.bmp"),
                     Path.Combine(iconPath, "Settings 32x32.bmp")
                 };
 
@@ -473,7 +513,9 @@ namespace RoesleinAddIn
                     Path.Combine(iconPath, "Produce Assy 40x40.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 40x40.bmp"),
                     Path.Combine(iconPath, "Export BOM 40x40.bmp"),
-                    Path.Combine(iconPath, "Property Standards 40x40.bmp"),
+                    Path.Combine(iconPath, "ID_Tag 40X40.bmp"),
+                    Path.Combine(iconPath, "FileProp 40x40.bmp"),
+                    Path.Combine(iconPath, "Create_eDrawing 40x40.bmp"),
                     Path.Combine(iconPath, "Settings 40x40.bmp")
                 };
 
@@ -884,14 +926,143 @@ namespace RoesleinAddIn
             if (activeDoc != null)
             {
                 swDocumentTypes_e docType = (swDocumentTypes_e)activeDoc.GetType();
-                if (docType == swDocumentTypes_e.swDocPART || 
-                    docType == swDocumentTypes_e.swDocASSEMBLY || 
-                    docType == swDocumentTypes_e.swDocDRAWING)
-                {
-                    return 1; // Enabled
-                }
+                return (docType == swDocumentTypes_e.swDocPART || 
+                        docType == swDocumentTypes_e.swDocASSEMBLY || 
+                        docType == swDocumentTypes_e.swDocDRAWING) ? 1 : 0;
             }
-            return 0; // Disabled
+            return 0;
+        }
+
+        /// <summary>
+        /// Create eDrawings command callback
+        /// </summary>
+        public void Create_eDrawings()
+        {
+            WriteToLog("Create_eDrawings called");
+            Debug.WriteLine("[DEBUG] Create_eDrawings called");
+
+            try
+            {
+                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+                
+                if (swModel == null)
+                {
+                    MessageBox.Show("No active document.", "Roeslein Add-in", 
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Ensure PDM vault is connected before creating eDrawings
+                TryConnectToPdmVaultForActiveDoc();
+                
+                // Create eDrawingsCreator instance and process the active document
+                var creator = new eDrawingsCreator(swApp, pdmVault);
+                creator.CreateeDrawingsFromActiveDocument();
+                
+                WriteToLog("Create_eDrawings completed successfully");
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Create_eDrawings: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show($"Error creating eDrawings: {ex.Message}", "Roeslein Add-in Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Enable callback for Create eDrawings command
+        /// </summary>
+        public int Enable_Create_eDrawings()
+        {
+            try
+            {
+                ModelDoc2 swModel = swApp?.ActiveDoc as ModelDoc2;
+                if (swModel == null) return 0;
+
+                // Enable for parts, assemblies, and drawings
+                int docType = swModel.GetType();
+                if (docType == (int)swDocumentTypes_e.swDocPART ||
+                    docType == (int)swDocumentTypes_e.swDocASSEMBLY ||
+                    docType == (int)swDocumentTypes_e.swDocDRAWING)
+                {
+                    return 1;
+                }
+                
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Enable_Create_eDrawings: {ex.Message}");
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// ID Tag command callback
+        /// </summary>
+        public void ID_Tag()
+        {
+            WriteToLog("ID_Tag called");
+            Debug.WriteLine("[DEBUG] ID_Tag called");
+
+            try
+            {
+                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+                
+                if (swModel == null)
+                {
+                    MessageBox.Show("No active document.", "Roeslein Add-in", 
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Check document type - must be a drawing
+                int docType = swModel.GetType();
+                if (docType != (int)swDocumentTypes_e.swDocDRAWING)
+                {
+                    MessageBox.Show("ID Tag can only be used on drawing documents.", "Roeslein Add-in", 
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // TODO: Implement ID Tag functionality
+                MessageBox.Show("ID Tag functionality will be implemented here.", "ID Tag", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                
+                WriteToLog("ID_Tag completed successfully");
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in ID_Tag: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show($"Error with ID Tag: {ex.Message}", "Roeslein Add-in Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Enable callback for ID Tag command - only enabled for drawing documents
+        /// </summary>
+        public int Enable_ID_Tag()
+        {
+            try
+            {
+                ModelDoc2 swModel = swApp?.ActiveDoc as ModelDoc2;
+                if (swModel == null) return 0;
+
+                // Only enable for drawing documents
+                int docType = swModel.GetType();
+                if (docType == (int)swDocumentTypes_e.swDocDRAWING)
+                {
+                    return 1;
+                }
+                
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Enable_ID_Tag: {ex.Message}");
+                return 0;
+            }
         }
         #endregion
 

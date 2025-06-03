@@ -40,8 +40,8 @@ namespace RoesleinAddIn
             // Display the version number and copyright (from backup)
             // Assuming lblVersionNumber and lblCopyright exist on SettingsFormV2.Designer.cs
             // If not, these lines will cause an error and should be removed or controls added.
-            // lblVersionNumber.Text = "Version: " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
-            // lblCopyright.Text = "Copyright © " + DateTime.Now.Year + " Roeslein & Associates, Inc.";
+            lblVersionNumber.Text = "Version: " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
+            lblCopyright.Text = "Copyright © " + DateTime.Now.Year + " Roeslein & Associates, Inc.";
 
 
             this.swApp = sldWorksApp;
@@ -152,7 +152,10 @@ namespace RoesleinAddIn
             // It's good practice to check for null controls if there's any doubt.
 
             txtHotFolder.Text = this.currentGeneralSettings.LastExportFolder ?? "";
-            txtDrawingTemplate.Text = this.currentGeneralSettings.DrawingTemplatePath ?? "";
+            
+            // Set default Drawing Template path if empty
+            string defaultDrawingTemplate = @"C:\PCSVAULT\SolidWorks Settings\Document Templates\Blank.DRWDOT";
+            txtDrawingTemplate.Text = this.currentGeneralSettings.DrawingTemplatePath ?? defaultDrawingTemplate;
             
             // For log file paths, the backup code stores the directory. We need to ensure this logic is consistent.
             // The Settings class (from backup) stores the full path including filename for LogFilePath and DebugLogFilePath.
@@ -169,33 +172,17 @@ namespace RoesleinAddIn
             chkShowBendLines.Checked = this.currentGeneralSettings.ShowBendLines;
             chkCheckForLaser.Checked = this.currentGeneralSettings.CheckForLaser; // This property exists in backup Settings.cs
 
-            // Populate cboTextLocation (ComboBox)
-            if (cboTextLocation.Items.Count == 0)
+            // Populate the text location combo box
+            if (cboTextLocation != null)
             {
-                cboTextLocation.Items.Add("Centered");
-                cboTextLocation.Items.Add("Top Left");
-                cboTextLocation.Items.Add("Top Right");
-                cboTextLocation.Items.Add("Bottom Left");
-                cboTextLocation.Items.Add("Bottom Right");
+                cboTextLocation.Items.Clear();
+                cboTextLocation.Items.AddRange(new string[] { "Top Left", "Top Right", "Bottom Left", "Bottom Right", "Centered" });
+                cboTextLocation.SelectedItem = this.currentGeneralSettings.TextLocation ?? "Centered";
             }
 
-            if (!string.IsNullOrEmpty(this.currentGeneralSettings.TextLocation) && cboTextLocation.Items.Contains(this.currentGeneralSettings.TextLocation))
-            {
-                cboTextLocation.SelectedItem = this.currentGeneralSettings.TextLocation;
-            }
-            else
-            {
-                cboTextLocation.SelectedItem = "Centered"; // Default if not found or empty
-            }
-
-            // Set enabled state for log controls based on checkboxes (from backup logic)
+            // Set enabled state for log controls
             SetLogControlsEnabled(chkEnableLogging.Checked);
             SetDebugLogControlsEnabled(chkEnableDebugLogging.Checked);
-            
-            // Version and Copyright labels - these might be better set once in the constructor if static
-            // Or if they are on the General Settings tab specifically:
-            if (lblVersionNumber != null) lblVersionNumber.Text = "Version: " + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString();
-            if (lblCopyright != null) lblCopyright.Text = "Copyright © " + DateTime.Now.Year + " Roeslein & Associates, Inc.";
         }
 
         // Helper methods from backup to manage enabled state of log path controls
@@ -1113,7 +1100,6 @@ namespace RoesleinAddIn
         {
             Logger.DebugLog("btnOK_Click: Saving all settings.");
             SaveGeneralSettings();
-            SavePropertyMappings();
             SaveThicknessMappings();
             // SavePropertyStandardsData(); // Removed: This is handled by btnSaveFileProp_Click on its specific tab
 
@@ -1282,6 +1268,18 @@ namespace RoesleinAddIn
             if (dgvPropertyMappings == null) return;
             try
             {
+                // Ensure any pending edits are committed to the DataGridView
+                if (dgvPropertyMappings.IsCurrentCellInEditMode)
+                {
+                    dgvPropertyMappings.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                    if (dgvPropertyMappings.EditingControl != null)
+                    {
+                        dgvPropertyMappings.EditingControl.DataBindings["Text"]?.WriteValue();
+                    }
+                }
+                dgvPropertyMappings.EndEdit();
+                dgvPropertyMappings.CurrentCell = null; // Force commit of any edit in progress
+
                 var mappings = new List<PropertyMapping>();
                 foreach (DataGridViewRow row in dgvPropertyMappings.Rows)
                 {
@@ -1303,9 +1301,16 @@ namespace RoesleinAddIn
                         });
                     }
                 }
-                Settings.SavePropertyMappings(mappings); // Static method in Settings.cs
+                
+                // Use the new PDM save method (similar to Material Mappings)
+                bool saveSuccess = Settings.SavePdmPropertyMappings(pdmVault, mappings);
+                if (saveSuccess)
+                {
+                    MessageBox.Show("Property mappings saved to PDM vault.", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                // (Error messages are already handled in the static method)
+                
                 Logger.DebugLog("Property mappings saved.");
-                // MessageBox.Show("Property mappings saved.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
             {

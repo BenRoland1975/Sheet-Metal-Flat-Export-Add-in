@@ -587,23 +587,38 @@ namespace RoesleinAddIn
 
         public static void SavePropertyMappings(List<PropertyMapping> mappings)
         {
-            try
+            // Use the robust PDM save method, similar to Material Mappings
+            bool saveSuccess = SavePdmPropertyMappings(PdmVaultForSettings, mappings);
+            if (!saveSuccess)
             {
-                string filePath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddInMappings.xml");
-                using (FileStream stream = new FileStream(filePath, FileMode.Create))
+                // Fallback to local save if PDM fails
+                try
                 {
-                    XmlSerializer serializer = new XmlSerializer(typeof(List<PropertyMapping>));
-                    serializer.Serialize(stream, mappings);
+                    string filePath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddInMappings.xml");
+                    using (FileStream stream = new FileStream(filePath, FileMode.Create))
+                    {
+                        XmlSerializer serializer = new XmlSerializer(typeof(List<PropertyMapping>));
+                        serializer.Serialize(stream, mappings);
+                    }
+                    Logger.Warning("Property mappings saved to local file as PDM save failed.");
                 }
-            }
-            catch (Exception)
-            {
-                // Handle exceptions
+                catch (Exception ex)
+                {
+                    Logger.Error($"Failed to save property mappings to both PDM and local file: {ex.Message}");
+                }
             }
         }
 
         public static List<PropertyMapping> LoadPropertyMappings()
         {
+            // First try to load from PDM
+            var pdmMappings = LoadPdmPropertyMappings();
+            if (pdmMappings != null && pdmMappings.Count > 0)
+            {
+                return pdmMappings;
+            }
+
+            // Fallback to local AppData file if PDM fails
             try
             {
                 string filePath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddInMappings.xml");
@@ -612,17 +627,230 @@ namespace RoesleinAddIn
                     using (FileStream stream = new FileStream(filePath, FileMode.Open))
                     {
                         XmlSerializer serializer = new XmlSerializer(typeof(List<PropertyMapping>));
-                        return (List<PropertyMapping>)serializer.Deserialize(stream);
+                        var mappings = (List<PropertyMapping>)serializer.Deserialize(stream);
+                        
+                        // Force renumbering of the rows starting at 1
+                        if (mappings != null && mappings.Count > 0)
+                        {
+                            mappings = mappings.OrderBy(m => m.RowNumber).ToList();
+                            for (int i = 0; i < mappings.Count; i++)
+                            {
+                                mappings[i].RowNumber = i + 1;
+                            }
+                        }
+                        
+                        return mappings;
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Handle exceptions
+                Logger.Warning($"Error loading property mappings from local file: {ex.Message}");
             }
-            return new List<PropertyMapping>();
+            
+            // Return default property mappings if no saved mappings exist
+            return new List<PropertyMapping>
+            {
+                new PropertyMapping { RowNumber = 1, DxfPropertyName = "Part Number", SwCustomProperty = "Part Number" },
+                new PropertyMapping { RowNumber = 2, DxfPropertyName = "Description", SwCustomProperty = "Description" },
+                new PropertyMapping { RowNumber = 3, DxfPropertyName = "Revision", SwCustomProperty = "Revision" },
+                new PropertyMapping { RowNumber = 4, DxfPropertyName = "Material", SwCustomProperty = "Material" },
+                new PropertyMapping { RowNumber = 5, DxfPropertyName = "Thickness", SwCustomProperty = "Sheet Metal Thickness" },
+                new PropertyMapping { RowNumber = 6, DxfPropertyName = "Shop Route", SwCustomProperty = "Shop Route" }
+            };
         }
-        
+
+        public static List<PropertyMapping> LoadPdmPropertyMappings()
+        {
+            string pdmPropertyMappingsPath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\PropertyMappings.xml";
+            
+            if (PdmVaultForSettings == null || !PdmVaultForSettings.IsLoggedIn)
+            {
+                Logger.Warning("LoadPdmPropertyMappings: No logged in vault available. Cannot load from PDM.");
+                return null;
+            }
+
+            try
+            {
+                EPDM.Interop.epdm.IEdmFile5 pdmFile = null;
+                EPDM.Interop.epdm.IEdmFolder5 pdmFolder = null;
+                
+                pdmFile = PdmVaultForSettings.GetFileFromPath(pdmPropertyMappingsPath, out pdmFolder);
+                
+                if (pdmFile == null)
+                {
+                    Logger.Info($"PDM property mappings file does not exist in vault at: '{pdmPropertyMappingsPath}'");
+                    return null;
+                }
+
+                // Get the latest version of the file
+                pdmFile.GetFileCopy(0, pdmFile.CurrentVersion, pdmPropertyMappingsPath);
+                Logger.Info($"Retrieved latest version ({pdmFile.CurrentVersion}) of PDM property mappings file: {pdmPropertyMappingsPath}");
+
+                // Load and deserialize the file
+                if (File.Exists(pdmPropertyMappingsPath))
+                {
+                    using (FileStream stream = new FileStream(pdmPropertyMappingsPath, FileMode.Open, FileAccess.Read))
+                    {
+                        XmlSerializer serializer = new XmlSerializer(typeof(List<PropertyMapping>));
+                        var mappings = (List<PropertyMapping>)serializer.Deserialize(stream);
+                        
+                        // Force renumbering of the rows starting at 1
+                        if (mappings != null && mappings.Count > 0)
+                        {
+                            mappings = mappings.OrderBy(m => m.RowNumber).ToList();
+                            for (int i = 0; i < mappings.Count; i++)
+                            {
+                                mappings[i].RowNumber = i + 1;
+                            }
+                            Logger.Info($"Successfully loaded {mappings.Count} property mappings from PDM");
+                        }
+                        
+                        return mappings;
+                    }
+                }
+                else
+                {
+                    Logger.Warning($"Local copy of PDM property mappings file not found after GetFileCopy: {pdmPropertyMappingsPath}");
+                    return null;
+                }
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                Logger.Error($"PDM COMException during LoadPdmPropertyMappings for '{pdmPropertyMappingsPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})", comEx);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading property mappings from PDM '{pdmPropertyMappingsPath}': {ex.Message}", ex);
+                return null;
+            }
+        }
+
+        public static bool SavePdmPropertyMappings(EPDM.Interop.epdm.IEdmVault5 vault, List<PropertyMapping> mappings)
+        {
+            string pdmPropertyMappingsPath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\PropertyMappings.xml";
+            if (vault == null || !vault.IsLoggedIn)
+            {
+                Logger.Error("SavePdmPropertyMappings: No logged in vault available.");
+                return false;
+            }
+            EPDM.Interop.epdm.IEdmFile5 pdmFile = null;
+            EPDM.Interop.epdm.IEdmFolder5 pdmFolder = null;
+            bool wasCheckedOutByThisOperation = false;
+            long parentWndHandle = 0;
+            string currentPdmUserName = null;
+            try
+            {
+                EPDM.Interop.epdm.IEdmVault7 vault7 = vault as EPDM.Interop.epdm.IEdmVault7;
+                if (vault7 != null)
+                {
+                    EPDM.Interop.epdm.IEdmUserMgr5 userMgr = vault7.CreateUtility(EPDM.Interop.epdm.EdmUtility.EdmUtil_UserMgr) as EPDM.Interop.epdm.IEdmUserMgr5;
+                    if (userMgr != null)
+                    {
+                        EPDM.Interop.epdm.IEdmUser5 pdmUser = userMgr.GetLoggedInUser();
+                        if (pdmUser != null)
+                        {
+                            currentPdmUserName = pdmUser.Name;
+                            Logger.Info($"SavePdmPropertyMappings: Current PDM User: {currentPdmUserName}");
+                        }
+                        else { Logger.Warning("SavePdmPropertyMappings: Could not retrieve IEdmUser5 object for current PDM user."); }
+                    }
+                    else { Logger.Warning("SavePdmPropertyMappings: Could not create IEdmUserMgr5 utility from vault7."); }
+                }
+                else
+                {
+                    Logger.Warning("SavePdmPropertyMappings: Could not cast pdmVault to IEdmVault7 (or newer). Unable to get PDM user name via CreateUtility.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"SavePdmPropertyMappings: Error getting current PDM user name: {ex.Message}");
+            }
+            try
+            {
+                pdmFile = vault.GetFileFromPath(pdmPropertyMappingsPath, out pdmFolder);
+                if (pdmFile == null)
+                {
+                    string directory = System.IO.Path.GetDirectoryName(pdmPropertyMappingsPath);
+                    if (!string.IsNullOrEmpty(directory) && !System.IO.Directory.Exists(directory))
+                    {
+                        System.IO.Directory.CreateDirectory(directory);
+                    }
+                    Logger.Info($"PDM property mappings file does not exist in vault. It will be created locally at '{pdmPropertyMappingsPath}' and added.");
+                }
+                else
+                {
+                    if (!pdmFile.IsLocked)
+                    {
+                        pdmFile.LockFile(pdmFolder.ID, (int)parentWndHandle, (int)EdmLockFlag.EdmLock_Simple);
+                        wasCheckedOutByThisOperation = true;
+                        Logger.Info($"Checked out PDM property mappings file: {pdmPropertyMappingsPath}");
+                    }
+                    else if (pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Info($"PDM property mappings file '{pdmPropertyMappingsPath}' is already locked by the current user ('{currentPdmUserName}').");
+                    }
+                    else
+                    {
+                        string lockedByUserName = pdmFile.IsLocked ? ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name : "Unknown User";
+                        Logger.Error($"PDM property mappings file '{pdmPropertyMappingsPath}' is locked by another user: {lockedByUserName}. Current user: '{currentPdmUserName ?? "Unknown"}'. Cannot save.");
+                        MessageBox.Show($"Property mappings file '{pdmPropertyMappingsPath}' is locked by user '{lockedByUserName}'. Cannot save changes.", "File Locked", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return false;
+                    }
+                }
+                // Serialize to local file
+                using (System.IO.FileStream stream = new System.IO.FileStream(pdmPropertyMappingsPath, System.IO.FileMode.Create, System.IO.FileAccess.Write))
+                {
+                    var serializer = new System.Xml.Serialization.XmlSerializer(typeof(List<PropertyMapping>));
+                    serializer.Serialize(stream, mappings);
+                }
+                Logger.Info($"Successfully wrote property mappings to local file: {pdmPropertyMappingsPath}");
+                if (pdmFile == null && pdmFolder != null)
+                {
+                    pdmFolder.AddFile((int)parentWndHandle, pdmPropertyMappingsPath, "Added initial property mappings file.");
+                    Logger.Info($"Added new property mappings file to PDM: {pdmPropertyMappingsPath}");
+                    pdmFile = vault.GetFileFromPath(pdmPropertyMappingsPath, out pdmFolder);
+                    if (pdmFile != null)
+                    {
+                        pdmFile.UnlockFile((int)parentWndHandle, "Initial check-in of property mappings file.");
+                        Logger.Info($"Checked in newly added property mappings file: {pdmPropertyMappingsPath}");
+                    }
+                }
+                else if (pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                {
+                    pdmFile.UnlockFile((int)parentWndHandle, "Updated property mappings.");
+                    wasCheckedOutByThisOperation = false;
+                    Logger.Info($"Checked in PDM property mappings file: {pdmPropertyMappingsPath}");
+                }
+                return true;
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                Logger.Error($"PDM COMException during save/checkout/checkin for '{pdmPropertyMappingsPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})", comEx);
+                MessageBox.Show($"A PDM error occurred while saving property mappings: {comEx.Message}", "PDM Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error saving property mappings to PDM: {ex.Message}", ex);
+                MessageBox.Show($"Error saving property mappings to PDM: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+            finally
+            {
+                if (wasCheckedOutByThisOperation && pdmFile != null && pdmFile.IsLocked && !string.IsNullOrEmpty(currentPdmUserName) && ((EPDM.Interop.epdm.IEdmUser5)pdmFile.LockedByUser).Name.Equals(currentPdmUserName, StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        Logger.Warning($"Attempting to undo checkout for {pdmPropertyMappingsPath} due to an error or incomplete save.");
+                        pdmFile.UndoLockFile((int)parentWndHandle);
+                    }
+                    catch (Exception undoEx) { Logger.Error($"Failed to auto-undo PDM checkout: {undoEx.Message}"); }
+                }
+            }
+        }
+
         public static void SaveMaterialMappings(List<MaterialMapping> mappings)
         {
             try
@@ -652,6 +880,14 @@ namespace RoesleinAddIn
 
         public static List<MaterialMapping> LoadMaterialMappings()
         {
+            // First try to load from PDM
+            var pdmMappings = LoadPdmMaterialMappings();
+            if (pdmMappings != null && pdmMappings.Count > 0)
+            {
+                return pdmMappings;
+            }
+
+            // Fallback to local AppData file if PDM fails
             try
             {
                 string filePath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddInMaterialMappings.xml");
@@ -676,9 +912,9 @@ namespace RoesleinAddIn
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Handle exceptions
+                Logger.Warning($"Error loading material mappings from local file: {ex.Message}");
             }
             
             // Return default material mappings if no saved mappings exist
@@ -711,6 +947,73 @@ namespace RoesleinAddIn
                 new MaterialMapping { RowNumber = 22, SwMaterial = "Cold Roll Steel 1018", DxfMaterial = "ASTM A1008 Steel- Cold Rolled Sheet" },
                 new MaterialMapping { RowNumber = 23, SwMaterial = "Plain Carbon Steel", DxfMaterial = "ASTM A1008 Steel- Cold Rolled Sheet" }
             };
+        }
+
+        public static List<MaterialMapping> LoadPdmMaterialMappings()
+        {
+            string pdmMaterialMappingsPath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\MaterialMappings.xml";
+            
+            if (PdmVaultForSettings == null || !PdmVaultForSettings.IsLoggedIn)
+            {
+                Logger.Warning("LoadPdmMaterialMappings: No logged in vault available. Cannot load from PDM.");
+                return null;
+            }
+
+            try
+            {
+                EPDM.Interop.epdm.IEdmFile5 pdmFile = null;
+                EPDM.Interop.epdm.IEdmFolder5 pdmFolder = null;
+                
+                pdmFile = PdmVaultForSettings.GetFileFromPath(pdmMaterialMappingsPath, out pdmFolder);
+                
+                if (pdmFile == null)
+                {
+                    Logger.Info($"PDM material mappings file does not exist in vault at: '{pdmMaterialMappingsPath}'");
+                    return null;
+                }
+
+                // Get the latest version of the file
+                pdmFile.GetFileCopy(0, pdmFile.CurrentVersion, pdmMaterialMappingsPath);
+                Logger.Info($"Retrieved latest version ({pdmFile.CurrentVersion}) of PDM material mappings file: {pdmMaterialMappingsPath}");
+
+                // Load and deserialize the file
+                if (File.Exists(pdmMaterialMappingsPath))
+                {
+                    using (FileStream stream = new FileStream(pdmMaterialMappingsPath, FileMode.Open, FileAccess.Read))
+                    {
+                        XmlSerializer serializer = new XmlSerializer(typeof(List<MaterialMapping>));
+                        var mappings = (List<MaterialMapping>)serializer.Deserialize(stream);
+                        
+                        // Force renumbering of the rows starting at 1
+                        if (mappings != null && mappings.Count > 0)
+                        {
+                            mappings = mappings.OrderBy(m => m.RowNumber).ToList();
+                            for (int i = 0; i < mappings.Count; i++)
+                            {
+                                mappings[i].RowNumber = i + 1;
+                            }
+                            Logger.Info($"Successfully loaded {mappings.Count} material mappings from PDM");
+                        }
+                        
+                        return mappings;
+                    }
+                }
+                else
+                {
+                    Logger.Warning($"Local copy of PDM material mappings file not found after GetFileCopy: {pdmMaterialMappingsPath}");
+                    return null;
+                }
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                Logger.Error($"PDM COMException during LoadPdmMaterialMappings for '{pdmMaterialMappingsPath}': {comEx.Message} (ErrorCode: {comEx.ErrorCode:X})", comEx);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading material mappings from PDM '{pdmMaterialMappingsPath}': {ex.Message}", ex);
+                return null;
+            }
         }
 
         public static void SaveThicknessMappings(List<ThicknessMapping> mappings)
