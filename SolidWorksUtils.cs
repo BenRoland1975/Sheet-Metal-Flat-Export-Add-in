@@ -20,7 +20,8 @@ namespace RoesleinAddIn
         swCommands_File_SaveAs = 37,
         swCommands_File_Save = 2,
         swCommands_Edit_Rebuild = 30,
-        swCommands_FlattenSheetMetal = 539
+        swCommands_FlattenSheetMetal = 539,
+        swCommands_Move = 174
     }
 
     /// <summary>

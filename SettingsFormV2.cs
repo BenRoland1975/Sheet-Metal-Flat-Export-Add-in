@@ -10,6 +10,7 @@ using System.Windows.Forms;
 using System.IO;
 using System.Globalization;
 using System.Reflection;
+using System.Xml.Serialization;
 using SolidWorks.Interop.sldworks;
 // Use our own PDM interface implementations
 // (Remove EPDM.Interop.epdm import)
@@ -262,19 +263,33 @@ namespace RoesleinAddIn
 
         private void InitializeContextMenus() // From backup
         {
+            // Property Mappings Context Menu with enhanced options
             dgvPropertyMappingsContextMenu = new ContextMenuStrip();
+            
             var deletePropMapItem = new ToolStripMenuItem("Delete Row");
-            // deletePropMapItem.Click += DgvPropertyMappingsDeleteMenuItem_Click; // Ensure this handler exists or is added
+            deletePropMapItem.Click += DgvPropertyMappingsDeleteMenuItem_Click; // Fixed: Uncommented the event handler
             dgvPropertyMappingsContextMenu.Items.Add(deletePropMapItem);
+            
+            dgvPropertyMappingsContextMenu.Items.Add(new ToolStripSeparator());
+            
+            var resetToDefaultsItem = new ToolStripMenuItem("Reset to Default Settings");
+            resetToDefaultsItem.Click += (s, e) => ClearUserPropertyMappings();
+            dgvPropertyMappingsContextMenu.Items.Add(resetToDefaultsItem);
+            
+            var showSettingsLocationItem = new ToolStripMenuItem("Show Settings Location");
+            showSettingsLocationItem.Click += (s, e) => ShowPropertyMappingsLocation();
+            dgvPropertyMappingsContextMenu.Items.Add(showSettingsLocationItem);
 
+            // Material Mappings Context Menu
             dgvMaterialMappingContextMenu = new ContextMenuStrip();
             var deleteMatMapItem = new ToolStripMenuItem("Delete Row");
-            // deleteMatMapItem.Click += DgvMaterialMappingDeleteMenuItem_Click; // Ensure this handler exists or is added
+            deleteMatMapItem.Click += DgvMaterialMappingDeleteMenuItem_Click; // Fixed: Uncommented the event handler
             dgvMaterialMappingContextMenu.Items.Add(deleteMatMapItem);
 
+            // Thickness Mappings Context Menu
             dgvThicknessMappingContextMenu = new ContextMenuStrip();
             var deleteThickMapItem = new ToolStripMenuItem("Delete Row");
-            // deleteThickMapItem.Click += DgvThicknessMappingDeleteMenuItem_Click; // Ensure this handler exists or is added
+            deleteThickMapItem.Click += DgvThicknessMappingDeleteMenuItem_Click; // Fixed: Uncommented the event handler
             dgvThicknessMappingContextMenu.Items.Add(deleteThickMapItem);
         }
 
@@ -305,16 +320,27 @@ namespace RoesleinAddIn
             try
             {
                 dgvPropertyMappings.Rows.Clear();
-                var mappings = Settings.LoadPropertyMappings(); // Static call from Settings.cs
-                if (mappings != null)
+                
+                // Use the new user-priority loading system
+                var mappings = LoadPropertyMappingsWithUserPriority();
+                if (mappings != null && mappings.Count > 0)
                 {
-                    // Assuming PropertyMapping class has: RowNumber, DxfPropertyName, SwCustomProperty
                     foreach (var mapping in mappings.OrderBy(m => m.RowNumber))
                     {
                         dgvPropertyMappings.Rows.Add(mapping.RowNumber, mapping.DxfPropertyName, mapping.SwCustomProperty);
                     }
+                    
+                    // Show user message if they have custom settings loaded
+                    string userSettingsPath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "UserSettings", "UserPropertyMappings.xml");
+                    if (File.Exists(userSettingsPath))
+                    {
+                        Logger.Info("Property mappings loaded from user-specific settings. Delete rows to customize and they will be saved to your personal settings automatically.");
+                    }
                 }
-                // AddDefaultPropertyMappings(); // Call if needed, as per backup logic if list is empty
+                else
+                {
+                    Logger.Warning("No property mappings could be loaded, grid will be empty");
+                }
             }
             catch (Exception ex)
             {
@@ -1266,49 +1292,81 @@ namespace RoesleinAddIn
         private void SavePropertyMappings() // Corresponds to btnSaveMappings_Click in backup
         {
             if (dgvPropertyMappings == null) return;
+            
             try
             {
-                // Ensure any pending edits are committed to the DataGridView
-                if (dgvPropertyMappings.IsCurrentCellInEditMode)
+                // Ask user where to save
+                var result = MessageBox.Show(
+                    "Where would you like to save the property mappings?\n\n" +
+                    "• YES = Save to your personal settings (C: drive)\n" +
+                    "  This creates custom mappings just for you\n\n" +
+                    "• NO = Save to shared PDM vault\n" +
+                    "  This affects all users\n\n" +
+                    "• CANCEL = Don't save",
+                    "Property Mappings Save Location",
+                    MessageBoxButtons.YesNoCancel,
+                    MessageBoxIcon.Question);
+
+                if (result == DialogResult.Cancel)
                 {
-                    dgvPropertyMappings.CommitEdit(DataGridViewDataErrorContexts.Commit);
-                    if (dgvPropertyMappings.EditingControl != null)
-                    {
-                        dgvPropertyMappings.EditingControl.DataBindings["Text"]?.WriteValue();
-                    }
+                    return;
                 }
-                dgvPropertyMappings.EndEdit();
-                dgvPropertyMappings.CurrentCell = null; // Force commit of any edit in progress
-
-                var mappings = new List<PropertyMapping>();
-                foreach (DataGridViewRow row in dgvPropertyMappings.Rows)
+                else if (result == DialogResult.Yes)
                 {
-                    // Ensure row is not the new row placeholder if AllowUserToAddRows is true at some point
-                    if (row.IsNewRow) continue; 
-
-                    // Check for nulls before accessing Value, especially for potentially empty new rows
-                    string dxfPropName = row.Cells["DxfPropertyName"].Value?.ToString();
-                    string swCustProp = row.Cells["SwCustomProperty"].Value?.ToString();
-                    string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
-
-                    if (!string.IsNullOrWhiteSpace(dxfPropName) && !string.IsNullOrWhiteSpace(swCustProp) && int.TryParse(rowNumStr, out int rowNum))
+                    // Save to user-specific settings
+                    SavePropertyMappingsToUserSettings();
+                    MessageBox.Show(
+                        "Property mappings saved to your personal settings!\n\n" +
+                                                 "These custom mappings will take priority over shared settings.\n" +
+                         "Location: " + Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "UserSettings"),
+                        "Personal Settings Saved",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                else // DialogResult.No - save to PDM
+                {
+                    // Ensure any pending edits are committed to the DataGridView
+                    if (dgvPropertyMappings.IsCurrentCellInEditMode)
                     {
-                        mappings.Add(new PropertyMapping
+                        dgvPropertyMappings.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                        if (dgvPropertyMappings.EditingControl != null)
                         {
-                            RowNumber = rowNum,
-                            DxfPropertyName = dxfPropName,
-                            SwCustomProperty = swCustProp
-                        });
+                            dgvPropertyMappings.EditingControl.DataBindings["Text"]?.WriteValue();
+                        }
                     }
+                    dgvPropertyMappings.EndEdit();
+                    dgvPropertyMappings.CurrentCell = null; // Force commit of any edit in progress
+
+                    var mappings = new List<PropertyMapping>();
+                    foreach (DataGridViewRow row in dgvPropertyMappings.Rows)
+                    {
+                        // Ensure row is not the new row placeholder if AllowUserToAddRows is true at some point
+                        if (row.IsNewRow) continue; 
+
+                        // Check for nulls before accessing Value, especially for potentially empty new rows
+                        string dxfPropName = row.Cells["DxfPropertyName"].Value?.ToString();
+                        string swCustProp = row.Cells["SwCustomProperty"].Value?.ToString();
+                        string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
+
+                        if (!string.IsNullOrWhiteSpace(dxfPropName) && !string.IsNullOrWhiteSpace(swCustProp) && int.TryParse(rowNumStr, out int rowNum))
+                        {
+                            mappings.Add(new PropertyMapping
+                            {
+                                RowNumber = rowNum,
+                                DxfPropertyName = dxfPropName,
+                                SwCustomProperty = swCustProp
+                            });
+                        }
+                    }
+                    
+                    // Use the PDM save method (affects all users)
+                    bool saveSuccess = Settings.SavePdmPropertyMappings(pdmVault, mappings);
+                    if (saveSuccess)
+                    {
+                        MessageBox.Show("Property mappings saved to PDM vault (shared settings).", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    // (Error messages are already handled in the static method)
                 }
-                
-                // Use the new PDM save method (similar to Material Mappings)
-                bool saveSuccess = Settings.SavePdmPropertyMappings(pdmVault, mappings);
-                if (saveSuccess)
-                {
-                    MessageBox.Show("Property mappings saved to PDM vault.", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                // (Error messages are already handled in the static method)
                 
                 Logger.DebugLog("Property mappings saved.");
             }
@@ -1324,9 +1382,144 @@ namespace RoesleinAddIn
             SavePropertyMappings();
         }
 
+        /// <summary>
+        /// Saves property mappings to user-specific XML file on C drive for personal customization
+        /// This takes priority over PDM/shared settings to allow users to have their own custom mappings
+        /// </summary>
+        private void SavePropertyMappingsToUserSettings()
+        {
+            if (dgvPropertyMappings == null) return;
+            
+            try
+            {
+                // Ensure any pending edits are committed
+                if (dgvPropertyMappings.IsCurrentCellInEditMode)
+                {
+                    dgvPropertyMappings.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                    if (dgvPropertyMappings.EditingControl != null)
+                    {
+                        dgvPropertyMappings.EditingControl.DataBindings["Text"]?.WriteValue();
+                    }
+                }
+                dgvPropertyMappings.EndEdit();
+                dgvPropertyMappings.CurrentCell = null;
+
+                var mappings = new List<PropertyMapping>();
+                foreach (DataGridViewRow row in dgvPropertyMappings.Rows)
+                {
+                    if (row.IsNewRow) continue;
+
+                    string dxfPropName = row.Cells["DxfPropertyName"].Value?.ToString();
+                    string swCustProp = row.Cells["SwCustomProperty"].Value?.ToString();
+                    string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
+
+                    if (!string.IsNullOrWhiteSpace(dxfPropName) && !string.IsNullOrWhiteSpace(swCustProp) && int.TryParse(rowNumStr, out int rowNum))
+                    {
+                        mappings.Add(new PropertyMapping
+                        {
+                            RowNumber = rowNum,
+                            DxfPropertyName = dxfPropName,
+                            SwCustomProperty = swCustProp
+                        });
+                    }
+                }
+
+                // Save to user-specific location on C drive
+                string userSettingsDir = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "UserSettings");
+                if (!Directory.Exists(userSettingsDir))
+                {
+                    Directory.CreateDirectory(userSettingsDir);
+                }
+
+                string userPropertyMappingsPath = Path.Combine(userSettingsDir, "UserPropertyMappings.xml");
+                
+                using (FileStream stream = new FileStream(userPropertyMappingsPath, FileMode.Create))
+                {
+                    var serializer = new XmlSerializer(typeof(List<PropertyMapping>));
+                    serializer.Serialize(stream, mappings);
+                }
+
+                Logger.DebugLog($"Property mappings saved to user settings: {userPropertyMappingsPath} ({mappings.Count} mappings)");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error saving property mappings to user settings: {ex.Message}", ex);
+                MessageBox.Show($"Error saving custom property mappings: {ex.Message}", "Save Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Loads property mappings with priority: 1) User custom settings, 2) PDM shared settings, 3) Defaults
+        /// This allows users to override the default/shared mappings with their own customizations
+        /// </summary>
+        private List<PropertyMapping> LoadPropertyMappingsWithUserPriority()
+        {
+            try
+            {
+                // First priority: Check for user-specific settings on C drive
+                string userSettingsDir = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "UserSettings");
+                string userPropertyMappingsPath = Path.Combine(userSettingsDir, "UserPropertyMappings.xml");
+                
+                if (File.Exists(userPropertyMappingsPath))
+                {
+                    try
+                    {
+                        using (FileStream stream = new FileStream(userPropertyMappingsPath, FileMode.Open))
+                        {
+                            var serializer = new XmlSerializer(typeof(List<PropertyMapping>));
+                            var userMappings = (List<PropertyMapping>)serializer.Deserialize(stream);
+                            
+                            if (userMappings != null && userMappings.Count > 0)
+                            {
+                                // Ensure proper ordering and renumbering
+                                userMappings = userMappings.OrderBy(m => m.RowNumber).ToList();
+                                for (int i = 0; i < userMappings.Count; i++)
+                                {
+                                    userMappings[i].RowNumber = i + 1;
+                                }
+                                
+                                Logger.Info($"Loaded user-specific property mappings: {userPropertyMappingsPath} ({userMappings.Count} mappings)");
+                                return userMappings;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning($"Error loading user property mappings from {userPropertyMappingsPath}: {ex.Message}");
+                    }
+                }
+
+                // Second priority: Use existing Settings.LoadPropertyMappings() which handles PDM + defaults
+                var standardMappings = Settings.LoadPropertyMappings();
+                if (standardMappings != null && standardMappings.Count > 0)
+                {
+                    Logger.Info($"Loaded standard property mappings ({standardMappings.Count} mappings)");
+                    return standardMappings;
+                }
+
+                // Fallback: Return minimal default (just Part Number as requested by user)
+                Logger.Info("No existing mappings found, returning minimal default (Part Number only)");
+                return new List<PropertyMapping>
+                {
+                    new PropertyMapping { RowNumber = 1, DxfPropertyName = "Part Number", SwCustomProperty = "Part Number" }
+                };
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in LoadPropertyMappingsWithUserPriority: {ex.Message}", ex);
+                // Return minimal fallback
+                return new List<PropertyMapping>
+                {
+                    new PropertyMapping { RowNumber = 1, DxfPropertyName = "Part Number", SwCustomProperty = "Part Number" }
+                };
+            }
+        }
+
         private void btnAddNewPropertyRow_Click(object sender, EventArgs e) // Corresponds to btnAddNewRow_Click in backup
         {
             if (dgvPropertyMappings == null) return;
+            
             // Calculate next row number
             int newRowNumber = 1;
             if (dgvPropertyMappings.Rows.Count > 0)
@@ -1336,7 +1529,31 @@ namespace RoesleinAddIn
                                 .Where(r => !r.IsNewRow && r.Cells["RowNumber"].Value != null)
                                 .Max(r => Convert.ToInt32(r.Cells["RowNumber"].Value)) + 1;
             }
-            dgvPropertyMappings.Rows.Add(newRowNumber, "", "");
+            
+            // Add the new row
+            int rowIndex = dgvPropertyMappings.Rows.Add(newRowNumber, "New Property", "New Property");
+            
+            // Select the new row and start editing the property name
+            if (rowIndex >= 0)
+            {
+                dgvPropertyMappings.CurrentCell = dgvPropertyMappings.Rows[rowIndex].Cells["DxfPropertyName"];
+                dgvPropertyMappings.BeginEdit(false);
+            }
+            
+            // Show helpful message on first add
+            if (dgvPropertyMappings.Rows.Count == 1)
+            {
+                MessageBox.Show(
+                    "Property mapping row added!\n\n" +
+                    "Tips:\n" +
+                    "• Edit the property names as needed\n" +
+                    "• Right-click any row to delete it\n" +
+                    "• Your changes are automatically saved to your personal settings\n" +
+                    "• Use 'Save Mappings' button to save to shared PDM settings instead",
+                    "Property Mapping Help",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
         }
 
         // --- Methods for dgvMaterialMapping (on Material Mappings Tab) ---
@@ -1456,27 +1673,262 @@ namespace RoesleinAddIn
             }
         }
 
-        // --- Context Menu Handlers (Example for Property Mappings, adapt for others) ---
-        // You would need to add DgvPropertyMappingsDeleteMenuItem_Click, DgvMaterialMappingDeleteMenuItem_Click etc.
-        // and wire them up in InitializeContextMenus() if you want delete functionality.
-        // Example:
-        // private void DgvPropertyMappingsDeleteMenuItem_Click(object sender, EventArgs e)
-        // {
-        //     if (dgvPropertyMappings.SelectedRows.Count > 0)
-        //     {
-        //         var selectedRow = dgvPropertyMappings.SelectedRows[0];
-        //         if (!selectedRow.IsNewRow)
-        //         {
-        //             dgvPropertyMappings.Rows.Remove(selectedRow);
-        //             SavePropertyMappings(); // Save after delete
-        //         }
-        //     }
-        // }
+        // --- Context Menu Handlers for Delete Functionality ---
+        
+        /// <summary>
+        /// Handles delete row for Property Mappings grid
+        /// </summary>
+        private void DgvPropertyMappingsDeleteMenuItem_Click(object sender, EventArgs e)
+        {
+            if (dgvPropertyMappings == null) return;
+            
+            if (dgvPropertyMappings.SelectedRows.Count > 0)
+            {
+                var selectedRow = dgvPropertyMappings.SelectedRows[0];
+                if (!selectedRow.IsNewRow)
+                {
+                    // Show confirmation dialog
+                    string propertyName = selectedRow.Cells["DxfPropertyName"].Value?.ToString() ?? "Unknown";
+                    var result = MessageBox.Show(
+                        $"Are you sure you want to delete the property mapping for '{propertyName}'?", 
+                        "Confirm Delete", 
+                        MessageBoxButtons.YesNo, 
+                        MessageBoxIcon.Question);
+                        
+                    if (result == DialogResult.Yes)
+                    {
+                        dgvPropertyMappings.Rows.Remove(selectedRow);
+                        RenumberPropertyMappingRows();
+                        SavePropertyMappingsToUserSettings(); // Save immediately to user's C drive
+                        MessageBox.Show("Property mapping deleted and saved to your personal settings.", 
+                            "Delete Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                }
+            }
+            else
+            {
+                MessageBox.Show("Please select a row to delete.", "No Row Selected", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
 
-        // Placeholders for MouseDown events for context menus (from InitializeContextMenus)
-        // private void DgvPropertyMappings_MouseDown(object sender, MouseEventArgs e) { /* see backup */ }
-        // private void DgvMaterialMappings_MouseDown(object sender, MouseEventArgs e) { /* see backup */ }
-        // private void DgvThicknessMappings_MouseDown(object sender, MouseEventArgs e) { /* see backup */ }
+        /// <summary>
+        /// Handles delete row for Material Mappings grid
+        /// </summary>
+        private void DgvMaterialMappingDeleteMenuItem_Click(object sender, EventArgs e)
+        {
+            if (dgvMaterialMapping == null) return;
+            
+            if (dgvMaterialMapping.SelectedRows.Count > 0)
+            {
+                var selectedRow = dgvMaterialMapping.SelectedRows[0];
+                if (!selectedRow.IsNewRow)
+                {
+                    string materialName = selectedRow.Cells["SwMaterial"].Value?.ToString() ?? "Unknown";
+                    var result = MessageBox.Show(
+                        $"Are you sure you want to delete the material mapping for '{materialName}'?", 
+                        "Confirm Delete", 
+                        MessageBoxButtons.YesNo, 
+                        MessageBoxIcon.Question);
+                        
+                    if (result == DialogResult.Yes)
+                    {
+                        dgvMaterialMapping.Rows.Remove(selectedRow);
+                        RenumberMaterialMappingRows();
+                        // Material mappings still use PDM system as they are shared settings
+                        SaveMaterialMappingsToPdm();
+                    }
+                }
+            }
+            else
+            {
+                MessageBox.Show("Please select a row to delete.", "No Row Selected", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        /// <summary>
+        /// Handles delete row for Thickness Mappings grid
+        /// </summary>
+        private void DgvThicknessMappingDeleteMenuItem_Click(object sender, EventArgs e)
+        {
+            if (dgvThicknessMapping == null) return;
+            
+            if (dgvThicknessMapping.SelectedRows.Count > 0)
+            {
+                var selectedRow = dgvThicknessMapping.SelectedRows[0];
+                if (!selectedRow.IsNewRow)
+                {
+                    string thickness = selectedRow.Cells["SwThickness"].Value?.ToString() ?? "Unknown";
+                    var result = MessageBox.Show(
+                        $"Are you sure you want to delete the thickness mapping for '{thickness}'?", 
+                        "Confirm Delete", 
+                        MessageBoxButtons.YesNo, 
+                        MessageBoxIcon.Question);
+                        
+                    if (result == DialogResult.Yes)
+                    {
+                        dgvThicknessMapping.Rows.Remove(selectedRow);
+                        RenumberThicknessMappingRows();
+                        SaveThicknessMappings();
+                        MessageBox.Show("Thickness mapping deleted.", "Delete Successful", 
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                }
+            }
+            else
+            {
+                MessageBox.Show("Please select a row to delete.", "No Row Selected", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        /// <summary>
+        /// Renumbers property mapping rows after deletion to keep sequential numbering
+        /// </summary>
+        private void RenumberPropertyMappingRows()
+        {
+            if (dgvPropertyMappings == null) return;
+            
+            int rowNumber = 1;
+            foreach (DataGridViewRow row in dgvPropertyMappings.Rows)
+            {
+                if (!row.IsNewRow)
+                {
+                    row.Cells["RowNumber"].Value = rowNumber++;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Renumbers material mapping rows after deletion to keep sequential numbering
+        /// </summary>
+        private void RenumberMaterialMappingRows()
+        {
+            if (dgvMaterialMapping == null) return;
+            
+            int rowNumber = 1;
+            foreach (DataGridViewRow row in dgvMaterialMapping.Rows)
+            {
+                if (!row.IsNewRow)
+                {
+                    row.Cells["RowNumber"].Value = rowNumber++;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Renumbers thickness mapping rows after deletion to keep sequential numbering
+        /// </summary>
+        private void RenumberThicknessMappingRows()
+        {
+            if (dgvThicknessMapping == null) return;
+            
+            int rowNumber = 1;
+            foreach (DataGridViewRow row in dgvThicknessMapping.Rows)
+            {
+                if (!row.IsNewRow)
+                {
+                    row.Cells["RowNumber"].Value = rowNumber++;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Clears user-specific property mappings and reverts to default/shared settings
+        /// </summary>
+        private void ClearUserPropertyMappings()
+        {
+            try
+            {
+                string userSettingsPath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "UserSettings", "UserPropertyMappings.xml");
+                
+                if (File.Exists(userSettingsPath))
+                {
+                    var result = MessageBox.Show(
+                        "This will delete your personal property mapping customizations and revert to the default/shared settings.\n\n" +
+                        "Are you sure you want to continue?",
+                        "Clear Personal Settings",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+                        
+                    if (result == DialogResult.Yes)
+                    {
+                        File.Delete(userSettingsPath);
+                        LoadPropertyMappingsData(); // Reload from defaults
+                        MessageBox.Show(
+                            "Your personal property mapping settings have been cleared.\n\n" +
+                            "The grid now shows the default/shared settings.",
+                            "Settings Cleared",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                    }
+                }
+                else
+                {
+                    MessageBox.Show(
+                        "No personal property mapping settings found to clear.",
+                        "No Custom Settings",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error clearing user property mappings: {ex.Message}", ex);
+                MessageBox.Show($"Error clearing personal settings: {ex.Message}", "Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Shows the user information about where their property mappings are being loaded from
+        /// </summary>
+        private void ShowPropertyMappingsLocation()
+        {
+            try
+            {
+                string userSettingsPath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "UserSettings", "UserPropertyMappings.xml");
+                string pdmPath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\PropertyMappings.xml";
+                
+                string message = "Property Mappings Settings Location:\n\n";
+                
+                if (File.Exists(userSettingsPath))
+                {
+                    FileInfo userFile = new FileInfo(userSettingsPath);
+                    message += "🔧 CURRENTLY USING: Personal Settings\n";
+                    message += $"📁 Location: {userSettingsPath}\n";
+                    message += $"📅 Last Modified: {userFile.LastWriteTime:yyyy-MM-dd HH:mm:ss}\n\n";
+                    message += "These personal settings override the default/shared settings.\n\n";
+                    message += "To revert to default settings, right-click and select 'Reset to Default Settings'.";
+                }
+                else
+                {
+                    message += "🏢 CURRENTLY USING: Default/Shared Settings\n";
+                    if (File.Exists(pdmPath))
+                    {
+                        FileInfo pdmFile = new FileInfo(pdmPath);
+                        message += $"📁 Location: {pdmPath}\n";
+                        message += $"📅 Last Modified: {pdmFile.LastWriteTime:yyyy-MM-dd HH:mm:ss}\n\n";
+                    }
+                    else
+                    {
+                        message += "📁 Location: Built-in defaults\n\n";
+                    }
+                    message += "To create personal customizations, delete any rows you don't want\n";
+                    message += "or modify existing ones. Your changes will be saved automatically.";
+                }
+                
+                MessageBox.Show(message, "Property Mappings Settings Information", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error showing property mappings location: {ex.Message}", ex);
+                MessageBox.Show($"Error getting settings information: {ex.Message}", "Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
 
 
         // --- Methods for dgvMaterialMapping (on Material Mappings Tab) ---

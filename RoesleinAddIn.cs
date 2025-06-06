@@ -1025,9 +1025,8 @@ namespace RoesleinAddIn
                     return;
                 }
 
-                // TODO: Implement ID Tag functionality
-                MessageBox.Show("ID Tag functionality will be implemented here.", "ID Tag", 
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                // Show the shipping label manager
+                ShippingLabelManagerForm.ShowShippingLabelManager(swApp);
                 
                 WriteToLog("ID_Tag completed successfully");
             }
