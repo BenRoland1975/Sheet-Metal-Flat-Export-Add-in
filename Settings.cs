@@ -55,12 +55,15 @@ namespace RoesleinAddIn
         public bool ShowBendLines { get; set; }
         public string TextLayerName { get; set; }
         public string BendLineLayerName { get; set; }
+        public string BendLineMacroPath { get; set; }
         public string TextLocation { get; set; }
         public bool UseCustomScale { get; set; }
         public double DrawingScale { get; set; }
         public bool AddDimensions { get; set; }
         public bool ImportModelDimensions { get; set; }
         public bool ExportHiddenGeometry { get; set; }
+        // Path to custom DXF mapping file (used to map bend lines to BEND_LINES layer)
+        public string DxfMappingFilePath { get; set; }
         
         // Title block settings
         public bool AddTitleBlockInfo { get; set; }
@@ -142,6 +145,7 @@ namespace RoesleinAddIn
             
             TextLayerName = "Notes";
             BendLineLayerName = "Bend_Lines";
+            BendLineMacroPath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\BendLineMacro.swp";
             TextLocation = "Centered";
             ShowBendLines = true;
             UseCustomScale = false;
@@ -180,6 +184,9 @@ namespace RoesleinAddIn
             DefaultMaterialName = "AISI 1020 Steel"; // Example default material
             DefaultMaterialDatabase = "SolidWorks Materials"; // Example default DB
             ThicknessToleranceInches = 0.005; // Default tolerance
+
+            // Default DXF mapping file path (user can override via Settings form)
+            DxfMappingFilePath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\BendLineMapping.map";
         }
 
         [System.Xml.Serialization.XmlIgnore]
@@ -611,14 +618,47 @@ namespace RoesleinAddIn
 
         public static List<PropertyMapping> LoadPropertyMappings()
         {
-            // First try to load from PDM
+            // Priority 1: User-specific settings
+            string userSettingsDir = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "UserSettings");
+            string userPropertyMappingsPath = Path.Combine(userSettingsDir, "UserPropertyMappings.xml");
+            
+            if (File.Exists(userPropertyMappingsPath))
+            {
+                try
+                {
+                    using (FileStream stream = new FileStream(userPropertyMappingsPath, FileMode.Open))
+                    {
+                        var serializer = new XmlSerializer(typeof(List<PropertyMapping>));
+                        var userMappings = (List<PropertyMapping>)serializer.Deserialize(stream);
+                        
+                        if (userMappings != null && userMappings.Count > 0)
+                        {
+                            Logger.Info($"Loaded user-specific property mappings: {userPropertyMappingsPath} ({userMappings.Count} mappings)");
+                            // Renumbering logic
+                            userMappings = userMappings.OrderBy(m => m.RowNumber).ToList();
+                            for (int i = 0; i < userMappings.Count; i++)
+                            {
+                                userMappings[i].RowNumber = i + 1;
+                            }
+                            return userMappings;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Error loading user property mappings from {userPropertyMappingsPath}: {ex.Message}");
+                }
+            }
+
+            // Priority 2: PDM settings
             var pdmMappings = LoadPdmPropertyMappings();
             if (pdmMappings != null && pdmMappings.Count > 0)
             {
+                Logger.Info($"Loaded PDM property mappings ({pdmMappings.Count} mappings)");
                 return pdmMappings;
             }
 
-            // Fallback to local AppData file if PDM fails
+            // Priority 3: Old local AppData file (fallback)
             try
             {
                 string filePath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddInMappings.xml");
@@ -629,35 +669,28 @@ namespace RoesleinAddIn
                         XmlSerializer serializer = new XmlSerializer(typeof(List<PropertyMapping>));
                         var mappings = (List<PropertyMapping>)serializer.Deserialize(stream);
                         
-                        // Force renumbering of the rows starting at 1
                         if (mappings != null && mappings.Count > 0)
                         {
+                            Logger.Info($"Loaded fallback local property mappings from {filePath} ({mappings.Count} mappings)");
+                            // Renumbering logic
                             mappings = mappings.OrderBy(m => m.RowNumber).ToList();
                             for (int i = 0; i < mappings.Count; i++)
                             {
                                 mappings[i].RowNumber = i + 1;
                             }
+                            return mappings;
                         }
-                        
-                        return mappings;
                     }
                 }
             }
             catch (Exception ex)
             {
-                Logger.Warning($"Error loading property mappings from local file: {ex.Message}");
+                Logger.Warning($"Error loading fallback local property mappings from local file: {ex.Message}");
             }
             
-            // Return default property mappings if no saved mappings exist
-            return new List<PropertyMapping>
-            {
-                new PropertyMapping { RowNumber = 1, DxfPropertyName = "Part Number", SwCustomProperty = "Part Number" },
-                new PropertyMapping { RowNumber = 2, DxfPropertyName = "Description", SwCustomProperty = "Description" },
-                new PropertyMapping { RowNumber = 3, DxfPropertyName = "Revision", SwCustomProperty = "Revision" },
-                new PropertyMapping { RowNumber = 4, DxfPropertyName = "Material", SwCustomProperty = "Material" },
-                new PropertyMapping { RowNumber = 5, DxfPropertyName = "Thickness", SwCustomProperty = "Sheet Metal Thickness" },
-                new PropertyMapping { RowNumber = 6, DxfPropertyName = "Shop Route", SwCustomProperty = "Shop Route" }
-            };
+            // Final fallback: empty list
+            Logger.Info("No property mappings found, returning empty list.");
+            return new List<PropertyMapping>();
         }
 
         public static List<PropertyMapping> LoadPdmPropertyMappings()

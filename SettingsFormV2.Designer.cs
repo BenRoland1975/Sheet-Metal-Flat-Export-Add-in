@@ -32,6 +32,7 @@
             this.tabControl1 = new System.Windows.Forms.TabControl();
             this.GeneralSettings = new System.Windows.Forms.TabPage();
             this.chkCheckForLaser = new System.Windows.Forms.CheckBox();
+            this.pictureBox1 = new System.Windows.Forms.PictureBox();
             this.lblDXFTextMapping = new System.Windows.Forms.Label();
             this.btnAddNewRow = new System.Windows.Forms.Button();
             this.btnSaveMappings = new System.Windows.Forms.Button();
@@ -88,9 +89,10 @@
             this.lblRosleinVersonLabel = new System.Windows.Forms.Label();
             this.lblVersionNumber = new System.Windows.Forms.Label();
             this.lblCopyright = new System.Windows.Forms.Label();
-            this.pictureBox1 = new System.Windows.Forms.PictureBox();
+            this.tpConnexSettings = new System.Windows.Forms.TabPage();
             this.tabControl1.SuspendLayout();
             this.GeneralSettings.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvPropertyMappings)).BeginInit();
             this.MaterialMappings.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvMaterialMapping)).BeginInit();
@@ -101,7 +103,6 @@
             this.tpRawMaterial.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawLinear)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawSheet)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
             this.SuspendLayout();
             // 
             // tabControl1
@@ -111,6 +112,7 @@
             this.tabControl1.Controls.Add(this.ThicknessMappings);
             this.tabControl1.Controls.Add(this.tpStandardsSettings);
             this.tabControl1.Controls.Add(this.tpRawMaterial);
+            this.tabControl1.Controls.Add(this.tpConnexSettings);
             this.tabControl1.Dock = System.Windows.Forms.DockStyle.Top;
             this.tabControl1.Location = new System.Drawing.Point(0, 0);
             this.tabControl1.Name = "tabControl1";
@@ -169,11 +171,21 @@
             this.chkCheckForLaser.Text = "Check For Laser in Route";
             this.chkCheckForLaser.UseVisualStyleBackColor = true;
             // 
+            // pictureBox1
+            // 
+            this.pictureBox1.Image = global::RoesleinAddIn.Properties.Resources.RoesleinConnex_Small;
+            this.pictureBox1.Location = new System.Drawing.Point(631, 53);
+            this.pictureBox1.Name = "pictureBox1";
+            this.pictureBox1.Size = new System.Drawing.Size(115, 76);
+            this.pictureBox1.SizeMode = System.Windows.Forms.PictureBoxSizeMode.StretchImage;
+            this.pictureBox1.TabIndex = 30;
+            this.pictureBox1.TabStop = false;
+            // 
             // lblDXFTextMapping
             // 
             this.lblDXFTextMapping.AutoSize = true;
             this.lblDXFTextMapping.ImageAlign = System.Drawing.ContentAlignment.BottomLeft;
-            this.lblDXFTextMapping.Location = new System.Drawing.Point(167, 268);
+            this.lblDXFTextMapping.Location = new System.Drawing.Point(167, 239);
             this.lblDXFTextMapping.Name = "lblDXFTextMapping";
             this.lblDXFTextMapping.Size = new System.Drawing.Size(177, 13);
             this.lblDXFTextMapping.TabIndex = 29;
@@ -203,24 +215,24 @@
             // dgvPropertyMappings
             // 
             this.dgvPropertyMappings.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
-            this.dgvPropertyMappings.Location = new System.Drawing.Point(170, 286);
+            this.dgvPropertyMappings.Location = new System.Drawing.Point(170, 255);
             this.dgvPropertyMappings.Name = "dgvPropertyMappings";
-            this.dgvPropertyMappings.Size = new System.Drawing.Size(455, 155);
+            this.dgvPropertyMappings.Size = new System.Drawing.Size(455, 186);
             this.dgvPropertyMappings.TabIndex = 26;
             // 
             // txtBendLineLayer
             // 
             this.txtBendLineLayer.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
-            this.txtBendLineLayer.Location = new System.Drawing.Point(170, 238);
+            this.txtBendLineLayer.Location = new System.Drawing.Point(449, 208);
             this.txtBendLineLayer.Name = "txtBendLineLayer";
-            this.txtBendLineLayer.Size = new System.Drawing.Size(374, 20);
+            this.txtBendLineLayer.Size = new System.Drawing.Size(176, 20);
             this.txtBendLineLayer.TabIndex = 25;
             // 
             // lblBendLineLayer
             // 
             this.lblBendLineLayer.AutoSize = true;
-            this.lblBendLineLayer.Location = new System.Drawing.Point(72, 241);
+            this.lblBendLineLayer.Location = new System.Drawing.Point(351, 211);
             this.lblBendLineLayer.Name = "lblBendLineLayer";
             this.lblBendLineLayer.Size = new System.Drawing.Size(87, 13);
             this.lblBendLineLayer.TabIndex = 24;
@@ -233,7 +245,7 @@
             | System.Windows.Forms.AnchorStyles.Right)));
             this.txtTextLayer.Location = new System.Drawing.Point(170, 208);
             this.txtTextLayer.Name = "txtTextLayer";
-            this.txtTextLayer.Size = new System.Drawing.Size(374, 20);
+            this.txtTextLayer.Size = new System.Drawing.Size(174, 20);
             this.txtTextLayer.TabIndex = 23;
             // 
             // lblTextLayer
@@ -728,15 +740,14 @@
             this.lblCopyright.TabIndex = 7;
             this.lblCopyright.Text = "Copyright";
             // 
-            // pictureBox1
+            // tpConnexSettings
             // 
-            this.pictureBox1.Image = global::RoesleinAddIn.Properties.Resources.RoesleinConnex_Small;
-            this.pictureBox1.Location = new System.Drawing.Point(631, 53);
-            this.pictureBox1.Name = "pictureBox1";
-            this.pictureBox1.Size = new System.Drawing.Size(115, 76);
-            this.pictureBox1.SizeMode = System.Windows.Forms.PictureBoxSizeMode.StretchImage;
-            this.pictureBox1.TabIndex = 30;
-            this.pictureBox1.TabStop = false;
+            this.tpConnexSettings.Location = new System.Drawing.Point(4, 22);
+            this.tpConnexSettings.Name = "tpConnexSettings";
+            this.tpConnexSettings.Size = new System.Drawing.Size(792, 474);
+            this.tpConnexSettings.TabIndex = 5;
+            this.tpConnexSettings.Text = "Connex Settings";
+            this.tpConnexSettings.UseVisualStyleBackColor = true;
             // 
             // SettingsFormV2
             // 
@@ -755,6 +766,7 @@
             this.tabControl1.ResumeLayout(false);
             this.GeneralSettings.ResumeLayout(false);
             this.GeneralSettings.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvPropertyMappings)).EndInit();
             this.MaterialMappings.ResumeLayout(false);
             this.MaterialMappings.PerformLayout();
@@ -769,7 +781,6 @@
             this.tpRawMaterial.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawLinear)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawSheet)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -837,5 +848,6 @@
         private System.Windows.Forms.TextBox txtSettingsVersion;
         private System.Windows.Forms.Label lblSettingsVersionNote;
         private System.Windows.Forms.Label lblSettingsVersion;
+        private System.Windows.Forms.TabPage tpConnexSettings;
     }
 }

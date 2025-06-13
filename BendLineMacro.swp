@@ -1,0 +1,133 @@
+Option Explicit
+
+Sub main()
+    Dim swApp As Object
+    Dim swModel As Object
+    Dim swView As Object
+    Dim swSketch As Object
+    Dim swSketchMgr As Object
+    Dim swLayerMgr As Object
+    Dim swLayer As Object
+    Dim swSelMgr As Object
+    Dim swFeatMgr As Object
+    Dim swFeat As Object
+    Dim swSketchSeg As Object
+    Dim swSketchLine As Object
+    Dim swStartPt As Object
+    Dim swEndPt As Object
+    Dim swNewLine As Object
+    Dim bendLayerName As String
+    Dim i As Long
+    
+    ' Get SolidWorks application
+    Set swApp = Application.SldWorks
+    
+    ' Get active document
+    Set swModel = swApp.ActiveDoc
+    If swModel Is Nothing Then
+        MsgBox "No active document"
+        Exit Sub
+    End If
+    
+    ' Get the active view
+    Set swView = swModel.ActiveView
+    If swView Is Nothing Then
+        MsgBox "No active view"
+        Exit Sub
+    End If
+    
+    ' Get the layer manager
+    Set swLayerMgr = swModel.GetLayerManager
+    If swLayerMgr Is Nothing Then
+        MsgBox "Failed to get layer manager"
+        Exit Sub
+    End If
+    
+    ' Get the bend line layer name from the macro parameters
+    bendLayerName = "BEND_LINES" ' This will be replaced by the C# code
+    
+    ' Create the layer if it doesn't exist
+    Set swLayer = swLayerMgr.GetLayer(bendLayerName)
+    If swLayer Is Nothing Then
+        swModel.CreateLayer2 bendLayerName, "Sheet Metal Bend Lines", RGB(0, 255, 255), swLineStyles_e.swLineCHAIN, swLineWeights_e.swLW_THIN, True, True
+    End If
+    
+    ' Get the referenced model and find the bend line sketch
+    Dim refModel As Object
+    Set refModel = swView.ReferencedDocument
+    If refModel Is Nothing Then
+        MsgBox "No referenced model"
+        Exit Sub
+    End If
+    
+    ' Find the bend line feature
+    Dim bendLineFeature As Object
+    Set bendLineFeature = Nothing
+    Set swFeatMgr = refModel.FeatureManager
+    Set swFeat = swFeatMgr.GetFeatureTreeRootItem2(0)
+    
+    While Not swFeat Is Nothing
+        If swFeat.GetTypeName2 = "ProfileFeature" And InStr(1, swFeat.Name, "Bend-Line", vbTextCompare) > 0 Then
+            Set bendLineFeature = swFeat
+            Exit While
+        End If
+        Set swFeat = swFeat.GetNextFeature
+    Wend
+    
+    If bendLineFeature Is Nothing Then
+        MsgBox "No bend line feature found"
+        Exit Sub
+    End If
+    
+    ' Blank (hide) the original bend line sketch
+    If bendLineFeature.Select2(False, 0) Then
+        refModel.BlankSketch
+    End If
+    
+    ' Get the sketch from the bend line feature
+    Set swSketch = bendLineFeature.GetSpecificFeature2
+    If swSketch Is Nothing Then
+        MsgBox "Failed to get sketch from bend line feature"
+        Exit Sub
+    End If
+    
+    ' Get sketch segments
+    Dim segments As Variant
+    segments = swSketch.GetSketchSegments
+    If IsEmpty(segments) Then
+        MsgBox "No sketch segments found"
+        Exit Sub
+    End If
+    
+    ' Transform bend line geometry to drawing coordinates and add as new sketch lines
+    swModel.ClearSelection2 True
+    Set swSketchMgr = swModel.SketchManager
+    swSketchMgr.InsertSketch True
+    swSketchMgr.AddToDB = True
+    
+    ' Set current layer to bendLayerName
+    swLayerMgr.SetCurrentLayer bendLayerName
+    
+    ' Create new lines for each bend line
+    For i = 0 To UBound(segments)
+        Set swSketchSeg = segments(i)
+        If swSketchSeg.GetType = 0 Then ' 0 = line
+            Set swSketchLine = swSketchSeg
+            If Not swSketchLine Is Nothing Then
+                Set swStartPt = swSketchLine.GetStartPoint2
+                Set swEndPt = swSketchLine.GetEndPoint2
+                If Not swStartPt Is Nothing And Not swEndPt Is Nothing Then
+                    Set swNewLine = swSketchMgr.CreateLine(swStartPt.X, swStartPt.Y, 0, swEndPt.X, swEndPt.Y, 0)
+                End If
+            End If
+        End If
+    Next i
+    
+    swSketchMgr.AddToDB = False
+    swSketchMgr.InsertSketch True
+    swModel.ClearSelection2 True
+    
+    ' Force rebuild
+    swModel.ForceRebuild3 True
+    swModel.GraphicsRedraw2
+End Sub 

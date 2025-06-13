@@ -48,6 +48,7 @@ namespace RoesleinAddIn
         private ProgressForm _progressForm;
         private int _totalFilesToProcess;
         private int _currentFileIndex;
+        private HashSet<string> _processedPartPaths;
 
         public eDrawingsCreator(ISldWorks swApp, EPDM.Interop.epdm.IEdmVault5 pdmVault = null)
         {
@@ -55,6 +56,7 @@ namespace RoesleinAddIn
             _pdmVault = pdmVault;
             _errors = new List<eDrawingsError>();
             _processedFiles = new List<eDrawingsProcessedFile>();
+            _processedPartPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -99,6 +101,9 @@ namespace RoesleinAddIn
                 // Clear previous results
                 _errors.Clear();
                 _processedFiles.Clear();
+                
+                // Initialize the set of processed part paths with case-insensitive comparison
+                _processedPartPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 // Determine document type and process accordingly
                 int docType = activeDoc.GetType();
@@ -174,8 +179,66 @@ namespace RoesleinAddIn
                     }
                     break;
                 case (int)swDocumentTypes_e.swDocDRAWING:
-                    // Drawing: 1 drawing file
+                    // Drawing: 1 drawing file + any referenced models
                     count = 1;
+                    
+                    // Check if the drawing references an assembly
+                    try
+                    {
+                        DrawingDoc drawingDoc = activeDoc as DrawingDoc;
+                        if (drawingDoc != null)
+                        {
+                            // Get the first view from the drawing
+                            object firstViewObj = drawingDoc.GetFirstView();
+                            SolidWorks.Interop.sldworks.View firstView = firstViewObj as SolidWorks.Interop.sldworks.View;
+                            
+                            // Skip the sheet view (first view is always the sheet itself)
+                            if (firstView != null) 
+                            {
+                                firstView = firstView.GetNextView() as SolidWorks.Interop.sldworks.View;
+                            }
+                            
+                            if (firstView != null)
+                            {
+                                string referencedPath = firstView.GetReferencedModelName();
+                                if (!string.IsNullOrEmpty(referencedPath))
+                                {
+                                    string fileExtension = Path.GetExtension(referencedPath).ToLower();
+                                    if (fileExtension == ".sldasm")
+                                    {
+                                        // Drawing references an assembly - count components too
+                                        // Try to open the assembly to count components
+                                        int errors = 0, warnings = 0;
+                                        ModelDoc2 asmDoc = _swApp.OpenDoc6(referencedPath, (int)swDocumentTypes_e.swDocASSEMBLY, 
+                                            (int)swOpenDocOptions_e.swOpenDocOptions_Silent, "", ref errors, ref warnings);
+                                            
+                                        if (asmDoc != null)
+                                        {
+                                            count += 1; // Add 1 for assembly 3D eDrawings
+                                            
+                                            AssemblyDoc referencedAssembly = asmDoc as AssemblyDoc;
+                                            if (referencedAssembly != null)
+                                            {
+                                                count += CountAssemblyComponents(referencedAssembly);
+                                            }
+                                            
+                                            // Close the assembly
+                                            _swApp.CloseDoc(asmDoc.GetTitle());
+                                        }
+                                    }
+                                    else if (fileExtension == ".sldprt")
+                                    {
+                                        // Drawing references a part - add 1 for 3D eDrawings
+                                        count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning($"eDrawingsCreator: Error counting components in referenced assembly: {ex.Message}");
+                    }
                     break;
             }
             
@@ -234,6 +297,9 @@ namespace RoesleinAddIn
             string partPath = partDoc.GetPathName();
             Logger.Info($"eDrawingsCreator: Processing part document: {partPath}");
             
+            // Add to processed list
+            _processedPartPaths.Add(partPath);
+            
             UpdateProgress($"Processing part: {Path.GetFileName(partPath)}", "Finding drawing file...");
 
             // Find and process the drawing for this part
@@ -274,6 +340,9 @@ namespace RoesleinAddIn
         {
             string assemblyPath = assemblyDoc.GetPathName();
             Logger.Info($"eDrawingsCreator: Processing assembly document: {assemblyPath}");
+            
+            // Add to processed list
+            _processedPartPaths.Add(assemblyPath);
             
             UpdateProgress($"Processing assembly: {Path.GetFileName(assemblyPath)}", "Creating 3D eDrawings...");
 
@@ -318,6 +387,23 @@ namespace RoesleinAddIn
 
                     string compPath = compModel.GetPathName();
                     if (string.IsNullOrEmpty(compPath)) continue;
+                    
+                    // Toolbox/standard part filtering
+                    if (IsToolboxOrStandardPart(compModel))
+                    {
+                        Logger.Info($"eDrawingsCreator: Skipping toolbox/standard part: {compPath}");
+                        continue;
+                    }
+                    
+                    // Check if this component has already been processed
+                    if (_processedPartPaths.Contains(compPath))
+                    {
+                        Logger.Info($"eDrawingsCreator: Skipping already processed file: {compPath}");
+                        continue;
+                    }
+                    
+                    // Add to processed list before processing to prevent duplicate processing
+                    _processedPartPaths.Add(compPath);
 
                     int compType = compModel.GetType();
                     
@@ -370,6 +456,33 @@ namespace RoesleinAddIn
         }
 
         /// <summary>
+        /// Checks if a part is a SolidWorks Toolbox or standard library part
+        /// </summary>
+        private bool IsToolboxOrStandardPart(ModelDoc2 model)
+        {
+            if (model == null) return false;
+            string path = model.GetPathName()?.ToLower() ?? "";
+            // Exclude toolbox and known library folders
+            if (path.Contains("\\toolbox\\") ||
+                path.Contains("\\browser\\") ||
+                path.Contains("\\generated parts\\") ||
+                path.Contains("design library\\toolbox\\"))
+                return true;
+            // Optionally, check for custom property
+            try
+            {
+                var propMgr = model.Extension.CustomPropertyManager[""];
+                string val = "", resVal = "";
+                bool wasRes = false, wasLinked = false;
+                int ret = propMgr.Get6("IsToolboxPart", false, out val, out resVal, out wasRes, out wasLinked);
+                if ((wasRes ? resVal : val).ToLower() == "yes")
+                    return true;
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
         /// Processes a drawing document
         /// </summary>
         private void ProcessDrawingDocument(ModelDoc2 drawingDoc)
@@ -377,9 +490,133 @@ namespace RoesleinAddIn
             string drawingPath = drawingDoc.GetPathName();
             Logger.Info($"eDrawingsCreator: Processing drawing document: {drawingPath}");
             
+            // Add to processed list
+            _processedPartPaths.Add(drawingPath);
+            
             UpdateProgress($"Processing drawing: {Path.GetFileName(drawingPath)}", "Creating eDrawings...");
             
+            // First, create eDrawings for this drawing
             CreateeDrawingsDrawing(drawingDoc);
+            
+            // Check if this drawing references an assembly
+            try
+            {
+                DrawingDoc swDrawingDoc = drawingDoc as DrawingDoc;
+                if (swDrawingDoc != null)
+                {
+                    // Get the first view from the drawing
+                    object firstViewObj = swDrawingDoc.GetFirstView();
+                    SolidWorks.Interop.sldworks.View firstView = firstViewObj as SolidWorks.Interop.sldworks.View;
+                    
+                    // Skip the sheet view (first view is always the sheet itself)
+                    if (firstView != null) 
+                    {
+                        firstView = firstView.GetNextView() as SolidWorks.Interop.sldworks.View;
+                    }
+                    
+                    if (firstView != null)
+                    {
+                        string referencedPath = firstView.GetReferencedModelName();
+                        if (!string.IsNullOrEmpty(referencedPath))
+                        {
+                            Logger.Info($"eDrawingsCreator: Drawing references document: {referencedPath}");
+                            
+                            // Check if the referenced file is an assembly
+                            string fileExtension = Path.GetExtension(referencedPath).ToLower();
+                            if (fileExtension == ".sldasm")
+                            {
+                                Logger.Info($"eDrawingsCreator: Drawing references an assembly. Processing assembly components...");
+                                
+                                // Save the current active document (the drawing)
+                                ModelDoc2 previousActiveDoc = _swApp.ActiveDoc as ModelDoc2;
+                                
+                                // Try to find if the assembly is already open
+                                ModelDoc2 asmDoc = null;
+                                object[] openDocs = (object[])_swApp.GetDocuments();
+                                if (openDocs != null)
+                                {
+                                    foreach (object docObj in openDocs)
+                                    {
+                                        ModelDoc2 doc = docObj as ModelDoc2;
+                                        if (doc != null && string.Equals(doc.GetPathName(), referencedPath, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            asmDoc = doc;
+                                            break;
+                                        }
+                                    }
+                                }
+                                bool openedHere = false;
+                                int errors = 0, warnings = 0;
+                                if (asmDoc == null)
+                                {
+                                    asmDoc = _swApp.OpenDoc6(referencedPath, (int)swDocumentTypes_e.swDocASSEMBLY, 
+                                        (int)swOpenDocOptions_e.swOpenDocOptions_LoadModel, "", ref errors, ref warnings);
+                                    openedHere = true;
+                                }
+                                // Make the assembly the active document
+                                if (asmDoc != null)
+                                {
+                                    _swApp.ActivateDoc2(asmDoc.GetTitle(), false, 0);
+                                    // Create 3D eDrawings for the assembly
+                                    CreateeDrawings3D(asmDoc);
+                                    // Now add to processed list
+                                    _processedPartPaths.Add(referencedPath);
+                                    // Process all components in the assembly
+                                    AssemblyDoc swAssembly = asmDoc as AssemblyDoc;
+                                    if (swAssembly != null)
+                                    {
+                                        ProcessAssemblyComponents(swAssembly);
+                                    }
+                                    // Restore the previous active document (the drawing)
+                                    if (previousActiveDoc != null)
+                                        _swApp.ActivateDoc2(previousActiveDoc.GetTitle(), false, 0);
+                                    // Close the assembly if we opened it here
+                                    if (openedHere)
+                                        _swApp.CloseDoc(asmDoc.GetTitle());
+                                }
+                                else
+                                {
+                                    Logger.Warning($"eDrawingsCreator: Failed to open referenced assembly: {referencedPath}. Error: {errors}");
+                                    AddError(referencedPath, $"Failed to open referenced assembly (Error: {errors})", "Open Error");
+                                }
+                            }
+                            else if (fileExtension == ".sldprt")
+                            {
+                                Logger.Info($"eDrawingsCreator: Drawing references a part. Creating 3D eDrawings...");
+                                
+                                // The part is already processed through the drawing, but we might want to create 3D eDrawings too
+                                if (!_processedPartPaths.Contains(referencedPath))
+                                {
+                                    _processedPartPaths.Add(referencedPath);
+                                    
+                                    // Open the part
+                                    int errors = 0, warnings = 0;
+                                    ModelDoc2 partDoc = _swApp.OpenDoc6(referencedPath, (int)swDocumentTypes_e.swDocPART, 
+                                        (int)swOpenDocOptions_e.swOpenDocOptions_Silent, "", ref errors, ref warnings);
+                                        
+                                    if (partDoc != null)
+                                    {
+                                        // Create 3D eDrawings
+                                        CreateeDrawings3D(partDoc);
+                                        
+                                        // Close the part
+                                        _swApp.CloseDoc(partDoc.GetTitle());
+                                    }
+                                    else
+                                    {
+                                        Logger.Warning($"eDrawingsCreator: Failed to open referenced part: {referencedPath}. Error: {errors}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"eDrawingsCreator: Error processing drawing document references: {ex.Message}", ex);
+                AddError(drawingPath, $"Error processing drawing references: {ex.Message}", "Processing Error");
+            }
         }
 
         /// <summary>
@@ -394,6 +631,16 @@ namespace RoesleinAddIn
                     AddError(drawingPath, "Drawing file does not exist", "File Not Found");
                     return;
                 }
+                
+                // Check if this drawing has already been processed
+                if (_processedPartPaths.Contains(drawingPath))
+                {
+                    Logger.Info($"eDrawingsCreator: Skipping already processed drawing file: {drawingPath}");
+                    return;
+                }
+                
+                // Add to processed list before processing
+                _processedPartPaths.Add(drawingPath);
 
                 UpdateProgress($"Processing drawing: {Path.GetFileName(drawingPath)}", "Opening file...");
 

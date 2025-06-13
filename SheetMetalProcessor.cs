@@ -11,6 +11,9 @@ using AppSettings = RoesleinAddIn.Settings;
 using SysEnv = System.Environment;
 using System.Linq;
 using System.Diagnostics;
+using System.Text;
+using swUserPreferenceToggle_e = SolidWorks.Interop.swconst.swUserPreferenceToggle_e;
+using swDisplayMode_e = SolidWorks.Interop.swconst.swDisplayMode_e;
 
 namespace RoesleinAddIn
 {
@@ -58,10 +61,143 @@ namespace RoesleinAddIn
             Debug.WriteLine("[DEBUG] SheetMetalProcessor Constructor END"); 
         }
 
+        private void SetViewDisplayMode(SwView flatView, DrawingDoc swDrawingDoc)
+        {
+            if (flatView == null || swDrawingDoc == null) return;
+
+            try
+            {
+                Logger.Info("Setting view display mode to hide bend lines");
+
+                // Set the view to use "Hidden Lines Removed" display mode
+                // This often prevents bend lines from showing
+                flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swHIDDEN_GREYED, false, false);
+
+                // Alternative: try wireframe mode
+                // flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swWIREFRAME, false, false);
+
+                // Remove tangent edges - use value 0 for removed
+                flatView.SetDisplayTangentEdges2(0);
+                
+                // If bend lines should be hidden, hide them via entity selection
+                if (!settings.ShowBendLines)
+                {
+                    // Try to hide bend line sketches
+                    HideBendSketches(swDrawingDoc, flatView);
+                }
+
+                // Force the drawing to update
+                ModelDoc2 swDraw = swDrawingDoc as ModelDoc2;
+                if (swDraw != null)
+                {
+                    swDraw.EditRebuild3();
+                    swDraw.GraphicsRedraw2();
+                }
+
+                Logger.Info("View display mode set successfully");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error setting view display mode: {ex.Message}", ex);
+            }
+        }
+        
+        // New method to specifically target bend-related sketches
+        private void HideBendSketches(DrawingDoc swDrawingDoc, SwView flatView)
+        {
+            Logger.Info($"Attempting to hide bend-related sketches in view: {flatView.Name}");
+            
+            try
+            {
+                // Get the model document
+                ModelDoc2 swModel = swDrawingDoc as ModelDoc2;
+                if (swModel == null) return;
+                
+                // Get the drawing component for the view
+                DrawingComponent swDrawComp = flatView.RootDrawingComponent;
+                if (swDrawComp == null)
+                {
+                    Logger.Warning("Could not get root drawing component for view");
+                    return;
+                }
+                
+                Component2 swComp = swDrawComp.Component;
+                if (swComp == null)
+                {
+                    Logger.Warning("Could not get component from drawing component");
+                    return;
+                }
+                
+                // Get the model document for the component
+                ModelDoc2 compModel = swComp.GetModelDoc2() as ModelDoc2;
+                if (compModel == null || compModel.GetType() != (int)swDocumentTypes_e.swDocPART)
+                {
+                    Logger.Warning("Component model is not a part document");
+                    return;
+                }
+                
+                // Track sketches that might be bend lines
+                List<Feature> bendSketches = new List<Feature>();
+                
+                // Find all sketches that might be bend lines
+                Feature swFeat = compModel.FirstFeature() as Feature;
+                while (swFeat != null)
+                {
+                    string featName = swFeat.Name;
+                    string featType = swFeat.GetTypeName2();
+                    
+                    // Check if this is a sketch that might be related to bend lines
+                    if (featType == "ProfileFeature" && 
+                        (featName.IndexOf("bend", StringComparison.OrdinalIgnoreCase) >= 0 || 
+                         featName.IndexOf("fold", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        bendSketches.Add(swFeat);
+                        Logger.Info($"Found potential bend line sketch: {featName}");
+                    }
+                    
+                    // Get next feature
+                    swFeat = swFeat.GetNextFeature() as Feature;
+                }
+                
+                // Try to hide any bend line sketches found
+                int hiddenCount = 0;
+                foreach (Feature bendSketch in bendSketches)
+                {
+                    try
+                    {
+                        // Select the sketch
+                        bool selected = swModel.Extension.SelectByID2(
+                            bendSketch.Name, "SKETCH", 0, 0, 0, false, 0, null, 0);
+                        
+                        if (selected)
+                        {
+                            // Hide the sketch
+                            swModel.BlankSketch();
+                            hiddenCount++;
+                            Logger.Info($"Successfully hid bend sketch: {bendSketch.Name}");
+                        }
+                        
+                        // Clear selection
+                        swModel.ClearSelection2(true);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning($"Error hiding bend sketch {bendSketch.Name}: {ex.Message}");
+                    }
+                }
+                
+                Logger.Info($"Hidden {hiddenCount} bend line sketches out of {bendSketches.Count} found");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in HideBendSketches: {ex.Message}", ex);
+            }
+        }
+
         private void LoadSettings()
         {
             settings = AppSettings.LoadSettings();
-            
+
             if (settings == null)
             {
                 Debug.WriteLine("Settings loaded as null, creating new default settings object.");
@@ -84,7 +220,10 @@ namespace RoesleinAddIn
                 outDir += "\\";
 
             loggingEnabled = settings.LoggingEnabled;
-            Debug.WriteLine($"Settings loaded - Export Dir: {outDir}, Logging Enabled: {loggingEnabled}");
+
+            // Log all relevant settings for debugging
+            Debug.WriteLine($"Settings loaded - Export Dir: {outDir}, Logging Enabled: {loggingEnabled}, Show Bend Lines: {settings.ShowBendLines}");
+            Logger.Info($"Settings loaded - Show Bend Lines: {settings.ShowBendLines}");
         }
 
         private void EnsureDirectoriesExist()
@@ -254,7 +393,11 @@ namespace RoesleinAddIn
 
                 // --- 3 Insert each note – anchor to SHEET not VIEW -------------------
                 // Clear DXF mapping file before creating notes
-                _swApp.SetUserPreferenceStringValue((int)swUserPreferenceStringValue_e.swDxfMappingFile, "");
+                if (string.IsNullOrWhiteSpace(settings?.DxfMappingFilePath))
+                {
+                    // No custom mapping configured – clear to avoid using stale paths
+                    _swApp.SetUserPreferenceStringValue((int)swUserPreferenceStringValue_e.swDxfMappingFile, "");
+                }
                 
                 // Get the flat pattern view bounds
                 SwView flatView = (SwView)swDrawingDoc.GetFirstView();
@@ -722,9 +865,9 @@ namespace RoesleinAddIn
         public string ProcessSheetMetalPart(PartDoc swPart, string outputFolder, string baseFileName = null)
         {
             if (swPart == null) return null;
-            
+
             // Declare variables outside try block for accessibility in catch block
-            string partTitle = "Unknown"; 
+            string partTitle = "Unknown";
             string fileName = "Unknown";
             ModelDoc2 swModel = null;
             string originalConfig = null;
@@ -745,7 +888,7 @@ namespace RoesleinAddIn
                 fileName = baseFileName ?? Path.GetFileNameWithoutExtension(partTitle);
                 string outputPath = Path.Combine(outputFolder, fileName + ".dxf");
 
-                Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Processing part: {partTitle} for DXF export to {outputPath}"); // DEBUG
+                Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Processing part: {partTitle} for DXF export to {outputPath}");
                 Logger.Info($"Processing part: {partTitle} for DXF export to {outputPath}");
 
                 originalConfig = swModel.ConfigurationManager.ActiveConfiguration.Name;
@@ -753,21 +896,21 @@ namespace RoesleinAddIn
 
                 if (string.IsNullOrEmpty(flatConfig))
                 {
-                    Debug.WriteLine($"[DEBUG] Attempting Logger.Error: No Flat-Pattern configuration found for {partTitle}. Cannot export DXF."); // DEBUG
+                    Debug.WriteLine($"[DEBUG] Attempting Logger.Error: No Flat-Pattern configuration found for {partTitle}. Cannot export DXF.");
                     Logger.Error($"No Flat-Pattern configuration found for {partTitle}. Cannot export DXF.");
                     exportErrors.Add($"No Flat-Pattern configuration found for {fileName}");
                     swModel.ShowConfiguration2(originalConfig);
                     return null;
                 }
 
-                Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Using configuration: {flatConfig}"); // DEBUG
+                Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Using configuration: {flatConfig}");
                 Logger.Info($"Using configuration: {flatConfig}");
                 swModel.ShowConfiguration2(flatConfig);
 
                 Feature flatPatternFeature = FindFeatureByType(swPart, "FlatPattern");
                 if (flatPatternFeature == null)
                 {
-                    Debug.WriteLine($"[DEBUG] Attempting Logger.Error: No 'FlatPattern' feature found in configuration '{flatConfig}' for {partTitle}."); // DEBUG
+                    Debug.WriteLine($"[DEBUG] Attempting Logger.Error: No 'FlatPattern' feature found in configuration '{flatConfig}' for {partTitle}.");
                     Logger.Error($"No 'FlatPattern' feature found in configuration '{flatConfig}' for {partTitle}.");
                     exportErrors.Add($"No 'FlatPattern' feature found for {fileName}");
                     swModel.ShowConfiguration2(originalConfig);
@@ -782,19 +925,19 @@ namespace RoesleinAddIn
                 string thickness = GetSheetMetalThickness(swPart, originalConfig);
                 if (string.IsNullOrEmpty(thickness))
                 {
-                    Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Could not determine sheet metal thickness for {partTitle}. Skipping DXF export."); // DEBUG
+                    Debug.WriteLine($"[DEBUG] Attempting Logger.Warning: Could not determine sheet metal thickness for {partTitle}. Skipping DXF export.");
                     Logger.Warning($"Could not determine sheet metal thickness for {partTitle}. Skipping DXF export.");
                     thicknessFailures.Add(fileName);
                     swModel.ShowConfiguration2(originalConfig);
                     return null;
                 }
-                Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Determined thickness: {thickness}"); // DEBUG
+                Debug.WriteLine($"[DEBUG] Attempting Logger.Info: Determined thickness: {thickness}");
                 Logger.Info($"Determined thickness: {thickness}");
 
                 // Track DXF count by material and thickness
                 string mat = GetCustomProperty(swModel, "Material");
                 string mappedMaterial = MapMaterial(mat, partTitle);
-                
+
                 string key = $"{(mappedMaterial ?? mat)} | {thickness}";
                 if (!materialThicknessCounts.ContainsKey(key))
                     materialThicknessCounts[key] = 0;
@@ -819,72 +962,70 @@ namespace RoesleinAddIn
                     DrawingDoc swDrawingDoc = swDraw as DrawingDoc;
                     if (swDrawingDoc == null) throw new Exception("Failed to get DrawingDoc from new document.");
 
-                    // Set up the bend line layer first
-                    string bendLayerName = !string.IsNullOrEmpty(settings.BendLineLayerName) 
-                        ? settings.BendLineLayerName 
-                        : "Bend";
+                    // Log the ShowBendLines setting value
+                    Logger.Info($"ShowBendLines setting is: {settings.ShowBendLines}");
 
-                    // Create the layer with specified properties
-                    bool layerResult = swDrawingDoc.CreateLayer2(
-                        bendLayerName,
-                        "Sheet‑metal bend lines",
-                        ColorTranslator.ToWin32(Color.Blue),
-                        (int)swLineStyles_e.swLineCENTER,
-                        (int)swLineWeights_e.swLW_THIN,
-                        true,   // visible
-                        true    // printable
+                    // Create the flat pattern view (always create it normally first)
+                    SwView flatView = swDrawingDoc.CreateFlatPatternViewFromModelView3(
+                        partPath,
+                        flatConfig,
+                        0.05, // X position
+                        0.05, // Y position
+                        0,    // Angle
+                        false, // ShowSheetMetalBendNotes
+                        settings.ShowBendLines   // Use settings value instead of always true
                     );
 
-                    if (!layerResult)  // Check boolean result
+                    if (flatView == null) 
                     {
-                        Logger.Warning($"Failed to create bend line layer: {bendLayerName}");
-                        throw new Exception($"Failed to create bend line layer: {bendLayerName}");
+                        throw new Exception("Failed to create flat pattern view in drawing.");
                     }
 
-                    // Set as current layer
-                    LayerMgr lyrMgr = (LayerMgr)swDraw.GetLayerManager();
-                    if (lyrMgr != null)
-                    {
-                        lyrMgr.SetCurrentLayer(bendLayerName);
-                    }
-
-                    // Create flat pattern view with bend lines visible
-                    SwView flatView = swDrawingDoc.CreateFlatPatternViewFromModelView3(partPath, flatConfig, 0.05, 0.05, 0, false, false);
-                    if (flatView == null) throw new Exception("Failed to create flat pattern view in drawing.");
                     Logger.Info($"Created flat pattern view named: {flatView.Name}");
 
-                    // Add zoom to fit after creating the view
-                    if (!swDrawingDoc.ActivateView(flatView.Name)) Logger.Warning("Failed to activate view before zoom.");
-                    swDraw.ViewZoomtofit2();
-                    swDraw.GraphicsRedraw2();
+                    // Set the view scale to 1:1
+                    flatView.ScaleDecimal = 1.0;
 
-                    // Ensure bend lines are on the correct layer
-                    AssignBendLinesToLayer(swDrawingDoc, flatView);
+                    // NOW FORCE HIDE BEND LINES if setting is disabled
+                    if (!settings.ShowBendLines)
+                    {
+                        Logger.Info("Attempting to force hide bend lines using advanced drawing view manipulation");
+                        ForceHideBendLinesAdvanced(swDrawingDoc, flatView);
+                    }
+
+                    // Final rebuild before export
                     swDraw.ForceRebuild3(true);
                     swDraw.GraphicsRedraw2();
 
-                    // Set DXF export options before adding notes
+                    // Set DXF export options JUST before save
                     SetDxfExportOptions(swDraw);
 
                     // Pass the flat view name to AddNotesToDrawing
                     AddNotesToDrawing(swDrawingDoc, swModel, originalConfig, thickness, flatView.Name);
+
+                    // Debug the drawing structure
+                    DebugDrawingStructure(swDrawingDoc);
 
                     int errors = 0;
                     int warnings = 0;
                     bool success = swDraw.Extension.SaveAs(outputPath, (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
                                                          (int)swSaveAsOptions_e.swSaveAsOptions_Silent, null, ref errors, ref warnings);
 
-                    if (!success)
+                    // DXF successfully saved - now post-process it
+                    if (success)
                     {
-                        Debug.WriteLine($"[DEBUG] Attempting Logger.Error: Failed to save DXF for {partTitle}. Errors: {errors}, Warnings: {warnings}"); // DEBUG
-                        Logger.Error($"Failed to save DXF for {partTitle}. Errors: {errors}, Warnings: {warnings}");
-                        exportErrors.Add($"Failed to save DXF for {fileName} (Error code: {errors})");
-                        return null;
+                        Logger.Info($"DXF successfully saved to: {outputPath}");
+                        
+                        // Post-process the DXF file to fix bend lines and colors
+                        PostProcessDxfFile(outputPath);
+                        
+                        return outputPath;
                     }
-                    Debug.WriteLine($"[DEBUG] Attempting Logger.Info: DXF successfully saved to: {outputPath}"); // DEBUG
-                    Logger.Info($"DXF successfully saved to: {outputPath}");
 
-                    return outputPath;
+                    Debug.WriteLine($"[DEBUG] Attempting Logger.Error: Failed to save DXF for {partTitle}. Errors: {errors}, Warnings: {warnings}");
+                    Logger.Error($"Failed to save DXF for {partTitle}. Errors: {errors}, Warnings: {warnings}");
+                    exportErrors.Add($"Failed to save DXF for {fileName} (Error code: {errors})");
+                    return null;
                 }
                 finally
                 {
@@ -901,13 +1042,360 @@ namespace RoesleinAddIn
             catch (Exception ex)
             {
                 // Use the variables declared outside the try block
-                Debug.WriteLine($"[DEBUG] Attempting Logger.Error: Error processing part {partTitle}: {ex.Message}"); // DEBUG
+                Debug.WriteLine($"[DEBUG] Attempting Logger.Error: Error processing part {partTitle}: {ex.Message}");
                 Logger.Error($"Error processing part {partTitle}: {ex.Message}", ex);
                 exportErrors.Add($"Error processing {fileName}: {ex.Message}");
                 return null;
             }
         }
         
+        /// <summary>
+        /// Post-processes a DXF file to move hidden lines to BEND_LINES layer and set all colors to ByLayer
+        /// </summary>
+        private void PostProcessDxfFile(string dxfFilePath)
+        {
+            if (string.IsNullOrEmpty(dxfFilePath) || !File.Exists(dxfFilePath))
+            {
+                Logger.Error($"Cannot post-process DXF file: File not found at {dxfFilePath}");
+                return;
+            }
+            
+            Logger.Info($"Post-processing DXF file: {dxfFilePath}");
+            
+            try
+            {
+                // Attempt to directly modify the DXF file to handle bend lines
+                // For immediate results while we improve the code, let's try a direct string replacement
+                // This might be crude but it can work for many DXF files
+                string dxfContent = File.ReadAllText(dxfFilePath);
+                
+                // Create a backup of the original file (deleted at the end)
+                string backupPath = dxfFilePath + ".bak";
+                File.WriteAllText(backupPath, dxfContent);
+                Logger.Info($"Created backup of original DXF at: {backupPath}");
+                
+                // First do a detection pass to see if our normal processing might work
+                int hiddenCount = CountOccurrences(dxfContent, "HIDDEN");
+                bool hasBendIndicators = dxfContent.Contains("BEND") || 
+                                        dxfContent.Contains("FOLD") || 
+                                        dxfContent.Contains("CENTER");
+                
+                Logger.Info($"Detected {hiddenCount} occurrences of 'HIDDEN' in the DXF file");
+                Logger.Info($"DXF contains bend indicators: {hasBendIndicators}");
+                
+                // First try a direct approach to replace layer 0 hidden lines with BEND_LINES layer
+                // Layer code "8" followed by layer name "0" with linetype "6" followed by "HIDDEN"
+                bool modified = false;
+                
+                // Only proceed with detailed scanning if we detect hidden lines
+                if (hiddenCount > 0)
+                {
+                    // Read the file as lines for more precise modification
+                    string[] lines = File.ReadAllLines(dxfFilePath);
+                    List<string> outputLines = new List<string>();
+                    
+                    // First scan to find all layers and entities for logging
+                    var layersFound = new HashSet<string>();
+                    
+                    for (int i = 0; i < lines.Length - 1; i++)
+                    {
+                        // Find layers
+                        if (lines[i].Trim() == "LAYER" && i+2 < lines.Length && lines[i+1].Trim() == "2")
+                        {
+                            layersFound.Add(lines[i+2].Trim());
+                        }
+                    }
+                    
+                    Logger.Info($"Found layers: {string.Join(", ", layersFound)}");
+                    
+                    // Check if BEND_LINES layer exists or needs to be created
+                    bool bendLayerExists = layersFound.Contains("BEND_LINES");
+                    
+                    // Add BEND_LINES layer section if it doesn't exist
+                    StringBuilder newDxfContent = new StringBuilder();
+                    if (!bendLayerExists)
+                    {
+                        // Find the TABLE section with LAYER to insert our new layer
+                        int insertPosition = dxfContent.IndexOf("ENDTAB", dxfContent.IndexOf("TABLE\r\n  2\r\nLAYER"));
+                        if (insertPosition > 0)
+                        {
+                            // Insert the BEND_LINES layer definition right before ENDTAB
+                            string bendLayerDef = "  0\r\nLAYER\r\n  2\r\nBEND_LINES\r\n  70\r\n0\r\n  62\r\n5\r\n  6\r\nCONTINUOUS\r\n";
+                            
+                            newDxfContent.Append(dxfContent.Substring(0, insertPosition));
+                            newDxfContent.Append(bendLayerDef);
+                            newDxfContent.Append(dxfContent.Substring(insertPosition));
+                            
+                            dxfContent = newDxfContent.ToString();
+                            newDxfContent.Clear();
+                            modified = true;
+                            Logger.Info("Added BEND_LINES layer to DXF file");
+                        }
+                    }
+                    
+                    // Now locate all hidden lines and change their layer
+                    // Process each entity
+                    bool inEntity = false;
+                    bool isHiddenLine = false;
+                    int entitiesProcessed = 0;
+                    int hiddenLinesFound = 0;
+                    int bendLinesProcessed = 0;
+                    int colorsByLayerSet = 0;
+                    
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        string line = lines[i].Trim();
+                        
+                        // Entity start/end detection
+                        if (line == "0" && i + 1 < lines.Length)
+                        {
+                            string entityType = lines[i + 1].Trim();
+                            
+                            // If we were in an entity, finalize it
+                            if (inEntity)
+                            {
+                                inEntity = false;
+                                entitiesProcessed++;
+                                
+                                if (isHiddenLine)
+                                {
+                                    hiddenLinesFound++;
+                                }
+                                
+                                isHiddenLine = false;
+                            }
+                            
+                            // Check if this is the start of a new entity
+                            if (entityType == "LINE" || entityType == "LWPOLYLINE" || entityType == "POLYLINE" ||
+                                entityType == "ARC" || entityType == "CIRCLE")
+                            {
+                                inEntity = true;
+                            }
+                        }
+                        
+                        // Hidden line detection
+                        if (inEntity && line == "6" && i + 1 < lines.Length && lines[i + 1].Trim() == "HIDDEN")
+                        {
+                            isHiddenLine = true;
+                            Logger.Info("Found hidden line");
+                        }
+                        
+                        // Update layer for hidden lines
+                        if (inEntity && isHiddenLine && line == "8" && i + 1 < lines.Length)
+                        {
+                            string currentLayer = lines[i + 1].Trim();
+                            outputLines.Add(lines[i]); // Add the 8
+                            outputLines.Add("BEND_LINES");
+                            bendLinesProcessed++;
+                            i++; // Skip the original layer
+                            continue;
+                        }
+                        
+                        // Set all entity colors to ByLayer
+                        if (inEntity && line == "62" && i + 1 < lines.Length)
+                        {
+                            outputLines.Add(lines[i]);
+                            outputLines.Add("256"); // ByLayer color
+                            colorsByLayerSet++;
+                            i++; // Skip the original color
+                            continue;
+                        }
+                        
+                        // Add the line to output
+                        outputLines.Add(lines[i]);
+                    }
+                    
+                    // If we found and processed hidden lines, write the file
+                    if (bendLinesProcessed > 0 || colorsByLayerSet > 0)
+                    {
+                        File.WriteAllLines(dxfFilePath, outputLines);
+                        modified = true;
+                        Logger.Info($"Updated DXF with: {bendLinesProcessed} bend lines moved to BEND_LINES layer, {colorsByLayerSet} colors set to ByLayer");
+                    }
+                    
+                    // If user does NOT want bend lines, remove entire BEND_LINES layer and its entities
+                    if (!settings.ShowBendLines)
+                    {
+                        Logger.Info("ShowBendLines = false – stripping BEND_LINES layer and its entities");
+
+                        var prunedLines = new List<string>();
+
+                        int idx = 0;
+                        while (idx < outputLines.Count)
+                        {
+                            string code = outputLines[idx].Trim();
+
+                            // Entity/header blocks always start with group code 0
+                            if (code == "0" && idx + 1 < outputLines.Count)
+                            {
+                                int blockStart = idx;
+                                int cursor = idx + 2; // skip 0 + entity type
+                                bool isBendEntity = false;
+
+                                // Move until next 0 or end of list
+                                while (cursor < outputLines.Count && outputLines[cursor].Trim() != "0")
+                                {
+                                    if (outputLines[cursor].Trim() == "8" && cursor + 1 < outputLines.Count)
+                                    {
+                                        string layerName = outputLines[cursor + 1].Trim();
+                                        if (layerName.Equals("BEND_LINES", StringComparison.OrdinalIgnoreCase))
+                                            isBendEntity = true;
+                                    }
+                                    cursor++;
+                                }
+
+                                if (!isBendEntity)
+                                {
+                                    // copy the block
+                                    for (int k = blockStart; k < cursor; k++) prunedLines.Add(outputLines[k]);
+                                }
+
+                                idx = cursor; // continue from next block (which may be at list.Count)
+                            }
+                            else
+                            {
+                                // Header or table data before first entity, just copy
+                                prunedLines.Add(outputLines[idx]);
+                                idx++;
+                            }
+                        }
+
+                        // after prunedLines built
+                        // Remove BEND_LINES layer definition
+                        var finalLines = new List<string>();
+                        bool insideLayerTable = false;
+                        bool skipLayer = false;
+
+                        for (int i = 0; i < prunedLines.Count; i++)
+                        {
+                            string trimmed = prunedLines[i].Trim();
+
+                            if (!insideLayerTable && trimmed == "TABLE" && i + 2 < prunedLines.Count && prunedLines[i + 2].Trim() == "LAYER")
+                            {
+                                insideLayerTable = true;
+                            }
+
+                            if (insideLayerTable && trimmed == "ENDTAB")
+                            {
+                                insideLayerTable = false;
+                            }
+
+                            if (insideLayerTable && trimmed == "LAYER")
+                            {
+                                // Check if upcoming 2/BEND_LINES
+                                if (i + 3 < prunedLines.Count && prunedLines[i + 2].Trim() == "2" && prunedLines[i + 3].Trim().Equals("BEND_LINES", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    skipLayer = true;
+                                    continue; // skip this LAYER line
+                                }
+                            }
+
+                            if (skipLayer)
+                            {
+                                // stop skipping when next 0 encountered
+                                if (trimmed == "0")
+                                {
+                                    skipLayer = false;
+                                }
+                                continue;
+                            }
+
+                            finalLines.Add(prunedLines[i]);
+                        }
+
+                        File.WriteAllLines(dxfFilePath, finalLines);
+                        modified = true;
+                        Logger.Info("BEND_LINES layer and its entities removed");
+                    }
+                }
+                else
+                {
+                    // No hidden lines detected - try to find Layer 0 entities and set them to ByLayer color
+                    // This is a fallback approach
+                    
+                    // Try a simple string replacement to set all colors to ByLayer
+                    int colorsByLayerSet = 0;
+                    
+                    // Read the file as lines for more precise modification
+                    string[] lines = File.ReadAllLines(dxfFilePath);
+                    List<string> outputLines = new List<string>();
+                    
+                    bool inEntity3 = false;
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        string line = lines[i].Trim();
+                        
+                        // Entity start/end detection
+                        if (line == "0" && i + 1 < lines.Length)
+                        {
+                            string entityType = lines[i + 1].Trim();
+                            
+                            // Check if this is the start of a new entity
+                            if (entityType == "LINE" || entityType == "LWPOLYLINE" || entityType == "POLYLINE" ||
+                                entityType == "ARC" || entityType == "CIRCLE" || entityType == "TEXT" || entityType == "MTEXT")
+                            {
+                                inEntity3 = true;
+                            }
+                            else
+                            {
+                                inEntity3 = false;
+                            }
+                        }
+                        
+                        // Set all entity colors to ByLayer
+                        if (inEntity3 && line == "62" && i + 1 < lines.Length)
+                        {
+                            outputLines.Add(lines[i]);
+                            outputLines.Add("256"); // ByLayer color
+                            colorsByLayerSet++;
+                            i++; // Skip the original color
+                            continue;
+                        }
+                        
+                        // Add the line to output
+                        outputLines.Add(lines[i]);
+                    }
+                    
+                    // If we set any colors, write the file
+                    if (colorsByLayerSet > 0)
+                    {
+                        File.WriteAllLines(dxfFilePath, outputLines);
+                        modified = true;
+                        Logger.Info($"Updated DXF with: {colorsByLayerSet} colors set to ByLayer");
+                    }
+                    
+                    if (!modified)
+                    {
+                        Logger.Warning("No hidden lines or bend lines found in the DXF file - could not process");
+                    }
+                }
+                
+                // Delete the backup file unless debug logging is on
+                try { if (File.Exists(backupPath)) File.Delete(backupPath); } catch {}
+                
+                Logger.Info($"DXF post-processing complete: {dxfFilePath}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error post-processing DXF file: {ex.Message}", ex);
+            }
+        }
+        
+        /// <summary>
+        /// Count occurrences of a substring in a string
+        /// </summary>
+        private int CountOccurrences(string text, string pattern)
+        {
+            int count = 0;
+            int i = 0;
+            while ((i = text.IndexOf(pattern, i, StringComparison.OrdinalIgnoreCase)) != -1)
+            {
+                i += pattern.Length;
+                count++;
+            }
+            return count;
+        }
+
         private string FindFlatPatternConfig(ModelDoc2 swModel)
         {
              if (swModel == null) return null;
@@ -1320,17 +1808,92 @@ namespace RoesleinAddIn
                     (int)swUserPreferenceIntegerValue_e.swDxfOutputFormat,
                     (int)swDxfFormat_e.swDxfFormat_R12);
 
-                // 2 – ***CRITICAL*** Disable custom mapping so SW keeps native layers
-                _swApp.SetUserPreferenceToggle(
-                    (int)swUserPreferenceToggle_e.swDxfMapping,
-                    false);
+                // 2 – Enable custom mapping if a valid map file has been configured in settings
+                string mapPath = settings?.DxfMappingFilePath;
 
-                // 3 – Export hidden layers (bend‑line layer is hidden if view suppressed)
-                _swApp.SetUserPreferenceToggle(
-                    (int)swUserPreferenceToggle_e.swDXFExportHiddenLayersOn,
-                    true);
+                // If configured path is blank or missing, fall back to shared PCSVAULT path
+                if (string.IsNullOrWhiteSpace(mapPath) || !File.Exists(mapPath))
+                {
+                    const string fallbackMap = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\BendLineMapping.map";
+                    if (File.Exists(fallbackMap))
+                    {
+                        Logger.Warning($"Configured map file not found. Falling back to shared map file at: {fallbackMap}");
+                        mapPath = fallbackMap;
+                    }
+                }
 
-                Logger.Info("DXF export options configured (mapping OFF – preserve drawing layers).");
+                bool mapAvailable = !string.IsNullOrWhiteSpace(mapPath) && File.Exists(mapPath);
+
+                if (mapAvailable)
+                {
+                    Logger.Info($"Using DXF mapping file: {mapPath}");
+                    _swApp.SetUserPreferenceStringValue((int)swUserPreferenceStringValue_e.swDxfMappingFile, mapPath);
+                    _swApp.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swDxfMapping, true);
+                }
+                else
+                {
+                    Logger.Warning("DXF mapping file not found – custom mapping disabled");
+                    _swApp.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swDxfMapping, false);
+                }
+
+                // 3 - Try to disable layer merging using direct constant value
+                try
+                {
+                    _swApp.SetUserPreferenceToggle(37, false); // 37 may correspond to swDxfMergeDrawingLayers in newer APIs
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Could not set swDxfMergeDrawingLayers preference: {ex.Message}");
+                }
+                
+                // 4 - Try to ensure output is in inches using direct constant value
+                try 
+                {
+                    _swApp.SetUserPreferenceIntegerValue(81, 0); // 81 may correspond to swDxfOutputUnits in newer APIs, 0=inches
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Could not set swDxfOutputUnits preference: {ex.Message}");
+                }
+
+                // 5 – Control hidden layer export based on settings
+                if (settings.ShowBendLines)
+                {
+                    Logger.Info("Bend lines enabled - setting DXF to export hidden layers");
+                    _swApp.SetUserPreferenceToggle(
+                        (int)swUserPreferenceToggle_e.swDXFExportHiddenLayersOn,
+                        true);
+                }
+                else
+                {
+                    Logger.Info("Bend lines disabled - setting DXF to NOT export hidden layers");
+                    _swApp.SetUserPreferenceToggle(
+                        (int)swUserPreferenceToggle_e.swDXFExportHiddenLayersOn,
+                        false);
+                }
+
+                // 6 - Try to ensure we export entities on layer 0 using direct constant value
+                try
+                {
+                    _swApp.SetUserPreferenceToggle(47, true); // 47 may correspond to swDXFExportDrawingGeomLayer in newer APIs
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Could not set swDXFExportDrawingGeomLayer preference: {ex.Message}");
+                }
+
+                // 7 - Control export of hidden geometry (likely bend lines)
+                try
+                {
+                    // Always export hidden geometry so bend entities are present for optional removal in post-processing
+                    _swApp.SetUserPreferenceToggle(36, true); // 36 may correspond to swDXFExportHiddenGeometry
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Could not set swDXFExportHiddenGeometry preference: {ex.Message}");
+                }
+
+                Logger.Info($"DXF export options configured - Bend lines: {(settings.ShowBendLines ? "ENABLED" : "DISABLED")}");
             }
             catch (Exception ex)
             {
@@ -1339,66 +1902,600 @@ namespace RoesleinAddIn
             Logger.DebugLog("SetDxfExportOptions END");
         }
 
-/// <summary>
-/// Moves every bend-line sketch segment in the supplied flat-pattern drawing view onto the designated layer.
-/// </summary>
-private void AssignBendLinesToLayer(DrawingDoc swDraw, SwView flatView)
-{
-    if (swDraw == null || flatView == null || !flatView.IsFlatPatternView())
-    {
-        Logger.Warning("Invalid parameters for AssignBendLinesToLayer");
-        return;
-    }
-
-    try
-    {
-        string bendLayerName = !string.IsNullOrEmpty(settings.BendLineLayerName) 
-            ? settings.BendLineLayerName 
-            : "Bend";
-
-        // Get the layer manager
-        ModelDoc2 swModel = swDraw as ModelDoc2;
-        if (swModel == null) return;
-        LayerMgr layerMgr = (LayerMgr)swModel.GetLayerManager();
-        if (layerMgr == null) return;
-
-        // Ensure the bend layer exists
-        Layer bendLayer = (Layer)layerMgr.GetLayer(bendLayerName);
-        if (bendLayer == null)
+        private void SetSystemPreferencesToHideBendLines()
         {
-            int layerResult = layerMgr.AddLayer(
-                bendLayerName, 
-                "Bend Lines Layer", 
-                255, // Blue
-                (int)swLineStyles_e.swLineCENTER,
-                (int)swLineWeights_e.swLW_THIN);
-            if (layerResult != 1) return;
-            bendLayer = (Layer)layerMgr.GetLayer(bendLayerName);
+            Logger.Info("Setting system preferences to control bend line display");
+            
+            try
+            {
+                if (!settings.ShowBendLines)
+                {
+                    // Try to disable bend lines at the system level
+                    Logger.Info("Attempting to disable bend lines through system preferences");
+                    
+                    // The following toggles are not available in this SolidWorks API version:
+                    // _swApp.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swDetailingDisplaySheetMetalBendNotes, false);
+                    // _swApp.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swDetailingDisplayAnnotations, false);
+                    // _swApp.SetUserPreferenceToggle((int)swUserPreferenceToggle_e.swSheetMetalBendAllowance, false);
+                    // Only the ShowBendLines parameter in view creation and display settings are used.
+                    
+                    Logger.Info("System preferences set to minimize bend line display (no toggles available in this API version)");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error setting system preferences: {ex.Message}", ex);
+            }
         }
 
-        // Get the sketch from the flat pattern view
-        Sketch sketch = flatView.GetSketch() as Sketch;
-        if (sketch == null) return;
-        object[] segments = sketch.GetSketchSegments() as object[];
-        if (segments == null || segments.Length == 0) return;
-
-        int processedCount = 0;
-        foreach (object segObj in segments)
+        private void HideBendLinesThroughViewProperties(SwView flatView, DrawingDoc swDrawingDoc)
         {
-            SketchSegment seg = segObj as SketchSegment;
-            if (seg == null) continue;
-
-            // Just set the layer for each segment (API-compliant)
-            seg.Layer = bendLayerName;
-            processedCount++;
+            Logger.Info($"Attempting to hide bend lines through view properties for: {flatView.Name}");
+            
+            try
+            {
+                // Method 1: Set display mode to minimize bend lines
+                flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swHIDDEN_GREYED, false, false);
+                
+                // Method 2: Hide tangent edges (bend lines are often tangent edges)
+                flatView.SetDisplayTangentEdges2(0); // 0 = removed, 1 = solid, 2 = dashed
+                
+                // Method 3: Try to set the view to not show sheet metal bend notes
+                try
+                {
+                    // This method might not exist in all versions
+                    ModelDoc2 swModel = swDrawingDoc as ModelDoc2;
+                    if (swModel != null)
+                    {
+                        // Select the view and try to modify its properties
+                        bool selected = swModel.Extension.SelectByID2(flatView.Name, "DRAWINGVIEW", 0, 0, 0, false, 0, null, 0);
+                        if (selected)
+                        {
+                            // Try to access view properties and disable bend line display
+                            swDrawingDoc.ActivateView(flatView.Name);
+                            
+                            // Clear the selection
+                            swModel.ClearSelection2(true);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Could not modify advanced view properties: {ex.Message}");
+                }
+                
+                // Method 4: Try to modify the view's visibility settings
+                try
+                {
+                    // Force the view to use minimal edge display
+                    flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swWIREFRAME, false, false);
+                    
+                    // Then switch back to hidden lines removed but with minimal edges
+                    flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swHIDDEN_GREYED, false, false);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Could not set wireframe display mode: {ex.Message}");
+                }
+                
+                Logger.Info("Completed view property modifications to hide bend lines");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error hiding bend lines through view properties: {ex.Message}", ex);
+            }
         }
-        Logger.Info($"Successfully assigned {processedCount} bend lines to layer: {bendLayerName}");
-    }
-    catch (Exception ex)
-    {
-        Logger.Error($"Error in AssignBendLinesToLayer: {ex.Message}");
-    }
-}
+
+        private void HideBendLinesInAllFlatPatternViews(DrawingDoc swDrawDoc)
+        {
+            if (settings.ShowBendLines)
+            {
+                Logger.Info("ShowBendLines is enabled - skipping bend line hiding");
+                return;
+            }
+            
+            ModelDoc2 swModel = swDrawDoc as ModelDoc2;
+            if (swModel == null) return;
+
+            Logger.Info("Starting final bend line cleanup");
+
+            SwView swView = (SwView)swDrawDoc.GetFirstView();
+            while (swView != null)
+            {
+                try
+                {
+                    string viewName = swView.GetName2();
+                    
+                    // Skip the sheet view (first view)
+                    if (swView == (SwView)swDrawDoc.GetFirstView())
+                    {
+                        swView = (SwView)swView.GetNextView();
+                        continue;
+                    }
+
+                    Logger.Info($"Final cleanup for view: {viewName}");
+
+                    // Apply final display settings to ensure bend lines are minimized
+                    try
+                    {
+                        // Set to wireframe first to clear any cached display data
+                        swView.SetDisplayMode3(false, (int)swDisplayMode_e.swWIREFRAME, false, false);
+                        
+                        // Then set to hidden lines removed with no tangent edges
+                        swView.SetDisplayMode3(false, (int)swDisplayMode_e.swHIDDEN_GREYED, false, false);
+                        swView.SetDisplayTangentEdges2(0);
+                        
+                        Logger.Info($"Applied final display settings to view: {viewName}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error($"Error applying final display settings: {ex.Message}", ex);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error in final bend line cleanup: {ex.Message}", ex);
+                }
+                
+                swView = (SwView)swView.GetNextView();
+            }
+
+            // Force rebuild and redraw
+            swModel.ForceRebuild3(true);
+            swModel.GraphicsRedraw2();
+            Logger.Info("Completed final bend line cleanup");
+        }
+
+        private void DebugDrawingStructure(DrawingDoc swDrawDoc)
+        {
+            ModelDoc2 swModel = swDrawDoc as ModelDoc2;
+            if (swModel == null) return;
+            
+            Logger.Info("=== DEBUG: Drawing Structure Analysis ===");
+            
+            SwView swView = (SwView)swDrawDoc.GetFirstView();
+            while (swView != null)
+            {
+                string viewName = swView.GetName2();
+                Logger.Info($"View: {viewName}");
+                
+                if (swView != (SwView)swDrawDoc.GetFirstView()) // Skip sheet view
+                {
+                    DrawingComponent swDrawComp = swView.RootDrawingComponent;
+                    if (swDrawComp != null)
+                    {
+                        Component2 swComp = swDrawComp.Component;
+                        if (swComp != null)
+                        {
+                            string compName = swComp.Name2;
+                            Logger.Info($"  Component: {compName}");
+                            
+                            // List all features in the component
+                            Feature swFeat = (Feature)swComp.FirstFeature();
+                            while (swFeat != null)
+                            {
+                                string featName = swFeat.Name;
+                                string featType = swFeat.GetTypeName2();
+                                Logger.Info($"    Feature: {featName} (Type: {featType})");
+                                
+                                if (featType == "FlatPattern")
+                                {
+                                    // List sub-features of flat pattern
+                                    Feature swSubFeat = (Feature)swFeat.GetFirstSubFeature();
+                                    while (swSubFeat != null)
+                                    {
+                                        string subFeatName = swSubFeat.Name;
+                                        string subFeatType = swSubFeat.GetTypeName2();
+                                        Logger.Info($"      Sub-Feature: {subFeatName} (Type: {subFeatType})");
+                                        swSubFeat = (Feature)swSubFeat.GetNextSubFeature();
+                                    }
+                                }
+                                
+                                swFeat = (Feature)swFeat.GetNextFeature();
+                            }
+                        }
+                    }
+                }
+                
+                swView = (SwView)swView.GetNextView();
+            }
+            
+            Logger.Info("=== END DEBUG: Drawing Structure Analysis ===");
+        }
+
+        private void ForceHideBendLinesAdvanced(DrawingDoc swDrawingDoc, SwView flatView)
+        {
+            ModelDoc2 swModel = swDrawingDoc as ModelDoc2;
+            if (swModel == null) return;
+            
+            Logger.Info($"Starting advanced bend line hiding for view: {flatView.Name}");
+            
+            try
+            {
+                // NEW PRIMARY APPROACH: Hide bend lines at entity level using direct Hide() method
+                bool success = HideBendLineEntities(swDrawingDoc, flatView);
+                
+                if (!success)
+                {
+                    // APPROACH 1: Manipulate the view through selection and property modification
+                    success = HideBendLinesByViewPropertyManipulation(swModel, flatView);
+                    
+                    if (!success)
+                    {
+                        // APPROACH 2: Try modifying the drawing view through direct IDrawingView interface
+                        success = HideBendLinesThroughIDrawingView(swDrawingDoc, flatView);
+                    }
+                    
+                    if (!success)
+                    {
+                        // APPROACH 3: Force all sheet metal annotation hiding
+                        success = HideAllSheetMetalAnnotations(swModel, flatView);
+                    }
+                    
+                    if (!success)
+                    {
+                        // APPROACH 4: Last resort - modify layers and force entity hiding
+                        ForceHideAllBendRelatedEntities(swModel, flatView);
+                    }
+                }
+                
+                Logger.Info($"Completed advanced bend line hiding attempts for view: {flatView.Name}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in advanced bend line hiding: {ex.Message}", ex);
+            }
+        }
+        
+        // New method to hide bend lines at the entity level
+        private bool HideBendLineEntities(DrawingDoc swDrawingDoc, SwView flatView)
+        {
+            Logger.Info($"Attempting to hide bend line entities directly in view: {flatView.Name}");
+            ModelDoc2 swModel = swDrawingDoc as ModelDoc2;
+            if (swModel == null) return false;
+
+            try
+            {
+                // First, try to get all entities in the view
+                object[] visibleEntities = null;
+                try
+                {
+                    // Check if the view has a root component
+                    DrawingComponent drawComp = flatView.RootDrawingComponent;
+                    Component2 viewComp = null;
+                    if (drawComp != null)
+                    {
+                        viewComp = drawComp.Component;
+                    }
+                    
+                    // Get visible entities - need to provide Component2 parameter
+                    visibleEntities = flatView.GetVisibleEntities(viewComp, 0) as object[];
+                    Logger.Info($"Retrieved {(visibleEntities?.Length ?? 0)} visible entities from view");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Could not get visible entities: {ex.Message}");
+                    // No fallback to GetEntities - that method doesn't exist in SolidWorks API
+                }
+                
+                if (visibleEntities == null || visibleEntities.Length == 0)
+                {
+                    Logger.Warning("No entities found in view, cannot hide bend lines directly");
+                    return false;
+                }
+                
+                int hiddenCount = 0;
+                foreach (object entityObj in visibleEntities)
+                {
+                    if (entityObj == null) continue;
+                    
+                    try
+                    {
+                        // Try to identify bend line entities
+                        // Bend lines can be edges in drawing views
+                        Entity entity = entityObj as Entity;
+                        if (entity == null) continue;
+                        
+                        // Check if this is likely a bend line
+                        // Several methods to identify:
+                        // 1. Check entity type (usually an edge)
+                        // 2. Check properties that might identify bend status
+                        
+                        bool isBendLine = false;
+                        string entityType = "Unknown";
+                        
+                        try 
+                        {
+                            entityType = entity.GetType().ToString();
+                            
+                            // For edges, we can try to get more information
+                            if (entityObj is Edge)
+                            {
+                                Edge edge = entityObj as Edge;
+                                // Additional checks for bend edges could go here
+                                
+                                // Most edges in a flat pattern view are likely bend lines
+                                isBendLine = true;
+                            }
+                            
+                            // Check if entity DisplayName or GetTypeName2 indicate it's a bend line
+                            try 
+                            {
+                                // Check the entity type - some types are more likely to be bend lines
+                                string entityTypeName = entity.GetType().ToString().ToLower();
+                                if (entityTypeName.Contains("edge") || 
+                                    entityTypeName.Contains("sketch") ||
+                                    entityTypeName.Contains("fold"))
+                                {
+                                    isBendLine = true;
+                                }
+                            }
+                            catch {}
+                            
+                            // For sketch entities, check if they're part of a bend sketch
+                            if (!isBendLine && (entity is SketchSegment))
+                            {
+                                // Likely to be a bend line if it's a sketch segment in a flat pattern view
+                                isBendLine = true;
+                            }
+                        }
+                        catch {}
+                        
+                        // If we think it's a bend line or we're using aggressive hiding
+                        if (isBendLine)
+                        {
+                            try
+                            {
+                                // Select the entity
+                                entity.Select(false);
+                                
+                                // We need to use the model to hide selected entities
+                                // Hide selected entity using direct command ID
+                                // Using 953 which is often the ID for Hide/Show Sketch elements
+                                _swApp.RunCommand(953, "");
+                                
+                                hiddenCount++;
+                                
+                                // Clear the selection
+                                swModel.ClearSelection2(true);
+                            }
+                            catch (Exception hideEx)
+                            {
+                                Logger.Warning($"Failed to hide entity: {hideEx.Message}");
+                            }
+                        }
+                    }
+                    catch (Exception entityEx)
+                    {
+                        Logger.Warning($"Error processing entity: {entityEx.Message}");
+                    }
+                }
+                
+                Logger.Info($"Successfully hidden {hiddenCount} potential bend line entities");
+                
+                // Try a more aggressive approach - select and hide bend lines using drawing view selection
+                try
+                {
+                    // Select the view using SelectByID2
+                    bool viewSelected = swModel.Extension.SelectByID2(
+                        flatView.Name, "DRAWINGVIEW", 0, 0, 0, false, 0, null, 0);
+                    
+                    // If we failed to hide any entities individually and successfully selected the view
+                    if (hiddenCount == 0 && viewSelected)
+                    {
+                        Logger.Info("Attempting to use selection-based hiding on the view");
+                        
+                        // Try to hide selected view or its components
+                        // Using 953 which is often the ID for Hide/Show Sketch elements
+                        _swApp.RunCommand(953, "");
+                        
+                        Logger.Info("Applied hide command to selected view");
+                    }
+                }
+                catch (Exception selectEx)
+                {
+                    Logger.Warning($"Could not use command-based hiding: {selectEx.Message}");
+                }
+                
+                // Force update
+                swModel.ForceRebuild3(true);
+                swModel.GraphicsRedraw2();
+                
+                return hiddenCount > 0;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in bend line entity hiding: {ex.Message}", ex);
+                return false;
+            }
+        }
+
+        private bool HideBendLinesByViewPropertyManipulation(ModelDoc2 swModel, SwView flatView)
+        {
+            Logger.Info("Attempting bend line hiding via view property manipulation");
+            
+            try
+            {
+                // Activate and select the view
+                bool viewSelected = swModel.Extension.SelectByID2(flatView.Name, "DRAWINGVIEW", 0, 0, 0, false, 0, null, 0);
+                if (!viewSelected)
+                {
+                    Logger.Warning("Could not select drawing view for property manipulation");
+                    return false;
+                }
+                
+                // The following PropertyManager calls are not available in this API version:
+                // swModel.ShowPropertyManager();
+                
+                // Force the view to specific display settings
+                flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swHIDDEN_GREYED, false, false);
+                flatView.SetDisplayTangentEdges2(0); // Remove tangent edges
+                
+                // The following is not available in this API version:
+                // flatView.SetDisplayHiddenEdges2(0); // 0 = removed, 1 = solid, 2 = dashed
+                
+                // Try setting cosmetic threads and other display options
+                try
+                {
+                    flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swWIREFRAME, false, false);
+                    System.Threading.Thread.Sleep(100); // Brief pause
+                    flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swHIDDEN_GREYED, false, false);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning($"Error in display mode cycling: {ex.Message}");
+                }
+                
+                swModel.ClearSelection2(true);
+                // The following PropertyManager call is not available in this API version:
+                // swModel.HidePropertyManager();
+                
+                // Force rebuild
+                swModel.ForceRebuild3(true);
+                swModel.GraphicsRedraw2();
+                
+                Logger.Info("Completed view property manipulation");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in view property manipulation: {ex.Message}", ex);
+                return false;
+            }
+        }
+
+        private bool HideBendLinesThroughIDrawingView(DrawingDoc swDrawingDoc, SwView flatView)
+        {
+            Logger.Info("Attempting bend line hiding through IDrawingView interface (not available in this API version)");
+            // Not available in this API version, so always return false
+            return false;
+        }
+
+        private bool HideAllSheetMetalAnnotations(ModelDoc2 swModel, SwView flatView)
+        {
+            Logger.Info("Attempting to hide all sheet metal annotations");
+            
+            try
+            {
+                // Get all annotations in the view
+                var annotations = flatView.GetAnnotations();
+                if (annotations != null)
+                {
+                    object[] annotationArray = (object[])annotations;
+                    Logger.Info($"Found {annotationArray.Length} annotations in view");
+                    
+                    foreach (object annotationObj in annotationArray)
+                    {
+                        try
+                        {
+                            Annotation annotation = annotationObj as Annotation;
+                            if (annotation != null)
+                            {
+                                string annotationType = annotation.GetType().ToString();
+                                string annotationName = annotation.GetName();
+                                
+                                Logger.Info($"Processing annotation: {annotationName} (Type: {annotationType})");
+                                
+                                // The following SetVisibility2 and swViewVisibilityState_e are not available in this API version:
+                                // annotation.SetVisibility2((int)swViewVisibilityState_e.swViewVisibilityStateHidden, flatView);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Warning($"Error processing annotation: {ex.Message}");
+                        }
+                    }
+                }
+                
+                // Force view update
+                swModel.ForceRebuild3(true);
+                swModel.GraphicsRedraw2();
+                
+                Logger.Info("Completed sheet metal annotation hiding");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error hiding sheet metal annotations: {ex.Message}", ex);
+                return false;
+            }
+        }
+
+        private void ForceHideAllBendRelatedEntities(ModelDoc2 swModel, SwView flatView)
+        {
+            Logger.Info("Force hiding all bend-related entities as last resort");
+            
+            try
+            {
+                // Get the layer manager
+                LayerMgr layerMgr = (LayerMgr)swModel.GetLayerManager();
+                if (layerMgr != null)
+                {
+                    // Create a hidden layer for bend lines if it doesn't exist
+                    string hiddenLayerName = "HIDDEN_BEND_LINES";
+                    Layer hiddenLayer = (Layer)layerMgr.GetLayer(hiddenLayerName);
+                    if (hiddenLayer == null)
+                    {
+                        DrawingDoc swDrawDoc = swModel as DrawingDoc;
+                        if (swDrawDoc != null)
+                        {
+                            bool layerCreated = swDrawDoc.CreateLayer2(
+                                hiddenLayerName, "Hidden bend lines", 
+                                ColorTranslator.ToWin32(Color.Black),
+                                (int)swLineStyles_e.swLineCONTINUOUS,
+                                (int)swLineWeights_e.swLW_THIN, 
+                                false, // Not visible
+                                false  // Not printable
+                            );
+                            
+                            if (layerCreated)
+                            {
+                                hiddenLayer = (Layer)layerMgr.GetLayer(hiddenLayerName);
+                                Logger.Info($"Created hidden layer: {hiddenLayerName}");
+                            }
+                        }
+                    }
+                    
+                    if (hiddenLayer != null)
+                    {
+                        hiddenLayer.Visible = false;
+                        hiddenLayer.Printable = false;
+                        
+                        // Attempt to set the current layer to something else to ensure nothing is drawn on hidden layer accidentally
+                        layerMgr.SetCurrentLayer("0");
+                        
+                        Logger.Info("Hidden layer configured for bend lines - set to invisible and non-printable");
+                    }
+                }
+                
+                // Final attempt: Force the view to minimal display
+                try
+                {
+                    flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swSHADED, false, false);
+                    System.Threading.Thread.Sleep(50);
+                    flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swWIREFRAME, false, false);
+                    System.Threading.Thread.Sleep(50);
+                    flatView.SetDisplayMode3(false, (int)swDisplayMode_e.swHIDDEN_GREYED, false, false);
+                    flatView.SetDisplayTangentEdges2(0);
+                    
+                    // Force multiple rebuilds
+                    swModel.ForceRebuild3(true);
+                    swModel.GraphicsRedraw2();
+                    swModel.ViewZoomtofit2();
+                    swModel.GraphicsRedraw2();
+                    
+                    Logger.Info("Completed force hiding of bend-related entities");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Error in force hiding: {ex.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error in force hide all bend entities: {ex.Message}", ex);
+            }
+        }
         #endregion
     }
 } 

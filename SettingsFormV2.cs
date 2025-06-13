@@ -184,6 +184,8 @@ namespace RoesleinAddIn
             // Set enabled state for log controls
             SetLogControlsEnabled(chkEnableLogging.Checked);
             SetDebugLogControlsEnabled(chkEnableDebugLogging.Checked);
+
+            // Bend line macro control removed – nothing to save
         }
 
         // Helper methods from backup to manage enabled state of log path controls
@@ -242,6 +244,8 @@ namespace RoesleinAddIn
                 // currentGeneralSettings.AddTitleBlockInfo = ...;
                 // currentGeneralSettings.TitleBlockText = ...;
 
+                // Bend line macro path unchanged (UI control removed)
+
                 if (this.currentGeneralSettings.SaveSettings()) // SaveSettings in Settings.cs handles XML and Registry
                 {
                     Logger.DebugLog("General settings saved successfully.");
@@ -269,7 +273,7 @@ namespace RoesleinAddIn
             var deletePropMapItem = new ToolStripMenuItem("Delete Row");
             deletePropMapItem.Click += DgvPropertyMappingsDeleteMenuItem_Click; // Fixed: Uncommented the event handler
             dgvPropertyMappingsContextMenu.Items.Add(deletePropMapItem);
-            
+
             dgvPropertyMappingsContextMenu.Items.Add(new ToolStripSeparator());
             
             var resetToDefaultsItem = new ToolStripMenuItem("Reset to Default Settings");
@@ -322,19 +326,12 @@ namespace RoesleinAddIn
                 dgvPropertyMappings.Rows.Clear();
                 
                 // Use the new user-priority loading system
-                var mappings = LoadPropertyMappingsWithUserPriority();
+                var mappings = Settings.LoadPropertyMappings();
                 if (mappings != null && mappings.Count > 0)
                 {
                     foreach (var mapping in mappings.OrderBy(m => m.RowNumber))
                     {
                         dgvPropertyMappings.Rows.Add(mapping.RowNumber, mapping.DxfPropertyName, mapping.SwCustomProperty);
-                    }
-                    
-                    // Show user message if they have custom settings loaded
-                    string userSettingsPath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "UserSettings", "UserPropertyMappings.xml");
-                    if (File.Exists(userSettingsPath))
-                    {
-                        Logger.Info("Property mappings loaded from user-specific settings. Delete rows to customize and they will be saved to your personal settings automatically.");
                     }
                 }
                 else
@@ -1324,48 +1321,48 @@ namespace RoesleinAddIn
                         MessageBoxIcon.Information);
                 }
                 else // DialogResult.No - save to PDM
+            {
+                // Ensure any pending edits are committed to the DataGridView
+                if (dgvPropertyMappings.IsCurrentCellInEditMode)
                 {
-                    // Ensure any pending edits are committed to the DataGridView
-                    if (dgvPropertyMappings.IsCurrentCellInEditMode)
+                    dgvPropertyMappings.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                    if (dgvPropertyMappings.EditingControl != null)
                     {
-                        dgvPropertyMappings.CommitEdit(DataGridViewDataErrorContexts.Commit);
-                        if (dgvPropertyMappings.EditingControl != null)
-                        {
-                            dgvPropertyMappings.EditingControl.DataBindings["Text"]?.WriteValue();
-                        }
+                        dgvPropertyMappings.EditingControl.DataBindings["Text"]?.WriteValue();
                     }
-                    dgvPropertyMappings.EndEdit();
-                    dgvPropertyMappings.CurrentCell = null; // Force commit of any edit in progress
+                }
+                dgvPropertyMappings.EndEdit();
+                dgvPropertyMappings.CurrentCell = null; // Force commit of any edit in progress
 
-                    var mappings = new List<PropertyMapping>();
-                    foreach (DataGridViewRow row in dgvPropertyMappings.Rows)
+                var mappings = new List<PropertyMapping>();
+                foreach (DataGridViewRow row in dgvPropertyMappings.Rows)
+                {
+                    // Ensure row is not the new row placeholder if AllowUserToAddRows is true at some point
+                    if (row.IsNewRow) continue; 
+
+                    // Check for nulls before accessing Value, especially for potentially empty new rows
+                    string dxfPropName = row.Cells["DxfPropertyName"].Value?.ToString();
+                    string swCustProp = row.Cells["SwCustomProperty"].Value?.ToString();
+                    string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
+
+                    if (!string.IsNullOrWhiteSpace(dxfPropName) && !string.IsNullOrWhiteSpace(swCustProp) && int.TryParse(rowNumStr, out int rowNum))
                     {
-                        // Ensure row is not the new row placeholder if AllowUserToAddRows is true at some point
-                        if (row.IsNewRow) continue; 
-
-                        // Check for nulls before accessing Value, especially for potentially empty new rows
-                        string dxfPropName = row.Cells["DxfPropertyName"].Value?.ToString();
-                        string swCustProp = row.Cells["SwCustomProperty"].Value?.ToString();
-                        string rowNumStr = row.Cells["RowNumber"].Value?.ToString();
-
-                        if (!string.IsNullOrWhiteSpace(dxfPropName) && !string.IsNullOrWhiteSpace(swCustProp) && int.TryParse(rowNumStr, out int rowNum))
+                        mappings.Add(new PropertyMapping
                         {
-                            mappings.Add(new PropertyMapping
-                            {
-                                RowNumber = rowNum,
-                                DxfPropertyName = dxfPropName,
-                                SwCustomProperty = swCustProp
-                            });
-                        }
+                            RowNumber = rowNum,
+                            DxfPropertyName = dxfPropName,
+                            SwCustomProperty = swCustProp
+                        });
                     }
-                    
+                }
+                
                     // Use the PDM save method (affects all users)
-                    bool saveSuccess = Settings.SavePdmPropertyMappings(pdmVault, mappings);
-                    if (saveSuccess)
-                    {
+                bool saveSuccess = Settings.SavePdmPropertyMappings(pdmVault, mappings);
+                if (saveSuccess)
+                {
                         MessageBox.Show("Property mappings saved to PDM vault (shared settings).", "Save Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    // (Error messages are already handled in the static method)
+                }
+                // (Error messages are already handled in the static method)
                 }
                 
                 Logger.DebugLog("Property mappings saved.");
@@ -2066,6 +2063,11 @@ namespace RoesleinAddIn
 
         // REMOVED: Update save/load logic to include Gauge Table column, but do not change first two columns
         // In LoadMaterialMappingsData and SaveMaterialMappingsData, handle the GaugeTable column as a new property
+
+        private void btnBrowseBendLineMacro_Click(object sender, EventArgs e)
+        {
+            // Bend line macro browse handler removed with UI
+        }
     }
 
     // The data classes (PropertyMapping, MaterialMapping, ThicknessMapping) are assumed to be defined
