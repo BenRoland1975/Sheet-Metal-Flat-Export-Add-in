@@ -12,6 +12,7 @@ using System.Globalization;
 using System.Reflection;
 using System.Xml.Serialization;
 using SolidWorks.Interop.sldworks;
+using System.Data.SqlClient;
 // Use our own PDM interface implementations
 // (Remove EPDM.Interop.epdm import)
 
@@ -34,6 +35,15 @@ namespace RoesleinAddIn
         private ContextMenuStrip dgvPropertyMappingsContextMenu;
         private ContextMenuStrip dgvMaterialMappingContextMenu;
         private ContextMenuStrip dgvThicknessMappingContextMenu;
+
+        // Connex settings controls
+        private TextBox txtConnexServer;
+        private TextBox txtConnexLiveDb;
+        private TextBox txtConnexTestDb;
+        private RadioButton rbConnexLive;
+        private RadioButton rbConnexTest;
+        private RadioButton rbConnexBoth;
+        private Button btnConnexTest;
 
         public SettingsFormV2(ISldWorks sldWorksApp, EPDM.Interop.epdm.IEdmVault5 vault)
         {
@@ -134,6 +144,85 @@ namespace RoesleinAddIn
                     Logger.DebugLog($"DataGridView DataError: {e.Exception?.Message}");
                     e.ThrowException = false;
                 };
+            }
+
+            InitializeConnexSettingsUI();
+        }
+
+        private void InitializeConnexSettingsUI()
+        {
+            try
+            {
+                if (tpConnexSettings == null) return;
+
+                // Layout
+                var layout = new TableLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    ColumnCount = 2,
+                    RowCount = 6,
+                    Padding = new Padding(10)
+                };
+                layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+                int r = 0;
+
+                // Server / instance
+                layout.Controls.Add(new Label { Text = "SQL Server \\ Instance:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true }, 0, r);
+                txtConnexServer = new TextBox { Dock = DockStyle.Fill };
+                layout.Controls.Add(txtConnexServer, 1, r++);
+
+                // Live DB
+                layout.Controls.Add(new Label { Text = "Live Database:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true }, 0, r);
+                txtConnexLiveDb = new TextBox { Dock = DockStyle.Fill };
+                layout.Controls.Add(txtConnexLiveDb, 1, r++);
+
+                // Test DB
+                layout.Controls.Add(new Label { Text = "Test Database:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true }, 0, r);
+                txtConnexTestDb = new TextBox { Dock = DockStyle.Fill };
+                layout.Controls.Add(txtConnexTestDb, 1, r++);
+
+                // Target group
+                var gbTarget = new GroupBox { Text = "Push Target", Dock = DockStyle.Fill };
+                var gbLayout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
+                rbConnexLive = new RadioButton { Text = "Live Only" };
+                rbConnexTest = new RadioButton { Text = "Test Only" };
+                rbConnexBoth = new RadioButton { Text = "Both", Checked = true };
+                gbLayout.Controls.Add(rbConnexLive);
+                gbLayout.Controls.Add(rbConnexTest);
+                gbLayout.Controls.Add(rbConnexBoth);
+                gbTarget.Controls.Add(gbLayout);
+                // span two columns
+                layout.Controls.Add(gbTarget, 0, r);
+                layout.SetColumnSpan(gbTarget, 2);
+
+                // Test connection button (row ++)
+                r++;
+                btnConnexTest = new Button { Text = "Test Connection", Width = 140, Height = 30 };
+                btnConnexTest.Click += BtnConnexTest_Click;
+                layout.Controls.Add(btnConnexTest, 1, r);
+
+                tpConnexSettings.Controls.Add(layout);
+
+                // Load existing settings values
+                var s = this.currentGeneralSettings ?? Settings.LoadSettings();
+                if (s != null)
+                {
+                    txtConnexServer.Text = s.ConnexServerInstance;
+                    txtConnexLiveDb.Text = s.ConnexLiveDatabase;
+                    txtConnexTestDb.Text = s.ConnexTestDatabase;
+                    switch (s.ConnexTarget)
+                    {
+                        case ConnexPushTarget.LiveOnly: rbConnexLive.Checked = true; break;
+                        case ConnexPushTarget.TestOnly: rbConnexTest.Checked = true; break;
+                        default: rbConnexBoth.Checked = true; break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error initializing Connex settings UI: {ex.Message}");
             }
         }
 
@@ -256,6 +345,16 @@ namespace RoesleinAddIn
                 {
                     Logger.DebugLog("Failed to save general settings via currentGeneralSettings.SaveSettings().");
                     MessageBox.Show("Failed to save general settings. Check logs for details.", "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+
+                // Save Connex settings
+                if (currentGeneralSettings != null && txtConnexServer != null)
+                {
+                    currentGeneralSettings.ConnexServerInstance = txtConnexServer.Text.Trim();
+                    currentGeneralSettings.ConnexLiveDatabase = txtConnexLiveDb.Text.Trim();
+                    currentGeneralSettings.ConnexTestDatabase = txtConnexTestDb.Text.Trim();
+                    currentGeneralSettings.ConnexTarget = rbConnexLive.Checked ? ConnexPushTarget.LiveOnly : rbConnexTest.Checked ? ConnexPushTarget.TestOnly : ConnexPushTarget.Both;
+                    currentGeneralSettings.SaveSettings();
                 }
             }
             catch (Exception ex)
@@ -2067,6 +2166,48 @@ namespace RoesleinAddIn
         private void btnBrowseBendLineMacro_Click(object sender, EventArgs e)
         {
             // Bend line macro browse handler removed with UI
+        }
+
+        // ---------------- Connex Test Button -----------------
+        private void BtnConnexTest_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string serverInst = txtConnexServer.Text.Trim();
+                if (string.IsNullOrEmpty(serverInst))
+                {
+                    MessageBox.Show("Please enter a SQL Server instance.", "Connex Test", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Choose a database depending on radio selection
+                string db = rbConnexLive.Checked ? txtConnexLiveDb.Text.Trim() : rbConnexTest.Checked ? txtConnexTestDb.Text.Trim() : txtConnexLiveDb.Text.Trim();
+                if (string.IsNullOrEmpty(db))
+                {
+                    MessageBox.Show("Please enter a database name.", "Connex Test", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                string cs = $"Data Source={serverInst};Initial Catalog={db};Integrated Security=True;";
+                using (var conn = new SqlConnection(cs))
+                {
+                    conn.Open();
+                    using (var cmd = new SqlCommand("SELECT 1", conn))
+                    {
+                        cmd.ExecuteScalar();
+                    }
+                }
+
+                MessageBox.Show($"Successfully connected to {serverInst} / {db}.", "Connex Test", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (SqlException ex)
+            {
+                MessageBox.Show($"Connection failed:\nSQL {ex.Number}: {ex.Message}", "Connex Test", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Connection failed:\n{ex.Message}", "Connex Test", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
     }
 

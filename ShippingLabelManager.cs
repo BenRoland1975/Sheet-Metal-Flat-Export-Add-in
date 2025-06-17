@@ -68,6 +68,8 @@ namespace RoesleinAddIn
         private ToolStripProgressBar progressBar;
         private ToolStrip toolStrip;
         private StatusStrip statusStrip;
+        // Add static dictionary at top of ShippingLabelManagerForm class fields (after existing fields)
+        private static Dictionary<string,int> copySequenceCounters = new Dictionary<string,int>(StringComparer.OrdinalIgnoreCase);
         #endregion
 
         #region Constructor
@@ -267,9 +269,33 @@ namespace RoesleinAddIn
                 }
                 
                 // Create data file path in same directory as the add-in blocks
-                string dataDirectory = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\ShippingLabelData\";
-                Directory.CreateDirectory(dataDirectory); // Create directory if it doesn't exist
-                
+                string dataDirectory;
+
+                if (swModel != null)
+                {
+                    string drawingFullPath = swModel.GetPathName();
+
+                    if (!string.IsNullOrEmpty(drawingFullPath))
+                    {
+                        // Use the folder that contains the drawing, then create/locate the ShippingLabelData sub-folder
+                        string drawingFolder = Path.GetDirectoryName(drawingFullPath);
+                        dataDirectory = Path.Combine(drawingFolder ?? string.Empty, "ShippingLabelData");
+                    }
+                    else
+                    {
+                        // Drawing has not been saved yet – fall back to previous default location
+                        dataDirectory = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\ShippingLabelData\";
+                    }
+                }
+                else
+                {
+                    // No active model – fall back to previous default location
+                    dataDirectory = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\ShippingLabelData\";
+                }
+
+                // Ensure the target directory exists
+                Directory.CreateDirectory(dataDirectory);
+
                 dataFilePath = Path.Combine(dataDirectory, $"{drawingName}_ShippingLabels.xml");
                 Logger.Info($"Data file path set to: {dataFilePath}");
             }
@@ -568,6 +594,9 @@ namespace RoesleinAddIn
         {
             if (table.Columns.Count > 0) return; // Already setup
             
+            // Ensure the table has a meaningful name for XML serialization
+            table.TableName = "ShippingLabels";
+            
             // Add columns to match ShippingLabelData structure
             table.Columns.Add("InstanceName", typeof(string));
             table.Columns.Add("ProjectNumber", typeof(string));
@@ -592,6 +621,9 @@ namespace RoesleinAddIn
             table.Columns.Add("ArrowType", typeof(string));
             table.Columns.Add("CompanyNumber", typeof(string));
             table.Columns.Add("CompanyLetter", typeof(string));
+
+            // Define primary key on InstanceName to automatically prevent duplicate rows
+            table.PrimaryKey = new[] { table.Columns["InstanceName"] };
         }
 
         private void SetupDataGrid()
@@ -1634,6 +1666,13 @@ namespace RoesleinAddIn
                 // Add each fresh block to the table
                 foreach (var labelData in freshDrawingData)
                 {
+                    // Skip duplicates based on InstanceName (PrimaryKey)
+                    if (shippingData.Rows.Contains(labelData.InstanceName))
+                    {
+                        Logger.Info($"Skipping duplicate InstanceName when rebuilding DataTable: {labelData.InstanceName}");
+                        continue;
+                    }
+
                     var row = shippingData.NewRow();
                     row["InstanceName"] = labelData.InstanceName ?? "";
                     row["ArrowType"] = labelData.ArrowType.ToString();
@@ -2138,9 +2177,27 @@ namespace RoesleinAddIn
 
         private void BtnExportDatabase_Click(object sender, EventArgs e)
         {
-            // TODO: Implement Connex integration
-            MessageBox.Show("Push to Connex functionality will be implemented here.", 
-                "Push to Connex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            try
+            {
+                if (dgvShippingLabels.Rows.Count == 0)
+                {
+                    MessageBox.Show("There are no shipping labels to push.", "Push to Connex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                IEnumerable<DataGridViewRow> targetRows = dgvShippingLabels.Rows.Cast<DataGridViewRow>();
+
+                var labels = targetRows.Select(r => ExtractLabelDataFromRow(r)).ToList();
+                ConnexDatabaseHelper.SyncShippingLabels(labels);
+
+                MessageBox.Show($"Connex sync complete for {labels.Count} label(s). Check logs for details.",
+                    "Push to Connex", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error pushing labels to Connex: {ex.Message}", ex);
+                MessageBox.Show($"Error pushing labels: {ex.Message}", "Push Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void BtnClose_Click(object sender, EventArgs e)
@@ -3281,6 +3338,35 @@ namespace RoesleinAddIn
                 Logger.Error($"Error in enhanced delete with nuclear option: {ex.Message}", ex);
                 return false;
             }
+        }
+
+        // also add helper method GenerateUniqueHandleForCopy
+        private string GenerateUniqueHandleForCopy(ModelDoc2 model, string drawingNumber)
+        {
+            if (string.IsNullOrWhiteSpace(drawingNumber)) drawingNumber = "UNKNOWN";
+            string baseHandle = $"SW{drawingNumber}";
+            if (!copySequenceCounters.TryGetValue(drawingNumber, out int seq))
+            {
+                // scan existing once
+                seq = 0;
+                Feature f = model.FirstFeature() as Feature;
+                while (f != null)
+                {
+                    string nm = f.Name;
+                    if (nm != null && nm.StartsWith(baseHandle, StringComparison.OrdinalIgnoreCase))
+                    {
+                        int dash = nm.LastIndexOf('-');
+                        if (dash > 0 && int.TryParse(nm.Substring(dash+1), out int num))
+                        {
+                            if (num > seq) seq = num;
+                        }
+                    }
+                    f = f.GetNextFeature() as Feature;
+                }
+            }
+            seq += 1;
+            copySequenceCounters[drawingNumber] = seq;
+            return $"{baseHandle}-{seq.ToString("D4")}";
         }
     }
 

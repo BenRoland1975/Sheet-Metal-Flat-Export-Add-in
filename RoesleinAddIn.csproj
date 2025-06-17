@@ -127,6 +127,7 @@
     <Compile Include="ValidationPopupForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="ConnexDatabaseHelper.cs" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="SolidWorksReferences\" />

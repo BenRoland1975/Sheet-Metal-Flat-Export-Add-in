@@ -132,7 +132,7 @@ namespace RoesleinAddIn
             
             // Form properties
             this.Text = "Create New Shipping Label";
-            this.Size = new Size(600, 600); // Increased height more to ensure buttons are visible
+            this.Size = new Size(600, 380); // Slightly taller to avoid control clipping
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -161,8 +161,8 @@ namespace RoesleinAddIn
             mainPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40)); // Right panel
 
             // Set row styles
-            mainPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 80)); // Main content 
-            mainPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 70)); // Button panel (larger fixed height)
+            mainPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 80)); // Main content takes most of the space
+            mainPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 80)); // Button panel (extra space below)
 
             // Create left panel for input fields
             var inputPanel = CreateInputPanel();
@@ -292,8 +292,9 @@ namespace RoesleinAddIn
             var panel = new Panel
             {
                 Dock = DockStyle.Fill,
-                Height = 70,
-                MinimumSize = new Size(0, 70),
+                Height = 60,
+                MinimumSize = new Size(0, 60),
+                Margin = new Padding(0, 0, 0, 20), // 20px bottom space inside 80px row
                 TabStop = false
             };
 
@@ -303,8 +304,8 @@ namespace RoesleinAddIn
                 Dock = DockStyle.Fill,
                 ColumnCount = 3,
                 RowCount = 1,
-                Height = 70,
-                MinimumSize = new Size(0, 70),
+                Height = 60,
+                MinimumSize = new Size(0, 60),
                 TabStop = false
             };
 
@@ -318,7 +319,8 @@ namespace RoesleinAddIn
                 Text = isEditMode ? "Update Block" : "Place Block",
                 Size = new Size(120, 30),
                 UseVisualStyleBackColor = true,
-                Anchor = AnchorStyles.None,
+                Anchor = AnchorStyles.Top,
+                Margin = new Padding(0, 5, 0, 0), // shift down from row top slightly (~5px)
                 TabIndex = 8
             };
             btnPlaceOnDrawing.Click += BtnStartPlacement_Click;
@@ -329,7 +331,8 @@ namespace RoesleinAddIn
                 Size = new Size(75, 30),
                 DialogResult = DialogResult.Cancel,
                 UseVisualStyleBackColor = true,
-                Anchor = AnchorStyles.None,
+                Anchor = AnchorStyles.Top,
+                Margin = new Padding(0, 5, 0, 0),
                 TabIndex = 9
             };
             btnClose.Click += BtnClose_Click;
@@ -1140,8 +1143,6 @@ namespace RoesleinAddIn
             }
         }
 
-
-
         private Bitmap CreatePreviewImage(ShippingLabelArrowType arrowType)
         {
             var bitmap = new Bitmap(200, 100);
@@ -1210,67 +1211,89 @@ namespace RoesleinAddIn
             path.Dispose();
         }
 
+        private void DrawNormalizedPolygon(Graphics g, Pen pen, Brush brush, PointF[] normalizedPoints, RectangleF destRect)
+        {
+            int count = normalizedPoints.Length;
+            var scaled = new PointF[count];
+            for (int i = 0; i < count; i++)
+            {
+                var p = normalizedPoints[i];
+                scaled[i] = new PointF(destRect.Left + p.X * destRect.Width,
+                                       destRect.Top + p.Y * destRect.Height);
+            }
+            g.FillPolygon(brush, scaled);
+            g.DrawPolygon(pen, scaled);
+        }
+
+        // Normalised point sets extracted from SVG resources -----------------
+        private static readonly PointF[] RightArrowNorm =
+        {
+            new PointF(0.000f, 0.2275f),
+            new PointF(0.8262f, 0.2275f),
+            new PointF(0.8262f, 0.0000f),
+            new PointF(1.0000f, 0.5000f),
+            new PointF(0.8262f, 1.0000f),
+            new PointF(0.8262f, 0.7720f),
+            new PointF(0.000f, 0.7720f)
+        };
+
+        private static readonly PointF[] LeftArrowNorm = RightArrowNorm
+            .Select(p => new PointF(1 - p.X, p.Y))
+            .Reverse()  // Preserve clockwise winding
+            .ToArray();
+
+        private static readonly PointF[] DoubleArrowNorm =
+        {
+            // Extracted from DOUBLEARROW.svg and normalised
+            new PointF(0.0000f, 0.5000f),   // Left tip
+            new PointF(0.1524f, 0.0000f),
+            new PointF(0.1524f, 0.2385f),
+            new PointF(0.8474f, 0.2385f),
+            new PointF(0.8474f, 0.0000f),
+            new PointF(1.0000f, 0.5000f),   // Right tip
+            new PointF(0.8474f, 1.0000f),
+            new PointF(0.8474f, 0.7620f),
+            new PointF(0.1524f, 0.7620f),
+            new PointF(0.1524f, 1.0000f)
+        };
+        // --------------------------------------------------------------------
+
+        private RectangleF GetArrowDestRect(RectangleF canvas, float aspectRatio)
+        {
+            const float MaxHeight = 40f;                // px
+            const float Margin = 20f;                   // px
+            float height = MaxHeight;
+            float width = height * aspectRatio;
+
+            // Constrain to canvas width
+            float maxWidth = canvas.Width - 2 * Margin;
+            if (width > maxWidth)
+            {
+                width = maxWidth;
+                height = width / aspectRatio;
+            }
+
+            float x = (canvas.Width - width) / 2f;
+            float y = (canvas.Height - height) / 2f;
+            return new RectangleF(x, y, width, height);
+        }
+
         private void DrawRightArrowPreview(Graphics g, Pen pen, Brush brush)
         {
-            // RIGHT ARROW: Rectangle with arrow notch extending OUTWARD to the right
-            // The notch should extend BEYOND the rectangle edge, not bite into it
-            var points = new Point[]
-            {
-                new Point(60, 42),   // Bottom left corner
-                new Point(130, 42),  // Bottom right corner of rectangle
-                new Point(130, 47),  // Start of bottom notch line going OUTWARD
-                new Point(140, 50),  // Arrow tip point (extends beyond rectangle)
-                new Point(130, 53),  // Start of top notch line going OUTWARD
-                new Point(130, 58),  // Top right corner of rectangle
-                new Point(60, 58),   // Top left corner
-                new Point(60, 42)    // Close shape
-            };
-            
-            g.FillPolygon(brush, points);
-            g.DrawPolygon(pen, points);
+            var dest = GetArrowDestRect(g.VisibleClipBounds, 4.094f);
+            DrawNormalizedPolygon(g, pen, brush, RightArrowNorm, dest);
         }
 
         private void DrawLeftArrowPreview(Graphics g, Pen pen, Brush brush)
         {
-            // LEFT ARROW: Rectangle with arrow notch extending OUTWARD to the left
-            // The notch should extend BEYOND the rectangle edge, not bite into it
-            var points = new Point[]
-            {
-                new Point(60, 50),   // Arrow tip point (extends beyond rectangle)
-                new Point(70, 47),   // Start of bottom notch line going OUTWARD
-                new Point(70, 42),   // Bottom left corner of rectangle
-                new Point(140, 42),  // Bottom right corner
-                new Point(140, 58),  // Top right corner
-                new Point(70, 58),   // Top left corner of rectangle
-                new Point(70, 53),   // Start of top notch line going OUTWARD
-                new Point(60, 50)    // Back to arrow tip
-            };
-            
-            g.FillPolygon(brush, points);
-            g.DrawPolygon(pen, points);
+            var dest = GetArrowDestRect(g.VisibleClipBounds, 4.094f);
+            DrawNormalizedPolygon(g, pen, brush, LeftArrowNorm, dest);
         }
 
         private void DrawDoubleArrowPreview(Graphics g, Pen pen, Brush brush)
         {
-            // DOUBLE ARROW: Rectangle with notches extending OUTWARD on both sides
-            // Both notches should extend BEYOND the rectangle edges
-            var points = new Point[]
-            {
-                new Point(60, 50),   // LEFT arrow tip (extends beyond rectangle)
-                new Point(70, 47),   // Left bottom notch line going OUTWARD
-                new Point(70, 42),   // Bottom left corner of rectangle
-                new Point(130, 42),  // Bottom right corner of rectangle
-                new Point(130, 47),  // Right bottom notch line going OUTWARD
-                new Point(140, 50),  // RIGHT arrow tip (extends beyond rectangle)
-                new Point(130, 53),  // Right top notch line going OUTWARD
-                new Point(130, 58),  // Top right corner of rectangle
-                new Point(70, 58),   // Top left corner of rectangle
-                new Point(70, 53),   // Left top notch line going OUTWARD
-                new Point(60, 50)    // Back to left arrow tip
-            };
-            
-            g.FillPolygon(brush, points);
-            g.DrawPolygon(pen, points);
+            var dest = GetArrowDestRect(g.VisibleClipBounds, 3.305f);
+            DrawNormalizedPolygon(g, pen, brush, DoubleArrowNorm, dest);
         }
         #endregion
 

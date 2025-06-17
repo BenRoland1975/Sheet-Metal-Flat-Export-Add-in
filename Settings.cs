@@ -45,6 +45,11 @@ namespace RoesleinAddIn
     [Serializable]
     public class Settings
     {
+        // Connex MES Database settings
+        public string ConnexServerInstance { get; set; } = "SOLIDWORKS\\ConnexDB";
+        public string ConnexLiveDatabase { get; set; } = "RoesleinConnex";
+        public string ConnexTestDatabase { get; set; } = "RoesleinConnexTest";
+        public ConnexPushTarget ConnexTarget { get; set; } = ConnexPushTarget.Both;
         // File path settings
         public string LastExportFolder { get; set; }
         
@@ -1439,5 +1444,15 @@ namespace RoesleinAddIn
             SettingsVersion = "25.1"; // Default if file doesn't exist or version is missing
             PropertyStandards = new List<PropertyStandardSetting>();
         }
+    }
+
+    /// <summary>
+    /// Which Connex database(s) to push shipping labels to.
+    /// </summary>
+    public enum ConnexPushTarget
+    {
+        LiveOnly,
+        TestOnly,
+        Both
     }
 } 

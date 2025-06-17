@@ -47,6 +47,8 @@ namespace RoesleinAddIn
         private const double SMART_COPY_OFFSET_X = 0.5; // 0.5 inches to the right
         private const double SMART_COPY_OFFSET_Y = -0.5; // 0.5 inches down
 
+        private static Dictionary<string,int> drawingSequenceCounters = new Dictionary<string,int>(StringComparer.OrdinalIgnoreCase);
+
         public ShippingLabelBlockCreator(ISldWorks solidWorksApp)
         {
             swApp = solidWorksApp ?? throw new ArgumentNullException(nameof(solidWorksApp));
@@ -495,13 +497,12 @@ Then use this code to INSERT the blocks at specified locations.";
                     Logger.Error("Could not cast SketchBlockInstance to Feature. Cannot complete setup.");
                     return false;
                 }
-                string finalUID = newFeature.Name;
-                Logger.Info($"Successfully operating on instance: {finalUID}");
-
-                // CRITICAL: Update the labelData object with the *actual* name from SolidWorks.
-                // This becomes the primary key for matching data, since writing attributes might fail.
-                labelData.InstanceName = finalUID;
-                Logger.Info($"Updated LabelData.InstanceName to use feature name: {finalUID}");
+                string drawingNumber = labelData.DrawingName ?? string.Empty;
+                string swHandle = GenerateSwHandle(swModel, drawingNumber);
+                try { newFeature.Name = swHandle; } catch { /* ignore errors if name clashes */ }
+                SetBlockUniqueIdentifier(newBlockInstance, swHandle);
+                labelData.InstanceName = swHandle;
+                Logger.Info($"Generated and assigned SW handle: {swHandle}");
 
                 SetBlockEntitiesLayer(newBlockInstance, "ID");
                 PopulateBlockWithLabelData(newBlockInstance, labelData);
@@ -518,7 +519,7 @@ Then use this code to INSERT the blocks at specified locations.";
                     {
                         labelData.XPosition = (box[0] + box[3]) / 2.0;
                         labelData.YPosition = (box[1] + box[4]) / 2.0;
-                        Logger.Info($"Final block position for {finalUID}: X={labelData.XPosition}, Y={labelData.YPosition}");
+                        Logger.Info($"Final block position for {swHandle}: X={labelData.XPosition}, Y={labelData.YPosition}");
                     }
                 }
                 catch (Exception ex)
@@ -528,7 +529,7 @@ Then use this code to INSERT the blocks at specified locations.";
 
                 swModel.ViewZoomtofit();
                 
-                Logger.Info($"SUCCESS: Block instance '{finalUID}' placed and configured.");
+                Logger.Info($"SUCCESS: Block instance '{swHandle}' placed and configured.");
                 return true;
             }
             catch (Exception ex)
@@ -1870,6 +1871,37 @@ Then use this code to INSERT the blocks at specified locations.";
             {
                 return "";
             }
+        }
+
+        /// <summary>
+        /// Generates a SW handle based on drawing number and 4-digit sequence
+        /// </summary>
+        private string GenerateSwHandle(ModelDoc2 model, string drawingNumber)
+        {
+            if (string.IsNullOrWhiteSpace(drawingNumber)) drawingNumber = "UNKNOWN";
+            string baseHandle = $"SW{drawingNumber}";
+            int maxSeq = 0;
+            if (!drawingSequenceCounters.TryGetValue(drawingNumber, out maxSeq))
+            {
+                // First time for this drawing in this session – scan features to seed counter
+                Feature scanFeat = model != null ? model.FirstFeature() as Feature : null;
+                while (scanFeat != null)
+                {
+                    string nm = scanFeat.Name;
+                    if (!string.IsNullOrEmpty(nm) && nm.StartsWith(baseHandle, StringComparison.OrdinalIgnoreCase))
+                    {
+                        int dashIdx = nm.LastIndexOf('-');
+                        if (dashIdx > 0 && int.TryParse(nm.Substring(dashIdx + 1), out int num))
+                        {
+                            if (num > maxSeq) maxSeq = num;
+                        }
+                    }
+                    scanFeat = scanFeat.GetNextFeature() as Feature;
+                }
+            }
+            maxSeq += 1;
+            drawingSequenceCounters[drawingNumber] = maxSeq;
+            return $"{baseHandle}-{maxSeq.ToString("D4")}";
         }
     }
 
