@@ -63,6 +63,16 @@ namespace RoesleinAddIn.Properties {
         /// <summary>
         ///   Looks up a localized resource of type System.Drawing.Bitmap.
         /// </summary>
+        internal static System.Drawing.Bitmap OracleFusionMiddleWare {
+            get {
+                object obj = ResourceManager.GetObject("OracleFusionMiddleWare", resourceCulture);
+                return ((System.Drawing.Bitmap)(obj));
+            }
+        }
+        
+        /// <summary>
+        ///   Looks up a localized resource of type System.Drawing.Bitmap.
+        /// </summary>
         internal static System.Drawing.Bitmap RoesleinConnex_Small {
             get {
                 object obj = ResourceManager.GetObject("RoesleinConnex_Small", resourceCulture);

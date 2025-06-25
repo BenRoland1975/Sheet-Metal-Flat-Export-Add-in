@@ -82,6 +82,10 @@ namespace RoesleinAddIn
         public string DrawingTemplatePath { get; set; }
         public bool CheckForLaser { get; set; }
         
+        // Oracle FBDI settings
+        public string OracleFBDIItemTemplatePath { get; set; }
+        public string OracleFBDIItemStructureTemplatePath { get; set; }
+        
         // Property Standard Manager specific settings
         public int MaxRecursionDepth { get; set; }
         public bool ForceApplyStandards { get; set; }
@@ -192,6 +196,10 @@ namespace RoesleinAddIn
 
             // Default DXF mapping file path (user can override via Settings form)
             DxfMappingFilePath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\BendLineMapping.map";
+            
+            // Default Oracle FBDI Item template path
+            OracleFBDIItemTemplatePath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\ItemImportTemplate.xlsm";
+            OracleFBDIItemStructureTemplatePath = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\ItemStructureImportTemplate.xlsm";
         }
 
         [System.Xml.Serialization.XmlIgnore]

@@ -29,18 +29,21 @@ namespace RoesleinAddIn
         public bool IsSparePart { get; set; } = false; // For spare parts BOM
         public int IndentLevel { get; set; } = 0; // For Full BOM hierarchy
         public bool IsAssembly { get; set; } = false; // Flag to indicate if the item represents an assembly
+        public bool IsRaIndustrialBuy { get; set; } = false; // Flag for RA Industrial Buy template
     }
 
     public class BomProcessor
     {
         private readonly ISldWorks _swApp;
+        private readonly EPDM.Interop.epdm.IEdmVault5 _pdmVault; // Add PDM vault support
         // Assuming you have a Settings class and Logger, you'd uncomment and use them.
         // private Settings _settings; 
         // private Logger _logger; // Or your specific logger instance
 
-        public BomProcessor(ISldWorks swApp /*, Logger logger, Settings settings */)
+        public BomProcessor(ISldWorks swApp, EPDM.Interop.epdm.IEdmVault5 pdmVault = null /*, Logger logger, Settings settings */)
         {
             _swApp = swApp ?? throw new ArgumentNullException(nameof(swApp));
+            _pdmVault = pdmVault;
             // _logger = logger;
             // _settings = settings;
             // Example: Logger?.Info("BomProcessor initialized.");
@@ -269,7 +272,8 @@ namespace RoesleinAddIn
                     Quantity = quantityForThisGroup,
                     ComponentPath = group.path, // Path of the representative instance
                     IndentLevel = currentIndentLevel,
-                    IsAssembly = isAssembly // Set the flag
+                    IsAssembly = isAssembly, // Set the flag
+                    IsRaIndustrialBuy = IsRaIndustrialBuy(representativeComponent, representativeModel, key) // Check RA Industrial Buy criteria
                 };
                 bomItemsList.Add(bomItem);
 
@@ -338,7 +342,8 @@ namespace RoesleinAddIn
                         Revision = itemDetails.Revision,
                         Quantity = itemDetails.Quantity, // Starts at 1
                         ComponentPath = itemDetails.ComponentPath, // Path of first instance encountered
-                        IsSparePart = itemDetails.IsSparePart // Carry over the flag
+                        IsSparePart = itemDetails.IsSparePart, // Carry over the flag
+                        IsRaIndustrialBuy = itemDetails.IsRaIndustrialBuy // Carry over the RA Industrial Buy flag
                     };
                     consolidatedMap.Add(itemDetails.PartNumber, newItemForConsolidated);
                     orderedPartNumbers.Add(itemDetails.PartNumber); 
@@ -391,7 +396,8 @@ namespace RoesleinAddIn
                         Revision = GetPropertyValue(compModel, configName, "Revision"),
                         Quantity = 1, // Each instance found contributes 1 to the initial list
                         ComponentPath = compModel.GetPathName(),
-                        IsSparePart = "1".Equals(GetPropertyValue(compModel, configName, "Spare Part"), StringComparison.OrdinalIgnoreCase)
+                        IsSparePart = "1".Equals(GetPropertyValue(compModel, configName, "Spare Part"), StringComparison.OrdinalIgnoreCase),
+                        IsRaIndustrialBuy = IsRaIndustrialBuy(swComp, compModel, partNumber) // Check RA Industrial Buy criteria
                     };
                     allItems.Add(bomItemInstance);
                 }
@@ -582,6 +588,38 @@ namespace RoesleinAddIn
             return bomPartNo;
         }
 
+        private bool IsRaIndustrialBuy(Component2 swComp, ModelDoc2 compModel, string partNumber)
+        {
+            if (compModel == null || string.IsNullOrEmpty(partNumber)) return false;
+
+            // Check condition 1: Part number format XXX-XXX (exactly 3 digits, dash, 3 digits)
+            bool isCorrectFormat = System.Text.RegularExpressions.Regex.IsMatch(partNumber, @"^\d{3}-\d{3}$");
+            
+            // Check condition 2: File property "RA Industrial Buy" = "1" or "True"
+            bool hasRaIndustrialBuyProperty = false;
+            try
+            {
+                // Check file-level properties only (as requested)
+                CustomPropertyManager swCustPropMgr = compModel.Extension.CustomPropertyManager[""];
+                if (swCustPropMgr != null)
+                {
+                    swCustPropMgr.Get6("RA Industrial Buy", false, out _, out string propertyValue, out _, out _);
+                    hasRaIndustrialBuyProperty = "1".Equals(propertyValue, StringComparison.OrdinalIgnoreCase) || 
+                                               "True".Equals(propertyValue, StringComparison.OrdinalIgnoreCase);
+                    
+                    Logger.DebugLog($"IsRaIndustrialBuy: Component '{swComp.Name2}' - PartNumber='{partNumber}', FormatMatch={isCorrectFormat}, PropertyValue='{propertyValue}', PropertyMatch={hasRaIndustrialBuyProperty}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.DebugLog($"IsRaIndustrialBuy: Error checking RA Industrial Buy property for '{swComp.Name2}': {ex.Message}");
+            }
+
+            bool result = isCorrectFormat || hasRaIndustrialBuyProperty;
+            Logger.DebugLog($"IsRaIndustrialBuy: Component '{swComp.Name2}' - Final Result = {result}");
+            return result;
+        }
+
         private string GetPropertyValue(ModelDoc2 swModelDoc, string configName, string propertyName)
         {
             if (swModelDoc == null || string.IsNullOrEmpty(propertyName)) return "";
@@ -589,30 +627,59 @@ namespace RoesleinAddIn
             string resolvedValOut = "";
             CustomPropertyManager swCustPropMgr = null;
 
+            // Priority 1: Try file-level properties first
+            swCustPropMgr = swModelDoc.Extension.CustomPropertyManager[""]; 
+            if (swCustPropMgr != null)
+            {
+                swCustPropMgr.Get6(propertyName, false, out _, out resolvedValOut, out _, out _);
+                if (!string.IsNullOrWhiteSpace(resolvedValOut))
+                {
+                    Logger.DebugLog($"GetPropertyValue: Found '{propertyName}' in FILE-LEVEL properties of '{swModelDoc.GetPathName()}' -> Result='{resolvedValOut}'");
+                    return resolvedValOut;
+                }
+                else
+                {
+                    Logger.DebugLog($"GetPropertyValue: Property '{propertyName}' not found or empty in FILE-LEVEL properties of '{swModelDoc.GetPathName()}'");
+                }
+            }
+
+            // Priority 2: Fall back to configuration-specific properties if file-level is empty/missing
             if (!string.IsNullOrEmpty(configName))
             {
                 Configuration testConfig = swModelDoc.GetConfigurationByName(configName) as Configuration;
-                if (testConfig != null) {
+                if (testConfig != null) 
+                {
                     swCustPropMgr = swModelDoc.Extension.CustomPropertyManager[configName];
-                } else {
-                    Logger.DebugLog($"GetPropertyValue: Config '{configName}' not found in '{swModelDoc.GetPathName()}'. Will try default config for property '{propertyName}'.");
+                    if (swCustPropMgr != null)
+                    {
+                        swCustPropMgr.Get6(propertyName, false, out _, out resolvedValOut, out _, out _);
+                        if (!string.IsNullOrWhiteSpace(resolvedValOut))
+                        {
+                            Logger.DebugLog($"GetPropertyValue: Found '{propertyName}' in CONFIG-SPECIFIC properties ('{configName}') of '{swModelDoc.GetPathName()}' -> Result='{resolvedValOut}'");
+                            return resolvedValOut;
+                        }
+                        else
+                        {
+                            Logger.DebugLog($"GetPropertyValue: Property '{propertyName}' not found or empty in CONFIG-SPECIFIC properties ('{configName}') of '{swModelDoc.GetPathName()}'");
+            }
+                    }
+                    else
+                    {
+                        Logger.DebugLog($"GetPropertyValue: Could not get CustomPropertyManager for config '{configName}' in '{swModelDoc.GetPathName()}'");
+                    }
+                } 
+                else 
+                {
+                    Logger.DebugLog($"GetPropertyValue: Config '{configName}' not found in '{swModelDoc.GetPathName()}'. File-level properties already checked.");
                 }
             }
-            
-            if (swCustPropMgr == null) 
+            else
             {
-                swCustPropMgr = swModelDoc.Extension.CustomPropertyManager[""]; 
+                Logger.DebugLog($"GetPropertyValue: No specific config name provided. File-level properties already checked for '{propertyName}' in '{swModelDoc.GetPathName()}'");
             }
             
-            if (swCustPropMgr != null)
-            {
-                 swCustPropMgr.Get6(propertyName, false, out _, out resolvedValOut, out _, out _);
-                 Logger.DebugLog($"GetPropertyValue: Reading '{propertyName}' from '{swModelDoc.GetPathName()}' (Config context: '{configName ?? "Default/Active"}') -> Result='{resolvedValOut}'");
-            } else {
-                Logger.DebugLog($"GetPropertyValue: Critical - Could not get any CustomPropertyManager for {swModelDoc.GetPathName()} (Config context: '{configName}'). Property '{propertyName}' not retrieved.");
-            }
-            
-            return resolvedValOut ?? ""; 
+            Logger.DebugLog($"GetPropertyValue: Property '{propertyName}' not found in either file-level or config-specific properties for '{swModelDoc.GetPathName()}'. Returning empty string.");
+            return ""; 
         }
 
         private string GetAssemblyThumbnail(ModelDoc2 swModelDoc, string tempFolder)
@@ -643,6 +710,310 @@ namespace RoesleinAddIn
                 Debug.WriteLine($"Error getting assembly thumbnail: {ex.Message}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Exports BOM data to an existing Excel template file, supporting PDM vault operations
+        /// </summary>
+        /// <param name="bomItems">The BOM data to export</param>
+        /// <param name="templateFilePath">Path to the template file in PDM vault or local filesystem</param>
+        /// <param name="outputFilePath">Path where the populated file should be saved</param>
+        /// <param name="bomType">Type of BOM being exported</param>
+        /// <param name="assemblyName">Name of the assembly</param>
+        /// <param name="worksheetName">Name of the worksheet to populate (optional, uses first sheet if not specified)</param>
+        /// <param name="startRow">Row number to start inserting BOM data (1-based)</param>
+        /// <param name="startColumn">Column number to start inserting BOM data (1-based)</param>
+        /// <returns>True if successful, false otherwise</returns>
+        public bool ExportBomToExistingExcelTemplate(
+            List<BomItem> bomItems, 
+            string templateFilePath, 
+            string outputFilePath, 
+            BomType bomType, 
+            string assemblyName,
+            string worksheetName = null,
+            int startRow = 1,
+            int startColumn = 1)
+        {
+            if (bomItems == null || !bomItems.Any())
+            {
+                MessageBox.Show("No BOM data available to export.", "Roeslein Add-in", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                Debug.WriteLine("ExportBomToExistingExcelTemplate: No BOM items to export.");
+                return false;
+            }
+
+            Excel.Application excelApp = null;
+            Excel.Workbook workbook = null;
+            Excel.Worksheet worksheet = null;
+            string localTemplateFile = null;
+            bool outputCheckedOut = false;
+            EPDM.Interop.epdm.IEdmFile5 templateEdmFile = null;
+            EPDM.Interop.epdm.IEdmFolder5 templateEdmFolder = null;
+            EPDM.Interop.epdm.IEdmFile5 outputEdmFile = null;
+            EPDM.Interop.epdm.IEdmFolder5 outputEdmFolder = null;
+
+            try
+            {
+                // Step 1: Handle PDM vault operations for template file
+                if (_pdmVault != null && _pdmVault.IsLoggedIn)
+                {
+                    Debug.WriteLine($"PDM: Attempting to retrieve template from vault: {templateFilePath}");
+                    
+                    // Get template file from vault
+                    templateEdmFile = _pdmVault.GetFileFromPath(templateFilePath, out templateEdmFolder);
+                    if (templateEdmFile != null)
+                    {
+                        Debug.WriteLine($"PDM: Template file found in vault: {templateFilePath}");
+                        
+                        // Get local copy of template (this will download latest version if needed)
+                        int swWindowHandle = GetSolidWorksMainWindowHandle();
+                        localTemplateFile = templateEdmFile.GetLocalPath(templateEdmFolder.ID);
+                        
+                        if (string.IsNullOrEmpty(localTemplateFile) || !File.Exists(localTemplateFile))
+                        {
+                            Debug.WriteLine($"PDM: Getting local copy of template file");
+                            templateEdmFile.GetFileCopy(swWindowHandle, 0); // 0 = latest version
+                            localTemplateFile = templateEdmFile.GetLocalPath(templateEdmFolder.ID);
+                        }
+
+                        if (string.IsNullOrEmpty(localTemplateFile) || !File.Exists(localTemplateFile))
+                        {
+                            throw new Exception($"Could not get local copy of template file from PDM vault: {templateFilePath}");
+                        }
+
+                        Debug.WriteLine($"PDM: Using local template file: {localTemplateFile}");
+                    }
+                    else
+                    {
+                        Debug.WriteLine($"PDM: Template file not found in vault, using local path: {templateFilePath}");
+                        localTemplateFile = templateFilePath;
+                    }
+
+                    // Handle output file checkout if it already exists in vault
+                    outputEdmFile = _pdmVault.GetFileFromPath(outputFilePath, out outputEdmFolder);
+                    if (outputEdmFile != null)
+                    {
+                        Debug.WriteLine($"PDM: Output file exists in vault, checking out: {outputFilePath}");
+                        
+                        if (!outputEdmFile.IsLocked)
+                        {
+                            outputEdmFile.LockFile(outputEdmFolder.ID, GetSolidWorksMainWindowHandle(), (int)EPDM.Interop.epdm.EdmLockFlag.EdmLock_Simple);
+                            outputCheckedOut = true;
+                            Debug.WriteLine($"PDM: Successfully checked out output file: {outputFilePath}");
+                        }
+                        else
+                        {
+                            Debug.WriteLine($"PDM: Output file is already locked by another user: {outputFilePath}");
+                            // You might want to handle this differently based on your workflow
+                            MessageBox.Show($"Output file '{Path.GetFileName(outputFilePath)}' is checked out by another user.", 
+                                          "PDM Checkout Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                            return false;
+                        }
+                    }
+                }
+                else
+                {
+                    Debug.WriteLine("PDM: No vault connection, using local template file");
+                    localTemplateFile = templateFilePath;
+                }
+
+                // Step 2: Open Excel application and workbook
+                excelApp = new Excel.Application();
+                excelApp.Visible = false;
+                
+                if (!File.Exists(localTemplateFile))
+                {
+                    throw new FileNotFoundException($"Template file not found: {localTemplateFile}");
+                }
+
+                Debug.WriteLine($"Opening Excel template: {localTemplateFile}");
+                workbook = excelApp.Workbooks.Open(localTemplateFile);
+
+                // Step 3: Get the worksheet to work with
+                if (!string.IsNullOrEmpty(worksheetName))
+                {
+                    try
+                    {
+                        worksheet = workbook.Sheets[worksheetName] as Excel.Worksheet;
+                    }
+                    catch
+                    {
+                        Debug.WriteLine($"Worksheet '{worksheetName}' not found, using first worksheet");
+                        worksheet = workbook.Sheets[1] as Excel.Worksheet;
+                    }
+                }
+                else
+                {
+                    worksheet = workbook.Sheets[1] as Excel.Worksheet;
+                }
+
+                Debug.WriteLine($"Using worksheet: {worksheet.Name}");
+
+                // Step 4: Clear existing data if needed (optional - you might want to make this configurable)
+                // Excel.Range usedRange = worksheet.UsedRange;
+                // if (usedRange != null && startRow <= usedRange.Rows.Count)
+                // {
+                //     Excel.Range clearRange = worksheet.Range[worksheet.Cells[startRow, startColumn], usedRange];
+                //     clearRange.Clear();
+                // }
+
+                // Step 5: Insert BOM data
+                int currentRow = startRow;
+                int currentCol = startColumn;
+
+                // Insert headers based on BOM type
+                if (bomType == BomType.Full)
+                {
+                    worksheet.Cells[currentRow, currentCol] = "Item Number";
+                    worksheet.Cells[currentRow, currentCol + 1] = "Part Number";
+                    worksheet.Cells[currentRow, currentCol + 2] = "Description";
+                    worksheet.Cells[currentRow, currentCol + 3] = "Revision";
+                    worksheet.Cells[currentRow, currentCol + 4] = "Quantity";
+                }
+                else // Consolidated or Spare Parts
+                {
+                    worksheet.Cells[currentRow, currentCol] = "Part Number";
+                    worksheet.Cells[currentRow, currentCol + 1] = "Description";
+                    worksheet.Cells[currentRow, currentCol + 2] = "Revision";
+                    worksheet.Cells[currentRow, currentCol + 3] = "Quantity";
+                }
+                currentRow++;
+
+                // Insert BOM data rows
+                foreach (var item in bomItems)
+                {
+                    currentCol = startColumn;
+                    
+                    if (bomType == BomType.Full)
+                    {
+                        worksheet.Cells[currentRow, currentCol++] = item.ItemNumber;
+                    }
+                    
+                    worksheet.Cells[currentRow, currentCol++] = item.PartNumber;
+                    worksheet.Cells[currentRow, currentCol++] = item.Description;
+                    worksheet.Cells[currentRow, currentCol++] = item.Revision;
+                    worksheet.Cells[currentRow, currentCol++] = item.Quantity;
+                    
+                    currentRow++;
+                }
+
+                // Step 6: Save the populated workbook
+                Debug.WriteLine($"Saving populated workbook to: {outputFilePath}");
+                
+                // Ensure output directory exists
+                string outputDirectory = Path.GetDirectoryName(outputFilePath);
+                if (!Directory.Exists(outputDirectory))
+                {
+                    Directory.CreateDirectory(outputDirectory);
+                }
+
+                workbook.SaveAs(outputFilePath, Excel.XlFileFormat.xlOpenXMLWorkbook, Type.Missing, Type.Missing,
+                               false, false, Excel.XlSaveAsAccessMode.xlNoChange,
+                               Excel.XlSaveConflictResolution.xlUserResolution, true,
+                               Type.Missing, Type.Missing, Type.Missing);
+
+                // Step 7: Handle PDM check-in operations
+                if (_pdmVault != null && _pdmVault.IsLoggedIn)
+                {
+                    // Add new file to vault if it doesn't exist
+                    if (outputEdmFile == null && outputEdmFolder != null)
+                    {
+                        Debug.WriteLine($"PDM: Adding new file to vault: {outputFilePath}");
+                        outputEdmFolder.AddFile(GetSolidWorksMainWindowHandle(), outputFilePath, 
+                                              $"BOM export for {assemblyName} - {bomType} BOM");
+                        
+                        // Get the newly added file reference
+                        outputEdmFile = _pdmVault.GetFileFromPath(outputFilePath, out outputEdmFolder);
+                    }
+                    
+                    // Check in the file if we checked it out
+                    if (outputCheckedOut && outputEdmFile != null)
+                    {
+                        Debug.WriteLine($"PDM: Checking in output file: {outputFilePath}");
+                        outputEdmFile.UnlockFile(GetSolidWorksMainWindowHandle(), 
+                                               $"Updated BOM export for {assemblyName} - {bomType} BOM");
+                    }
+                }
+
+                Debug.WriteLine($"BOM exported successfully to existing template: {outputFilePath}");
+                MessageBox.Show($"BOM exported successfully to:\n{outputFilePath}\n\nUsing template: {Path.GetFileName(localTemplateFile)}", 
+                               "Roeslein Add-in - Export Complete", 
+                               MessageBoxButtons.OK, 
+                               MessageBoxIcon.Information);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error exporting BOM to existing Excel template: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show($"An error occurred while exporting the BOM to Excel template: {ex.Message}", 
+                               "Roeslein Add-in - Excel Export Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+
+                // Handle cleanup on error - undo checkouts if needed
+                try
+                {
+                    if (outputCheckedOut && outputEdmFile != null)
+                    {
+                        Debug.WriteLine("PDM: Undoing checkout due to error");
+                        outputEdmFile.UndoLockFile(GetSolidWorksMainWindowHandle(), true);
+                    }
+                }
+                catch (Exception cleanupEx)
+                {
+                    Debug.WriteLine($"Error during PDM cleanup: {cleanupEx.Message}");
+                }
+
+                return false;
+            }
+            finally
+            {
+                // Clean up COM objects
+                try 
+                {
+                    if (workbook != null)
+                    {
+                        workbook.Close(false);
+                    }
+                    if (excelApp != null)
+                    {
+                        excelApp.Quit();
+                    }
+                } 
+                catch (Exception exFin) 
+                {
+                    Debug.WriteLine($"Exception during Excel cleanup: {exFin.Message}");
+                }
+
+                ReleaseComObject(worksheet);
+                ReleaseComObject(workbook);
+                ReleaseComObject(excelApp);
+                
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+            }
+        }
+
+        /// <summary>
+        /// Get the SolidWorks main window handle for PDM operations
+        /// </summary>
+        private int GetSolidWorksMainWindowHandle()
+        {
+            try
+            {
+                if (_swApp != null)
+                {
+                    Frame swFrame = _swApp.Frame() as Frame;
+                    if (swFrame != null)
+                    {
+                        return swFrame.GetHWnd();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Error getting SW window handle: {ex.Message}");
+            }
+            Debug.WriteLine("Could not get SolidWorks main window handle, returning 0.");
+            return 0;
         }
 
         public void ExportBomToExcel(List<BomItem> bomItems, string filePath, BomType bomType, string assemblyName)
@@ -902,11 +1273,12 @@ namespace RoesleinAddIn
                 worksheet.Columns[partNumberColumn].HorizontalAlignment = Excel.XlHAlign.xlHAlignLeft;
                 worksheet.Columns[partNumberColumn].ColumnWidth = 20;
 
-                // Center Item Number Column (Column A for Full BOM)
+                // Format Item Number Column (Column A for Full BOM) as TEXT and Right-aligned
                 if (bomType == BomType.Full)
                 {
                     Excel.Range columnA = worksheet.Range["A:A"];
-                    columnA.HorizontalAlignment = Excel.XlHAlign.xlHAlignCenter;
+                    columnA.NumberFormat = "@"; // Format as TEXT
+                    columnA.HorizontalAlignment = Excel.XlHAlign.xlHAlignRight; // Right-aligned
                     columnA.ColumnWidth = 12.5; // Set Column A width
                 }
                 else // For Consolidated/SpareParts, Column A is Part Number

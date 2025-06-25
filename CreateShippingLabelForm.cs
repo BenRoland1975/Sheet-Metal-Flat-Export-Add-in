@@ -19,19 +19,7 @@ namespace RoesleinAddIn
         private ShippingLabelData labelData;
         private ShippingLabelBlockCreator blockCreator;
         
-        // Form controls
-        private ComboBox cmbCompanyNumber;
-        private TextBox txtCompanyLetter;
-        private ComboBox cmbArrowType;
-        private TextBox txtProjectNumber;
-        private TextBox txtJobNumber;
-        private TextBox txtSystemNumber;
-        private TextBox txtIDNumber;
-        private TextBox txtDescription;
-        private TextBox txtQuantity;
-        private Button btnPlaceOnDrawing;
-        private Button btnClose;
-        private PictureBox picPreview;
+        // Form controls are declared in the Designer file
         
         // Static memory variables to remember the last entered values across form instances
         private static string lastJobNumber = "";
@@ -41,6 +29,7 @@ namespace RoesleinAddIn
         private static string lastQuantity = "1";
         private static string lastProjectNumber = ""; // Project number field
         private static int lastCompanyNumber = 10; // Default to Pride Conveyance
+        private static string lastBlockScale = "1.0"; // Default to 1.0 (100% scale)
         
         // Description history for autocomplete functionality (per drawing)
         private static Dictionary<string, HashSet<string>> descriptionHistory = new Dictionary<string, HashSet<string>>();
@@ -126,225 +115,41 @@ namespace RoesleinAddIn
         #endregion
 
         #region Form Setup
-        private void InitializeComponent()
-        {
-            this.SuspendLayout();
-            
-            // Form properties
-            this.Text = "Create New Shipping Label";
-            this.Size = new Size(600, 380); // Slightly taller to avoid control clipping
-            this.StartPosition = FormStartPosition.CenterScreen;
-            this.FormBorderStyle = FormBorderStyle.FixedDialog;
-            this.MaximizeBox = false;
-            this.MinimizeBox = false;
-            this.ShowInTaskbar = false;
-            
-            // Ensure proper tab navigation for modeless form
-            this.KeyPreview = true;  // Enable key preview to handle tab navigation
-            this.TabStop = false;    // Form itself doesn't need tab focus
-            
-            this.ResumeLayout(false);
-        }
 
         private void SetupForm()
         {
-            var mainPanel = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 2,
-                Padding = new Padding(10)
-            };
+            // Set dynamic form title
+            this.Text = isEditMode ? "Edit Shipping Label" : "Create New Shipping Label";
+            
+            // Set form properties for 4K displays - bigger initial size to prevent cutoff
+            this.Size = new Size(Math.Max(750, (int)(750 * this.DeviceDpi / 96.0)), 
+                                Math.Max(520, (int)(520 * this.DeviceDpi / 96.0)));
 
-            // Set column styles
-            mainPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60)); // Left panel
-            mainPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40)); // Right panel
-
-            // Set row styles
-            mainPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 80)); // Main content takes most of the space
-            mainPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 80)); // Button panel (extra space below)
-
-            // Create left panel for input fields
-            var inputPanel = CreateInputPanel();
-            mainPanel.Controls.Add(inputPanel, 0, 0);
-
-            // Create right panel for preview
-            var previewPanel = CreatePreviewPanel();
-            mainPanel.Controls.Add(previewPanel, 1, 0);
-
-            // Create button panel
-            var buttonPanel = CreateButtonPanel();
-            mainPanel.SetColumnSpan(buttonPanel, 2);
-            mainPanel.Controls.Add(buttonPanel, 0, 1);
-
-            this.Controls.Add(mainPanel);
-        }
-
-        private Panel CreateInputPanel()
-        {
-            var panel = new Panel { Dock = DockStyle.Fill, TabStop = false };
-            var layout = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 2,
-                RowCount = 9,
-                Padding = new Padding(5),
-                TabStop = false  // Don't let layout panel interfere with tab navigation
-            };
-
-            // Set column styles
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-            // Set row styles for form fields (now 9 rows)
-            for (int i = 0; i < 9; i++)
-            {
-                layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            // Setup event handlers for controls that are now in the designer
+            SetupEventHandlers();
             }
 
-            int row = 0;
-
-            // Company Number (First)
-            layout.Controls.Add(new Label { Text = "Company Number:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true, TabStop = false }, 0, row);
-            cmbCompanyNumber = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, TabIndex = 0 };
+        private void SetupEventHandlers()
+        {
+            // Setup combo box event handlers
             cmbCompanyNumber.SelectedIndexChanged += CmbCompanyNumber_SelectedIndexChanged;
-            layout.Controls.Add(cmbCompanyNumber, 1, row++);
-
-            // Company Letter (Second)
-            layout.Controls.Add(new Label { Text = "Company Letter:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true, TabStop = false }, 0, row);
-            txtCompanyLetter = new TextBox { Dock = DockStyle.Fill, ReadOnly = true, BackColor = SystemColors.Control, TabStop = false };
-            layout.Controls.Add(txtCompanyLetter, 1, row++);
-
-            // Arrow Type
-            layout.Controls.Add(new Label { Text = "Arrow Type:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true, TabStop = false }, 0, row);
-            cmbArrowType = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, TabIndex = 1 };
             cmbArrowType.SelectedIndexChanged += CmbArrowType_SelectedIndexChanged;
-            layout.Controls.Add(cmbArrowType, 1, row++);
 
-            // Project Number
-            layout.Controls.Add(new Label { Text = "Project Number:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true, TabStop = false }, 0, row);
-            txtProjectNumber = new TextBox { Dock = DockStyle.Fill, Text = lastProjectNumber, TabIndex = 2 };
+            // Setup text box event handlers
             txtProjectNumber.TextChanged += TxtProjectNumber_TextChanged;
-            layout.Controls.Add(txtProjectNumber, 1, row++);
-
-            // Job Number
-            layout.Controls.Add(new Label { Text = "Job Number:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true, TabStop = false }, 0, row);
-            txtJobNumber = new TextBox { Dock = DockStyle.Fill, Text = lastJobNumber, TabIndex = 3 };
             txtJobNumber.TextChanged += TxtJobNumber_TextChanged;
-            layout.Controls.Add(txtJobNumber, 1, row++);
-
-            // System Number
-            layout.Controls.Add(new Label { Text = "System Number:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true, TabStop = false }, 0, row);
-            txtSystemNumber = new TextBox { Dock = DockStyle.Fill, Text = lastSystemNumber, TabIndex = 4 };
             txtSystemNumber.TextChanged += TxtSystemNumber_TextChanged;
-            layout.Controls.Add(txtSystemNumber, 1, row++);
-
-            // ID Number
-            layout.Controls.Add(new Label { Text = "ID Number:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true, TabStop = false }, 0, row);
-            txtIDNumber = new TextBox { Dock = DockStyle.Fill, Text = lastIDNumber, TabIndex = 5 };
             txtIDNumber.TextChanged += TxtIDNumber_TextChanged;
-            layout.Controls.Add(txtIDNumber, 1, row++);
-
-            // Description with autocomplete
-            layout.Controls.Add(new Label { Text = "Description:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true, TabStop = false }, 0, row);
-            txtDescription = new TextBox { Dock = DockStyle.Fill, Text = lastDescription, TabIndex = 6 };
             txtDescription.TextChanged += TxtDescription_TextChanged;
-            SetupDescriptionAutoComplete(); // Setup autocomplete functionality
-            layout.Controls.Add(txtDescription, 1, row++);
-
-            // Quantity
-            layout.Controls.Add(new Label { Text = "Quantity:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true, TabStop = false }, 0, row);
-            txtQuantity = new TextBox { Dock = DockStyle.Fill, Text = lastQuantity, TabIndex = 7 };
             txtQuantity.TextChanged += TxtQuantity_TextChanged;
-            layout.Controls.Add(txtQuantity, 1, row++);
+            txtBlockScale.TextChanged += TxtBlockScale_TextChanged;
 
-            panel.Controls.Add(layout);
-            return panel;
-        }
-
-        private Panel CreatePreviewPanel()
-        {
-            var panel = new Panel { Dock = DockStyle.Fill, TabStop = false };
-            panel.Controls.Add(new Label 
-            { 
-                Text = "Preview", 
-                Dock = DockStyle.Top, 
-                TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
-                TabStop = false
-            });
-
-            picPreview = new PictureBox
-            {
-                Dock = DockStyle.Fill,
-                SizeMode = PictureBoxSizeMode.CenterImage,
-                BorderStyle = BorderStyle.FixedSingle,
-                BackColor = Color.White,
-                TabStop = false
-            };
-            
-            panel.Controls.Add(picPreview);
-            return panel;
-        }
-
-        private Panel CreateButtonPanel()
-        {
-            var panel = new Panel
-            {
-                Dock = DockStyle.Fill,
-                Height = 60,
-                MinimumSize = new Size(0, 60),
-                Margin = new Padding(0, 0, 0, 20), // 20px bottom space inside 80px row
-                TabStop = false
-            };
-
-            // Use TableLayoutPanel for more reliable button positioning
-            var layout = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                ColumnCount = 3,
-                RowCount = 1,
-                Height = 60,
-                MinimumSize = new Size(0, 60),
-                TabStop = false
-            };
-
-            // Set column styles: [spacer][Place Block][Close]
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); // Spacer
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));     // Place Block button
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));     // Close button
-
-            btnPlaceOnDrawing = new Button
-            {
-                Text = isEditMode ? "Update Block" : "Place Block",
-                Size = new Size(120, 30),
-                UseVisualStyleBackColor = true,
-                Anchor = AnchorStyles.Top,
-                Margin = new Padding(0, 5, 0, 0), // shift down from row top slightly (~5px)
-                TabIndex = 8
-            };
+            // Setup button event handlers
             btnPlaceOnDrawing.Click += BtnStartPlacement_Click;
-
-            btnClose = new Button
-            {
-                Text = "Close",
-                Size = new Size(75, 30),
-                DialogResult = DialogResult.Cancel,
-                UseVisualStyleBackColor = true,
-                Anchor = AnchorStyles.Top,
-                Margin = new Padding(0, 5, 0, 0),
-                TabIndex = 9
-            };
             btnClose.Click += BtnClose_Click;
-
-            // Add buttons to the layout
-            layout.Controls.Add(new Panel() { TabStop = false }, 0, 0); // Spacer panel
-            layout.Controls.Add(btnPlaceOnDrawing, 1, 0);
-            layout.Controls.Add(btnClose, 2, 0);
-
-            panel.Controls.Add(layout);
-            return panel;
         }
+
+
 
         private void PopulateArrowTypes()
         {
@@ -387,12 +192,186 @@ namespace RoesleinAddIn
 
         private void LoadMemoryValues()
         {
-            // Memory values are already loaded in the TextBox constructors
-            // Just need to set the company number and update the letter
-            SetCompanyNumber(lastCompanyNumber);
+            // Set the button text based on edit mode
+            btnPlaceOnDrawing.Text = isEditMode ? "Update Block" : "Place Block";
+            
+            // Set initial values from memory/defaults
+            txtProjectNumber.Text = lastProjectNumber;
+            txtJobNumber.Text = lastJobNumber;
+            txtSystemNumber.Text = lastSystemNumber;
+            txtIDNumber.Text = lastIDNumber;
+            txtDescription.Text = lastDescription;
+            txtQuantity.Text = lastQuantity;
+            txtBlockScale.Text = lastBlockScale;
+            
+            // Setup autocomplete for description
+            SetupDescriptionAutoComplete();
+            
+            // Try to get the last placed label data and populate from it
+            var lastLabelData = GetLastPlacedLabelData();
+            if (lastLabelData != null)
+            {
+                Logger.Info($"Found last placed label: {lastLabelData.IDNumber}, auto-populating form");
+                
+                // Populate from last label data
+                txtProjectNumber.Text = lastLabelData.ProjectNumber ?? "";
+                txtJobNumber.Text = lastLabelData.JobNumber ?? "";
+                txtSystemNumber.Text = lastLabelData.SystemNumber ?? "";
+                txtDescription.Text = lastLabelData.Description ?? "";
+                txtQuantity.Text = lastLabelData.Quantity ?? "1";
+                
+                // Set company number
+                if (int.TryParse(lastLabelData.CompanyNumber, out int companyNum))
+                {
+                    SetCompanyNumber(companyNum);
+                }
+                else
+                {
+                    SetCompanyNumber(lastCompanyNumber);
+                }
+                
+                // Increment the ID number for the new label
+                string incrementedID = GetIncrementedIDNumber(lastLabelData.IDNumber);
+                txtIDNumber.Text = incrementedID;
+                Logger.Info($"Auto-incremented ID from '{lastLabelData.IDNumber}' to '{incrementedID}'");
+                
+                // Update static memory variables for future use
+                lastProjectNumber = txtProjectNumber.Text;
+                lastJobNumber = txtJobNumber.Text;
+                lastSystemNumber = txtSystemNumber.Text;
+                lastIDNumber = incrementedID;
+                lastDescription = txtDescription.Text;
+                lastQuantity = txtQuantity.Text;
+                lastBlockScale = txtBlockScale.Text;
+                lastCompanyNumber = companyNum;
+            }
+            else
+            {
+                Logger.Info("No previous labels found, using default memory values");
+                // Fall back to previous memory values behavior
+                SetCompanyNumber(lastCompanyNumber);
+            }
             
             // Initialize description autocomplete for this drawing
             InitializeDescriptionHistory();
+        }
+
+        /// <summary>
+        /// Gets the last placed label data from the current drawing to auto-populate the form
+        /// </summary>
+        private ShippingLabelData GetLastPlacedLabelData()
+        {
+            try
+            {
+                // Get access to the shipping label manager's data
+                var managerForm = ShippingLabelManagerForm.GetInstance();
+                if (managerForm == null)
+                {
+                    Logger.Info("ShippingLabelManager instance not available for data lookup");
+                    return null;
+                }
+
+                var allLabels = managerForm.GetAllShippingLabels();
+                if (allLabels == null || !allLabels.Any())
+                {
+                    Logger.Info("No existing shipping labels found in drawing");
+                    return null;
+                }
+
+                // Sort by ID number to get the highest/last one
+                var sortedLabels = allLabels
+                    .Where(label => !string.IsNullOrWhiteSpace(label.IDNumber))
+                    .OrderByDescending(label => ParseIDNumberForSorting(label.IDNumber))
+                    .ThenByDescending(label => label.IDNumber) // Secondary sort by string comparison
+                    .ToList();
+
+                if (sortedLabels.Any())
+                {
+                    var lastLabel = sortedLabels.First();
+                    Logger.Info($"Found {allLabels.Count()} total labels, highest ID: '{lastLabel.IDNumber}'");
+                    return lastLabel;
+                }
+
+                Logger.Info("No labels with valid ID numbers found");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error getting last placed label data: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Parses an ID number for proper numeric sorting (handles formats like "1.7.1-05")
+        /// </summary>
+        private double ParseIDNumberForSorting(string idNumber)
+        {
+            if (string.IsNullOrWhiteSpace(idNumber))
+                return 0;
+
+            try
+            {
+                // Handle format like "1.7.1-05" by extracting the last numeric part
+                int lastSeparatorIndex = Math.Max(idNumber.LastIndexOf('-'), idNumber.LastIndexOf('.'));
+                if (lastSeparatorIndex > 0 && lastSeparatorIndex < idNumber.Length - 1)
+                {
+                    string lastPart = idNumber.Substring(lastSeparatorIndex + 1);
+                    if (double.TryParse(lastPart, out double numValue))
+                    {
+                        return numValue;
+                    }
+                }
+
+                // Fallback: try to parse the whole string as a number
+                if (double.TryParse(idNumber.Replace("-", "").Replace(".", ""), out double wholeValue))
+                {
+                    return wholeValue;
+                }
+
+                return 0; // Default for non-numeric IDs
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Increments an ID number string (e.g., "1.7.1-05" becomes "1.7.1-06")
+        /// </summary>
+        private string GetIncrementedIDNumber(string currentID)
+        {
+            if (string.IsNullOrWhiteSpace(currentID))
+                return "1.7.1-01"; // Default starting ID
+
+            try
+            {
+                // Find the last separator (either - or .)
+                int lastSeparatorIndex = Math.Max(currentID.LastIndexOf('-'), currentID.LastIndexOf('.'));
+                
+                if (lastSeparatorIndex > 0 && lastSeparatorIndex < currentID.Length - 1)
+                {
+                    string prefix = currentID.Substring(0, lastSeparatorIndex + 1);
+                    string numberPart = currentID.Substring(lastSeparatorIndex + 1);
+                    
+                    if (int.TryParse(numberPart, out int currentNumber))
+                    {
+                        // Increment the number, preserving leading zeros
+                        int newNumber = currentNumber + 1;
+                        string incrementedPart = newNumber.ToString().PadLeft(numberPart.Length, '0');
+                        return prefix + incrementedPart;
+                    }
+                }
+                
+                // Fallback: just append "-01" if we can't parse the format
+                return currentID + "-01";
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error incrementing ID number '{currentID}': {ex.Message}");
+                return currentID + "-01"; // Safe fallback
+            }
         }
 
         /// <summary>
@@ -441,6 +420,9 @@ namespace RoesleinAddIn
                     descriptionHistory[currentDrawingName] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 }
 
+                // Load existing descriptions from the current drawing's shipping labels
+                LoadExistingDescriptionsFromDrawing(currentDrawingName);
+
                 currentDrawingDescriptions = descriptionHistory[currentDrawingName].ToList();
                 
                 // Update autocomplete source
@@ -451,6 +433,52 @@ namespace RoesleinAddIn
             catch (Exception ex)
             {
                 Logger.Warning($"Error initializing description history: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Loads existing descriptions from shipping labels in the current drawing
+        /// </summary>
+        private void LoadExistingDescriptionsFromDrawing(string drawingName)
+        {
+            try
+            {
+                // Get access to the shipping label manager's data
+                var managerForm = ShippingLabelManagerForm.GetInstance();
+                if (managerForm == null)
+                {
+                    Logger.Info("ShippingLabelManager instance not available for description loading");
+                    return;
+                }
+
+                var allLabels = managerForm.GetAllShippingLabels();
+                if (allLabels == null || !allLabels.Any())
+                {
+                    Logger.Info("No existing shipping labels found for description loading");
+                    return;
+                }
+
+                // Add all unique descriptions from existing labels to the history
+                var drawingHistory = descriptionHistory[drawingName];
+                int addedCount = 0;
+
+                foreach (var label in allLabels)
+                {
+                    if (!string.IsNullOrWhiteSpace(label.Description))
+                    {
+                        string trimmedDescription = label.Description.Trim();
+                        if (drawingHistory.Add(trimmedDescription))
+                        {
+                            addedCount++;
+                        }
+                    }
+                }
+
+                Logger.Info($"Loaded {addedCount} existing descriptions from {allLabels.Count()} shipping labels");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error loading existing descriptions from drawing: {ex.Message}");
             }
         }
 
@@ -587,6 +615,7 @@ namespace RoesleinAddIn
                 txtIDNumber.Text = originalData.IDNumber ?? "";
                 txtDescription.Text = originalData.Description ?? "";
                 txtQuantity.Text = originalData.Quantity ?? "";
+                txtBlockScale.Text = "1.0"; // Default scale for existing blocks
                 
                 Logger.Info("Successfully loaded existing data into form");
             }
@@ -800,6 +829,11 @@ namespace RoesleinAddIn
             lastQuantity = txtQuantity.Text;
         }
 
+        private void TxtBlockScale_TextChanged(object sender, EventArgs e)
+        {
+            lastBlockScale = txtBlockScale.Text;
+        }
+
         private void BtnStartPlacement_Click(object sender, EventArgs e)
         {
             if (ValidateInput())
@@ -942,7 +976,51 @@ namespace RoesleinAddIn
                 return false;
             }
 
+            // Validate block scale
+            if (!TryParseBlockScale(txtBlockScale.Text, out double scale))
+            {
+                MessageBox.Show("Block Scale must be a valid positive number (e.g., 1.0, 0.5, 2.0).", "Validation Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                txtBlockScale.Focus();
+                return false;
+            }
+
+            if (scale <= 0)
+            {
+                MessageBox.Show("Block Scale must be greater than 0.", "Validation Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                txtBlockScale.Focus();
+                return false;
+            }
+
             return true;
+        }
+
+        /// <summary>
+        /// Tries to parse the block scale text into a valid double value
+        /// </summary>
+        private bool TryParseBlockScale(string scaleText, out double scale)
+        {
+            scale = 1.0;
+            
+            if (string.IsNullOrWhiteSpace(scaleText))
+            {
+                return true; // Default to 1.0
+            }
+            
+            return double.TryParse(scaleText.Trim(), out scale);
+        }
+
+        /// <summary>
+        /// Gets the block scale factor from the form input
+        /// </summary>
+        private double GetBlockScale()
+        {
+            if (TryParseBlockScale(txtBlockScale.Text, out double scale))
+            {
+                return scale;
+            }
+            return 1.0; // Default fallback
         }
 
         private void PopulateLabelData()
@@ -961,6 +1039,9 @@ namespace RoesleinAddIn
             // Add company information (these will be stored as hidden attributes)
             labelData.CompanyNumber = selectedCompanyItem?.CompanyNumber.ToString() ?? "10";
             labelData.CompanyLetter = txtCompanyLetter.Text.Trim();
+            
+            // Add block scale
+            labelData.BlockScale = GetBlockScale();
             
             // Generate unique instance name to prevent duplicates
             var guidPart = Guid.NewGuid().ToString("N").Substring(0, 8);
@@ -1041,6 +1122,10 @@ namespace RoesleinAddIn
                 if (success)
                 {
                     lastSuccessfulPlacement = true;
+                    
+                    // DON'T show popup - it interferes with interactive placement!
+                    // The block is now attached to the mouse cursor and the popup would steal focus
+                    
                     // Show the form but don't steal focus from SolidWorks
                     this.Show();
                     
@@ -1324,17 +1409,6 @@ namespace RoesleinAddIn
             }
 
             public override string ToString() => $"{CompanyNumber}, {CompanyName}";
-        }
-        #endregion
-
-        #region Dispose
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                picPreview?.Image?.Dispose();
-            }
-            base.Dispose(disposing);
         }
         #endregion
     }

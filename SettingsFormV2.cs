@@ -36,14 +36,7 @@ namespace RoesleinAddIn
         private ContextMenuStrip dgvMaterialMappingContextMenu;
         private ContextMenuStrip dgvThicknessMappingContextMenu;
 
-        // Connex settings controls
-        private TextBox txtConnexServer;
-        private TextBox txtConnexLiveDb;
-        private TextBox txtConnexTestDb;
-        private RadioButton rbConnexLive;
-        private RadioButton rbConnexTest;
-        private RadioButton rbConnexBoth;
-        private Button btnConnexTest;
+        // Connex settings controls are now defined in the designer
 
         public SettingsFormV2(ISldWorks sldWorksApp, EPDM.Interop.epdm.IEdmVault5 vault)
         {
@@ -111,6 +104,10 @@ namespace RoesleinAddIn
             if (btnBrowseDebugLogFile != null) btnBrowseDebugLogFile.Click += btnBrowseDebugLogFile_Click;
             if (BtnBrowseDrawingTemplate != null) BtnBrowseDrawingTemplate.Click += BtnBrowseDrawingTemplate_Click;
             
+            // Oracle FBDI Browse button event handlers
+            if (btnFBDI_Item_Template != null) btnFBDI_Item_Template.Click += btnFBDI_Item_Template_Click;
+            if (btnFBDI_Item_Structur_Template != null) btnFBDI_Item_Structur_Template.Click += btnFBDI_Item_Structur_Template_Click;
+            
             // Event handlers for PropertyMappings DGV on General Settings Tab (if buttons are on this tab)
             // The backup shows btnSaveMappings and btnAddNewRow for dgvPropertyMappings.
             // These should be wired up if the controls exist on SettingsFormV2.Designer.cs
@@ -147,82 +144,60 @@ namespace RoesleinAddIn
             }
 
             InitializeConnexSettingsUI();
+            InitializeOracleSettingsUI();
         }
 
         private void InitializeConnexSettingsUI()
         {
             try
             {
-                if (tpConnexSettings == null) return;
-
-                // Layout
-                var layout = new TableLayoutPanel
-                {
-                    Dock = DockStyle.Fill,
-                    ColumnCount = 2,
-                    RowCount = 6,
-                    Padding = new Padding(10)
-                };
-                layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-                layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-                int r = 0;
-
-                // Server / instance
-                layout.Controls.Add(new Label { Text = "SQL Server \\ Instance:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true }, 0, r);
-                txtConnexServer = new TextBox { Dock = DockStyle.Fill };
-                layout.Controls.Add(txtConnexServer, 1, r++);
-
-                // Live DB
-                layout.Controls.Add(new Label { Text = "Live Database:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true }, 0, r);
-                txtConnexLiveDb = new TextBox { Dock = DockStyle.Fill };
-                layout.Controls.Add(txtConnexLiveDb, 1, r++);
-
-                // Test DB
-                layout.Controls.Add(new Label { Text = "Test Database:", TextAlign = ContentAlignment.MiddleRight, AutoSize = true }, 0, r);
-                txtConnexTestDb = new TextBox { Dock = DockStyle.Fill };
-                layout.Controls.Add(txtConnexTestDb, 1, r++);
-
-                // Target group
-                var gbTarget = new GroupBox { Text = "Push Target", Dock = DockStyle.Fill };
-                var gbLayout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
-                rbConnexLive = new RadioButton { Text = "Live Only" };
-                rbConnexTest = new RadioButton { Text = "Test Only" };
-                rbConnexBoth = new RadioButton { Text = "Both", Checked = true };
-                gbLayout.Controls.Add(rbConnexLive);
-                gbLayout.Controls.Add(rbConnexTest);
-                gbLayout.Controls.Add(rbConnexBoth);
-                gbTarget.Controls.Add(gbLayout);
-                // span two columns
-                layout.Controls.Add(gbTarget, 0, r);
-                layout.SetColumnSpan(gbTarget, 2);
-
-                // Test connection button (row ++)
-                r++;
-                btnConnexTest = new Button { Text = "Test Connection", Width = 140, Height = 30 };
-                btnConnexTest.Click += BtnConnexTest_Click;
-                layout.Controls.Add(btnConnexTest, 1, r);
-
-                tpConnexSettings.Controls.Add(layout);
-
-                // Load existing settings values
+                // Load existing settings values into the designer-created controls
                 var s = this.currentGeneralSettings ?? Settings.LoadSettings();
                 if (s != null)
                 {
-                    txtConnexServer.Text = s.ConnexServerInstance;
-                    txtConnexLiveDb.Text = s.ConnexLiveDatabase;
-                    txtConnexTestDb.Text = s.ConnexTestDatabase;
+                    if (txtConnexServer != null) txtConnexServer.Text = s.ConnexServerInstance ?? "";
+                    if (txtConnexLiveDb != null) txtConnexLiveDb.Text = s.ConnexLiveDatabase ?? "";
+                    if (txtConnexTestDb != null) txtConnexTestDb.Text = s.ConnexTestDatabase ?? "";
+                    
+                    // Set radio button based on saved target setting
                     switch (s.ConnexTarget)
                     {
-                        case ConnexPushTarget.LiveOnly: rbConnexLive.Checked = true; break;
-                        case ConnexPushTarget.TestOnly: rbConnexTest.Checked = true; break;
-                        default: rbConnexBoth.Checked = true; break;
+                        case ConnexPushTarget.LiveOnly: 
+                            if (rbConnexLive != null) rbConnexLive.Checked = true; 
+                            break;
+                        case ConnexPushTarget.TestOnly: 
+                            if (rbConnexTest != null) rbConnexTest.Checked = true; 
+                            break;
+                        default: 
+                            if (rbConnexBoth != null) rbConnexBoth.Checked = true; 
+                            break;
                     }
                 }
             }
             catch (Exception ex)
             {
                 Logger.Warning($"Error initializing Connex settings UI: {ex.Message}");
+            }
+        }
+
+        private void InitializeOracleSettingsUI()
+        {
+            try
+            {
+                // Load existing settings values into the Oracle settings controls
+                var s = this.currentGeneralSettings ?? Settings.LoadSettings();
+                if (s != null)
+                {
+                    if (textBoxItemFBDI != null) 
+                        textBoxItemFBDI.Text = s.OracleFBDIItemTemplatePath ?? @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\ItemImportTemplate.xlsm";
+                    
+                    if (textBoxItemStructureFBDI != null)
+                        textBoxItemStructureFBDI.Text = s.OracleFBDIItemStructureTemplatePath ?? @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn\ItemStructureImportTemplate.xlsm";
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Error initializing Oracle settings UI: {ex.Message}");
             }
         }
 
@@ -348,12 +323,27 @@ namespace RoesleinAddIn
                 }
 
                 // Save Connex settings
-                if (currentGeneralSettings != null && txtConnexServer != null)
+                if (currentGeneralSettings != null)
                 {
-                    currentGeneralSettings.ConnexServerInstance = txtConnexServer.Text.Trim();
-                    currentGeneralSettings.ConnexLiveDatabase = txtConnexLiveDb.Text.Trim();
-                    currentGeneralSettings.ConnexTestDatabase = txtConnexTestDb.Text.Trim();
-                    currentGeneralSettings.ConnexTarget = rbConnexLive.Checked ? ConnexPushTarget.LiveOnly : rbConnexTest.Checked ? ConnexPushTarget.TestOnly : ConnexPushTarget.Both;
+                    if (txtConnexServer != null) currentGeneralSettings.ConnexServerInstance = txtConnexServer.Text.Trim();
+                    if (txtConnexLiveDb != null) currentGeneralSettings.ConnexLiveDatabase = txtConnexLiveDb.Text.Trim();
+                    if (txtConnexTestDb != null) currentGeneralSettings.ConnexTestDatabase = txtConnexTestDb.Text.Trim();
+                    
+                    // Determine target based on radio buttons
+                    if (rbConnexLive != null && rbConnexLive.Checked)
+                        currentGeneralSettings.ConnexTarget = ConnexPushTarget.LiveOnly;
+                    else if (rbConnexTest != null && rbConnexTest.Checked)
+                        currentGeneralSettings.ConnexTarget = ConnexPushTarget.TestOnly;
+                    else
+                        currentGeneralSettings.ConnexTarget = ConnexPushTarget.Both;
+                }
+
+                // Save Oracle settings
+                if (currentGeneralSettings != null)
+                {
+                    if (textBoxItemFBDI != null) currentGeneralSettings.OracleFBDIItemTemplatePath = textBoxItemFBDI.Text.Trim();
+            if (textBoxItemStructureFBDI != null) currentGeneralSettings.OracleFBDIItemStructureTemplatePath = textBoxItemStructureFBDI.Text.Trim();
+                    
                     currentGeneralSettings.SaveSettings();
                 }
             }
@@ -2207,6 +2197,74 @@ namespace RoesleinAddIn
             catch (Exception ex)
             {
                 MessageBox.Show($"Connection failed:\n{ex.Message}", "Connex Test", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Browse button event handler for Oracle FBDI Item Template
+        /// </summary>
+        private void btnFBDI_Item_Template_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                OpenFileDialog openDialog = new OpenFileDialog();
+                openDialog.Filter = "Excel Macro Files (*.xlsm)|*.xlsm|Excel Files (*.xlsx)|*.xlsx|All Files (*.*)|*.*";
+                openDialog.Title = "Select Oracle FBDI Item Template";
+                openDialog.InitialDirectory = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn";
+                
+                // Set current path if textbox has a valid path
+                if (textBoxItemFBDI != null && !string.IsNullOrEmpty(textBoxItemFBDI.Text) && File.Exists(textBoxItemFBDI.Text))
+                {
+                    openDialog.InitialDirectory = Path.GetDirectoryName(textBoxItemFBDI.Text);
+                    openDialog.FileName = Path.GetFileName(textBoxItemFBDI.Text);
+                }
+
+                if (openDialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    if (textBoxItemFBDI != null)
+                    {
+                        textBoxItemFBDI.Text = openDialog.FileName;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error browsing for Oracle FBDI Item template: {ex.Message}", "Browse Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.Error($"Error browsing for Oracle FBDI Item template: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Browse button event handler for Oracle FBDI Item Structure Template
+        /// </summary>
+        private void btnFBDI_Item_Structur_Template_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                OpenFileDialog openDialog = new OpenFileDialog();
+                openDialog.Filter = "Excel Macro Files (*.xlsm)|*.xlsm|Excel Files (*.xlsx)|*.xlsx|All Files (*.*)|*.*";
+                openDialog.Title = "Select Oracle FBDI Item Structure Template";
+                openDialog.InitialDirectory = @"C:\PCSVAULT\SolidWorks Settings\Roeslein SW AddIn";
+                
+                // Set current path if textbox has a valid path
+                if (textBoxItemStructureFBDI != null && !string.IsNullOrEmpty(textBoxItemStructureFBDI.Text) && File.Exists(textBoxItemStructureFBDI.Text))
+                {
+                    openDialog.InitialDirectory = Path.GetDirectoryName(textBoxItemStructureFBDI.Text);
+                    openDialog.FileName = Path.GetFileName(textBoxItemStructureFBDI.Text);
+                }
+
+                if (openDialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    if (textBoxItemStructureFBDI != null)
+                    {
+                        textBoxItemStructureFBDI.Text = openDialog.FileName;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error browsing for Oracle FBDI Item Structure template: {ex.Message}", "Browse Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.Error($"Error browsing for Oracle FBDI Item Structure template: {ex.Message}", ex);
             }
         }
     }

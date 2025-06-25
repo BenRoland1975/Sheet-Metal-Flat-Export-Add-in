@@ -84,12 +84,33 @@
             this.btnSaveRawSheet = new System.Windows.Forms.Button();
             this.dgvRawLinear = new System.Windows.Forms.DataGridView();
             this.dgvRawSheet = new System.Windows.Forms.DataGridView();
+            this.tpConnexSettings = new System.Windows.Forms.TabPage();
+            this.lblDBAccount = new System.Windows.Forms.Label();
+            this.btnConnexTest = new System.Windows.Forms.Button();
+            this.gbConnexTarget = new System.Windows.Forms.GroupBox();
+            this.rbConnexBoth = new System.Windows.Forms.RadioButton();
+            this.rbConnexTest = new System.Windows.Forms.RadioButton();
+            this.rbConnexLive = new System.Windows.Forms.RadioButton();
+            this.txtConnexTestDb = new System.Windows.Forms.TextBox();
+            this.lblConnexTestDb = new System.Windows.Forms.Label();
+            this.txtConnexLiveDb = new System.Windows.Forms.TextBox();
+            this.lblConnexLiveDb = new System.Windows.Forms.Label();
+            this.txtConnexServer = new System.Windows.Forms.TextBox();
+            this.lblConnexServer = new System.Windows.Forms.Label();
+            this.tpOracleSettings = new System.Windows.Forms.TabPage();
+            this.pictureBox2 = new System.Windows.Forms.PictureBox();
+            this.gbFBDITemplates = new System.Windows.Forms.GroupBox();
+            this.textBoxItemStructureFBDI = new System.Windows.Forms.TextBox();
+            this.lblItemStructureTemplate = new System.Windows.Forms.Label();
+            this.btnFBDI_Item_Structur_Template = new System.Windows.Forms.Button();
+            this.textBoxItemFBDI = new System.Windows.Forms.TextBox();
+            this.lblItemTemplate = new System.Windows.Forms.Label();
+            this.btnFBDI_Item_Template = new System.Windows.Forms.Button();
             this.btnCancel = new System.Windows.Forms.Button();
             this.btnOK = new System.Windows.Forms.Button();
             this.lblRosleinVersonLabel = new System.Windows.Forms.Label();
             this.lblVersionNumber = new System.Windows.Forms.Label();
             this.lblCopyright = new System.Windows.Forms.Label();
-            this.tpConnexSettings = new System.Windows.Forms.TabPage();
             this.tabControl1.SuspendLayout();
             this.GeneralSettings.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.pictureBox1)).BeginInit();
@@ -103,6 +124,11 @@
             this.tpRawMaterial.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawLinear)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawSheet)).BeginInit();
+            this.tpConnexSettings.SuspendLayout();
+            this.gbConnexTarget.SuspendLayout();
+            this.tpOracleSettings.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.pictureBox2)).BeginInit();
+            this.gbFBDITemplates.SuspendLayout();
             this.SuspendLayout();
             // 
             // tabControl1
@@ -113,6 +139,7 @@
             this.tabControl1.Controls.Add(this.tpStandardsSettings);
             this.tabControl1.Controls.Add(this.tpRawMaterial);
             this.tabControl1.Controls.Add(this.tpConnexSettings);
+            this.tabControl1.Controls.Add(this.tpOracleSettings);
             this.tabControl1.Dock = System.Windows.Forms.DockStyle.Top;
             this.tabControl1.Location = new System.Drawing.Point(0, 0);
             this.tabControl1.Name = "tabControl1";
@@ -217,6 +244,7 @@
             this.dgvPropertyMappings.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
             this.dgvPropertyMappings.Location = new System.Drawing.Point(170, 255);
             this.dgvPropertyMappings.Name = "dgvPropertyMappings";
+            this.dgvPropertyMappings.RowHeadersWidth = 62;
             this.dgvPropertyMappings.Size = new System.Drawing.Size(455, 186);
             this.dgvPropertyMappings.TabIndex = 26;
             // 
@@ -486,6 +514,7 @@
             this.dgvMaterialMapping.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
             this.dgvMaterialMapping.Location = new System.Drawing.Point(28, 29);
             this.dgvMaterialMapping.Name = "dgvMaterialMapping";
+            this.dgvMaterialMapping.RowHeadersWidth = 62;
             this.dgvMaterialMapping.Size = new System.Drawing.Size(738, 379);
             this.dgvMaterialMapping.TabIndex = 26;
             // 
@@ -538,6 +567,7 @@
             this.dgvThicknessMapping.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
             this.dgvThicknessMapping.Location = new System.Drawing.Point(28, 29);
             this.dgvThicknessMapping.Name = "dgvThicknessMapping";
+            this.dgvThicknessMapping.RowHeadersWidth = 62;
             this.dgvThicknessMapping.Size = new System.Drawing.Size(738, 379);
             this.dgvThicknessMapping.TabIndex = 32;
             // 
@@ -629,6 +659,7 @@
             this.dgvPropertyStandards.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
             this.dgvPropertyStandards.Location = new System.Drawing.Point(12, 49);
             this.dgvPropertyStandards.Name = "dgvPropertyStandards";
+            this.dgvPropertyStandards.RowHeadersWidth = 62;
             this.dgvPropertyStandards.Size = new System.Drawing.Size(772, 352);
             this.dgvPropertyStandards.TabIndex = 0;
             // 
@@ -680,6 +711,7 @@
             this.dgvRawLinear.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
             this.dgvRawLinear.Location = new System.Drawing.Point(12, 285);
             this.dgvRawLinear.Name = "dgvRawLinear";
+            this.dgvRawLinear.RowHeadersWidth = 62;
             this.dgvRawLinear.Size = new System.Drawing.Size(772, 175);
             this.dgvRawLinear.TabIndex = 1;
             // 
@@ -688,8 +720,238 @@
             this.dgvRawSheet.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
             this.dgvRawSheet.Location = new System.Drawing.Point(12, 26);
             this.dgvRawSheet.Name = "dgvRawSheet";
+            this.dgvRawSheet.RowHeadersWidth = 62;
             this.dgvRawSheet.Size = new System.Drawing.Size(772, 220);
             this.dgvRawSheet.TabIndex = 0;
+            // 
+            // tpConnexSettings
+            // 
+            this.tpConnexSettings.Controls.Add(this.lblDBAccount);
+            this.tpConnexSettings.Controls.Add(this.btnConnexTest);
+            this.tpConnexSettings.Controls.Add(this.gbConnexTarget);
+            this.tpConnexSettings.Controls.Add(this.txtConnexTestDb);
+            this.tpConnexSettings.Controls.Add(this.lblConnexTestDb);
+            this.tpConnexSettings.Controls.Add(this.txtConnexLiveDb);
+            this.tpConnexSettings.Controls.Add(this.lblConnexLiveDb);
+            this.tpConnexSettings.Controls.Add(this.txtConnexServer);
+            this.tpConnexSettings.Controls.Add(this.lblConnexServer);
+            this.tpConnexSettings.Location = new System.Drawing.Point(4, 22);
+            this.tpConnexSettings.Name = "tpConnexSettings";
+            this.tpConnexSettings.Padding = new System.Windows.Forms.Padding(3);
+            this.tpConnexSettings.Size = new System.Drawing.Size(792, 474);
+            this.tpConnexSettings.TabIndex = 5;
+            this.tpConnexSettings.Text = "Connex Settings";
+            this.tpConnexSettings.UseVisualStyleBackColor = true;
+            // 
+            // lblDBAccount
+            // 
+            this.lblDBAccount.AutoSize = true;
+            this.lblDBAccount.Location = new System.Drawing.Point(23, 237);
+            this.lblDBAccount.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+            this.lblDBAccount.Name = "lblDBAccount";
+            this.lblDBAccount.Size = new System.Drawing.Size(363, 52);
+            this.lblDBAccount.TabIndex = 8;
+            this.lblDBAccount.Text = "Note:\r\nIn order to push label data into Connex you must request\r\naccess from Help" +
+    "Desk@Roeslein.com\r\nPut in the subject line: Request access for ConnexDB for Soli" +
+    "dWorks AddIn\r\n";
+            // 
+            // btnConnexTest
+            // 
+            this.btnConnexTest.Location = new System.Drawing.Point(20, 187);
+            this.btnConnexTest.Name = "btnConnexTest";
+            this.btnConnexTest.Size = new System.Drawing.Size(140, 30);
+            this.btnConnexTest.TabIndex = 7;
+            this.btnConnexTest.Text = "Test Connection";
+            this.btnConnexTest.UseVisualStyleBackColor = true;
+            this.btnConnexTest.Click += new System.EventHandler(this.BtnConnexTest_Click);
+            // 
+            // gbConnexTarget
+            // 
+            this.gbConnexTarget.Controls.Add(this.rbConnexBoth);
+            this.gbConnexTarget.Controls.Add(this.rbConnexTest);
+            this.gbConnexTarget.Controls.Add(this.rbConnexLive);
+            this.gbConnexTarget.Location = new System.Drawing.Point(20, 120);
+            this.gbConnexTarget.Name = "gbConnexTarget";
+            this.gbConnexTarget.Size = new System.Drawing.Size(411, 60);
+            this.gbConnexTarget.TabIndex = 6;
+            this.gbConnexTarget.TabStop = false;
+            this.gbConnexTarget.Text = "Push Target";
+            // 
+            // rbConnexBoth
+            // 
+            this.rbConnexBoth.AutoSize = true;
+            this.rbConnexBoth.Location = new System.Drawing.Point(220, 25);
+            this.rbConnexBoth.Name = "rbConnexBoth";
+            this.rbConnexBoth.Size = new System.Drawing.Size(47, 17);
+            this.rbConnexBoth.TabIndex = 2;
+            this.rbConnexBoth.Text = "Both";
+            this.rbConnexBoth.UseVisualStyleBackColor = true;
+            // 
+            // rbConnexTest
+            // 
+            this.rbConnexTest.AutoSize = true;
+            this.rbConnexTest.Location = new System.Drawing.Point(120, 25);
+            this.rbConnexTest.Name = "rbConnexTest";
+            this.rbConnexTest.Size = new System.Drawing.Size(70, 17);
+            this.rbConnexTest.TabIndex = 1;
+            this.rbConnexTest.Text = "Test Only";
+            this.rbConnexTest.UseVisualStyleBackColor = true;
+            // 
+            // rbConnexLive
+            // 
+            this.rbConnexLive.AutoSize = true;
+            this.rbConnexLive.Checked = true;
+            this.rbConnexLive.Location = new System.Drawing.Point(20, 25);
+            this.rbConnexLive.Name = "rbConnexLive";
+            this.rbConnexLive.Size = new System.Drawing.Size(69, 17);
+            this.rbConnexLive.TabIndex = 0;
+            this.rbConnexLive.TabStop = true;
+            this.rbConnexLive.Text = "Live Only";
+            this.rbConnexLive.UseVisualStyleBackColor = true;
+            // 
+            // txtConnexTestDb
+            // 
+            this.txtConnexTestDb.Location = new System.Drawing.Point(131, 84);
+            this.txtConnexTestDb.Name = "txtConnexTestDb";
+            this.txtConnexTestDb.Size = new System.Drawing.Size(300, 20);
+            this.txtConnexTestDb.TabIndex = 5;
+            // 
+            // lblConnexTestDb
+            // 
+            this.lblConnexTestDb.AutoSize = true;
+            this.lblConnexTestDb.Location = new System.Drawing.Point(20, 90);
+            this.lblConnexTestDb.Name = "lblConnexTestDb";
+            this.lblConnexTestDb.Size = new System.Drawing.Size(80, 13);
+            this.lblConnexTestDb.TabIndex = 4;
+            this.lblConnexTestDb.Text = "Test Database:";
+            // 
+            // txtConnexLiveDb
+            // 
+            this.txtConnexLiveDb.Location = new System.Drawing.Point(131, 54);
+            this.txtConnexLiveDb.Name = "txtConnexLiveDb";
+            this.txtConnexLiveDb.Size = new System.Drawing.Size(300, 20);
+            this.txtConnexLiveDb.TabIndex = 3;
+            // 
+            // lblConnexLiveDb
+            // 
+            this.lblConnexLiveDb.AutoSize = true;
+            this.lblConnexLiveDb.Location = new System.Drawing.Point(20, 60);
+            this.lblConnexLiveDb.Name = "lblConnexLiveDb";
+            this.lblConnexLiveDb.Size = new System.Drawing.Size(79, 13);
+            this.lblConnexLiveDb.TabIndex = 2;
+            this.lblConnexLiveDb.Text = "Live Database:";
+            // 
+            // txtConnexServer
+            // 
+            this.txtConnexServer.Location = new System.Drawing.Point(131, 24);
+            this.txtConnexServer.Name = "txtConnexServer";
+            this.txtConnexServer.Size = new System.Drawing.Size(300, 20);
+            this.txtConnexServer.TabIndex = 1;
+            // 
+            // lblConnexServer
+            // 
+            this.lblConnexServer.AutoSize = true;
+            this.lblConnexServer.Location = new System.Drawing.Point(20, 30);
+            this.lblConnexServer.Name = "lblConnexServer";
+            this.lblConnexServer.Size = new System.Drawing.Size(117, 13);
+            this.lblConnexServer.TabIndex = 0;
+            this.lblConnexServer.Text = "SQL Server \\ Instance:";
+            // 
+            // tpOracleSettings
+            // 
+            this.tpOracleSettings.Controls.Add(this.pictureBox2);
+            this.tpOracleSettings.Controls.Add(this.gbFBDITemplates);
+            this.tpOracleSettings.Location = new System.Drawing.Point(4, 22);
+            this.tpOracleSettings.Name = "tpOracleSettings";
+            this.tpOracleSettings.Size = new System.Drawing.Size(792, 474);
+            this.tpOracleSettings.TabIndex = 6;
+            this.tpOracleSettings.Text = "Oracle Settings";
+            this.tpOracleSettings.UseVisualStyleBackColor = true;
+            // 
+            // pictureBox2
+            // 
+            this.pictureBox2.Image = global::RoesleinAddIn.Properties.Resources.OracleFusionMiddleWare;
+            this.pictureBox2.Location = new System.Drawing.Point(29, 14);
+            this.pictureBox2.Name = "pictureBox2";
+            this.pictureBox2.Size = new System.Drawing.Size(149, 47);
+            this.pictureBox2.SizeMode = System.Windows.Forms.PictureBoxSizeMode.Zoom;
+            this.pictureBox2.TabIndex = 15;
+            this.pictureBox2.TabStop = false;
+            // 
+            // gbFBDITemplates
+            // 
+            this.gbFBDITemplates.Controls.Add(this.textBoxItemStructureFBDI);
+            this.gbFBDITemplates.Controls.Add(this.lblItemStructureTemplate);
+            this.gbFBDITemplates.Controls.Add(this.btnFBDI_Item_Structur_Template);
+            this.gbFBDITemplates.Controls.Add(this.textBoxItemFBDI);
+            this.gbFBDITemplates.Controls.Add(this.lblItemTemplate);
+            this.gbFBDITemplates.Controls.Add(this.btnFBDI_Item_Template);
+            this.gbFBDITemplates.Location = new System.Drawing.Point(12, 79);
+            this.gbFBDITemplates.Name = "gbFBDITemplates";
+            this.gbFBDITemplates.Size = new System.Drawing.Size(755, 185);
+            this.gbFBDITemplates.TabIndex = 14;
+            this.gbFBDITemplates.TabStop = false;
+            this.gbFBDITemplates.Text = "FBDI Templates";
+            // 
+            // textBoxItemStructureFBDI
+            // 
+            this.textBoxItemStructureFBDI.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
+            | System.Windows.Forms.AnchorStyles.Right)));
+            this.textBoxItemStructureFBDI.Location = new System.Drawing.Point(144, 45);
+            this.textBoxItemStructureFBDI.Name = "textBoxItemStructureFBDI";
+            this.textBoxItemStructureFBDI.Size = new System.Drawing.Size(520, 20);
+            this.textBoxItemStructureFBDI.TabIndex = 14;
+            // 
+            // lblItemStructureTemplate
+            // 
+            this.lblItemStructureTemplate.AutoSize = true;
+            this.lblItemStructureTemplate.ImageAlign = System.Drawing.ContentAlignment.MiddleRight;
+            this.lblItemStructureTemplate.Location = new System.Drawing.Point(14, 49);
+            this.lblItemStructureTemplate.Name = "lblItemStructureTemplate";
+            this.lblItemStructureTemplate.Size = new System.Drawing.Size(123, 13);
+            this.lblItemStructureTemplate.TabIndex = 16;
+            this.lblItemStructureTemplate.Text = "Item Structure Template:";
+            this.lblItemStructureTemplate.TextAlign = System.Drawing.ContentAlignment.TopRight;
+            // 
+            // btnFBDI_Item_Structur_Template
+            // 
+            this.btnFBDI_Item_Structur_Template.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.btnFBDI_Item_Structur_Template.Location = new System.Drawing.Point(672, 44);
+            this.btnFBDI_Item_Structur_Template.Name = "btnFBDI_Item_Structur_Template";
+            this.btnFBDI_Item_Structur_Template.Size = new System.Drawing.Size(75, 23);
+            this.btnFBDI_Item_Structur_Template.TabIndex = 15;
+            this.btnFBDI_Item_Structur_Template.Text = "Browse...";
+            this.btnFBDI_Item_Structur_Template.UseVisualStyleBackColor = true;
+            // 
+            // textBoxItemFBDI
+            // 
+            this.textBoxItemFBDI.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
+            | System.Windows.Forms.AnchorStyles.Right)));
+            this.textBoxItemFBDI.Location = new System.Drawing.Point(144, 19);
+            this.textBoxItemFBDI.Name = "textBoxItemFBDI";
+            this.textBoxItemFBDI.Size = new System.Drawing.Size(520, 20);
+            this.textBoxItemFBDI.TabIndex = 11;
+            // 
+            // lblItemTemplate
+            // 
+            this.lblItemTemplate.AutoSize = true;
+            this.lblItemTemplate.ImageAlign = System.Drawing.ContentAlignment.MiddleRight;
+            this.lblItemTemplate.Location = new System.Drawing.Point(14, 23);
+            this.lblItemTemplate.Name = "lblItemTemplate";
+            this.lblItemTemplate.Size = new System.Drawing.Size(77, 13);
+            this.lblItemTemplate.TabIndex = 13;
+            this.lblItemTemplate.Text = "Item Template:";
+            this.lblItemTemplate.TextAlign = System.Drawing.ContentAlignment.TopRight;
+            // 
+            // btnFBDI_Item_Template
+            // 
+            this.btnFBDI_Item_Template.Anchor = ((System.Windows.Forms.AnchorStyles)((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right)));
+            this.btnFBDI_Item_Template.Location = new System.Drawing.Point(672, 18);
+            this.btnFBDI_Item_Template.Name = "btnFBDI_Item_Template";
+            this.btnFBDI_Item_Template.Size = new System.Drawing.Size(75, 23);
+            this.btnFBDI_Item_Template.TabIndex = 12;
+            this.btnFBDI_Item_Template.Text = "Browse...";
+            this.btnFBDI_Item_Template.UseVisualStyleBackColor = true;
             // 
             // btnCancel
             // 
@@ -740,15 +1002,6 @@
             this.lblCopyright.TabIndex = 7;
             this.lblCopyright.Text = "Copyright";
             // 
-            // tpConnexSettings
-            // 
-            this.tpConnexSettings.Location = new System.Drawing.Point(4, 22);
-            this.tpConnexSettings.Name = "tpConnexSettings";
-            this.tpConnexSettings.Size = new System.Drawing.Size(792, 474);
-            this.tpConnexSettings.TabIndex = 5;
-            this.tpConnexSettings.Text = "Connex Settings";
-            this.tpConnexSettings.UseVisualStyleBackColor = true;
-            // 
             // SettingsFormV2
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
@@ -781,6 +1034,14 @@
             this.tpRawMaterial.PerformLayout();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawLinear)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgvRawSheet)).EndInit();
+            this.tpConnexSettings.ResumeLayout(false);
+            this.tpConnexSettings.PerformLayout();
+            this.gbConnexTarget.ResumeLayout(false);
+            this.gbConnexTarget.PerformLayout();
+            this.tpOracleSettings.ResumeLayout(false);
+            ((System.ComponentModel.ISupportInitialize)(this.pictureBox2)).EndInit();
+            this.gbFBDITemplates.ResumeLayout(false);
+            this.gbFBDITemplates.PerformLayout();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -849,5 +1110,26 @@
         private System.Windows.Forms.Label lblSettingsVersionNote;
         private System.Windows.Forms.Label lblSettingsVersion;
         private System.Windows.Forms.TabPage tpConnexSettings;
+        private System.Windows.Forms.Label lblConnexServer;
+        private System.Windows.Forms.TextBox txtConnexServer;
+        private System.Windows.Forms.Label lblConnexLiveDb;
+        private System.Windows.Forms.TextBox txtConnexLiveDb;
+        private System.Windows.Forms.Label lblConnexTestDb;
+        private System.Windows.Forms.TextBox txtConnexTestDb;
+        private System.Windows.Forms.GroupBox gbConnexTarget;
+        private System.Windows.Forms.RadioButton rbConnexLive;
+        private System.Windows.Forms.RadioButton rbConnexTest;
+        private System.Windows.Forms.RadioButton rbConnexBoth;
+        private System.Windows.Forms.Button btnConnexTest;
+        private System.Windows.Forms.Label lblDBAccount;
+        private System.Windows.Forms.TabPage tpOracleSettings;
+        private System.Windows.Forms.GroupBox gbFBDITemplates;
+        private System.Windows.Forms.TextBox textBoxItemFBDI;
+        private System.Windows.Forms.Label lblItemTemplate;
+        private System.Windows.Forms.Button btnFBDI_Item_Template;
+        private System.Windows.Forms.PictureBox pictureBox2;
+        private System.Windows.Forms.TextBox textBoxItemStructureFBDI;
+        private System.Windows.Forms.Label lblItemStructureTemplate;
+        private System.Windows.Forms.Button btnFBDI_Item_Structur_Template;
     }
 }

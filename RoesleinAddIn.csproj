@@ -88,6 +88,9 @@
     <Compile Include="CreateShippingLabelForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="CreateShippingLabelForm.Designer.cs">
+      <DependentUpon>CreateShippingLabelForm.cs</DependentUpon>
+    </Compile>
     <Compile Include="ShippingLabelBlockCreator.cs" />
     <Compile Include="eDrawingsCreator.cs" />
     <Compile Include="MagentaImageStripCreator.cs" />
@@ -107,6 +110,18 @@
     <Compile Include="Settings.cs" />
     <Compile Include="Logger.cs" />
     <Compile Include="ImageConverter.cs" />
+    <Compile Include="ItemsFbdiOptionsForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="ItemsFbdiOptionsForm.Designer.cs">
+      <DependentUpon>ItemsFbdiOptionsForm.cs</DependentUpon>
+    </Compile>
+    <Compile Include="StructureFbdiOptionsForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="StructureFbdiOptionsForm.Designer.cs">
+      <DependentUpon>StructureFbdiOptionsForm.cs</DependentUpon>
+    </Compile>
     <Compile Include="SettingsFormV2.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -135,6 +150,15 @@
   <ItemGroup>
     <EmbeddedResource Include="BomExportForm.resx">
       <DependentUpon>BomExportForm.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="CreateShippingLabelForm.resx">
+      <DependentUpon>CreateShippingLabelForm.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="ItemsFbdiOptionsForm.resx">
+      <DependentUpon>ItemsFbdiOptionsForm.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="StructureFbdiOptionsForm.resx">
+      <DependentUpon>StructureFbdiOptionsForm.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="ProgressForm.resx">
       <DependentUpon>ProgressForm.cs</DependentUpon>
@@ -176,6 +200,9 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="Resources\ID_Tag 40X40.bmp">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Resources\OracleFusionMiddleWare.png">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
     <Content Include="Resources\RoesleinConnex_Banner_gradient.bmp">

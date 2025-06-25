@@ -84,7 +84,7 @@ namespace RoesleinAddIn
             InitializeComponent(); // This now calls the Designer's InitializeComponent
             SetupFormUI(); // Custom UI setup
             SetupDataGrid();
-            LoadShippingLabels();
+            LoadShippingLabelsCurrentSheetOnly(); // Fast initial load - current sheet only
         }
         #endregion
 
@@ -128,22 +128,22 @@ namespace RoesleinAddIn
             // Refresh button
             btnRefresh = new ToolStripButton
             {
-                Text = "Refresh",
+                Text = "Refresh Current Sheet",
                 Image = SystemIcons.Asterisk.ToBitmap(),
                 ImageAlign = ContentAlignment.MiddleLeft,
-                ToolTipText = "Refresh shipping labels from drawing"
+                ToolTipText = "Refresh shipping labels from current sheet only (fast)"
             };
             btnRefresh.Click += BtnRefresh_Click;
 
             // Force Reload button
             btnForceReload = new ToolStripButton
             {
-                Text = "Force Reload",
+                Text = "Refresh All Sheets",
                 Image = SystemIcons.Exclamation.ToBitmap(),
                 ImageAlign = ContentAlignment.MiddleLeft,
-                ToolTipText = "Force save/close/reopen drawing to clear ALL caches (use after deleting blocks)"
+                ToolTipText = "Scan ALL sheets for shipping labels (slower but comprehensive)"
             };
-            btnForceReload.Click += BtnForceReload_Click;
+            btnForceReload.Click += BtnRefreshAllSheets_Click;
 
             // Create New button
             btnCreateNew = new ToolStripButton
@@ -354,6 +354,7 @@ namespace RoesleinAddIn
                     tempData.Columns.Add("ArrowType", typeof(string));
                     tempData.Columns.Add("CompanyNumber", typeof(string));
                     tempData.Columns.Add("CompanyLetter", typeof(string));
+                    tempData.Columns.Add("BlockScale", typeof(double));
                     
                     // Try to read the XML with the predefined schema
                     try
@@ -621,6 +622,7 @@ namespace RoesleinAddIn
             table.Columns.Add("ArrowType", typeof(string));
             table.Columns.Add("CompanyNumber", typeof(string));
             table.Columns.Add("CompanyLetter", typeof(string));
+            table.Columns.Add("BlockScale", typeof(double));
 
             // Define primary key on InstanceName to automatically prevent duplicate rows
             table.PrimaryKey = new[] { table.Columns["InstanceName"] };
@@ -655,6 +657,10 @@ namespace RoesleinAddIn
             shippingData.Columns.Add("ArrowType", typeof(string));
             shippingData.Columns.Add("CompanyNumber", typeof(string));
             shippingData.Columns.Add("CompanyLetter", typeof(string));
+            shippingData.Columns.Add("BlockScale", typeof(double));
+
+            // Enforce uniqueness on InstanceName so the same label cannot be inserted twice
+            shippingData.PrimaryKey = new[] { shippingData.Columns["InstanceName"] };
 
             // Setup DataGridView columns
             dgvShippingLabels.Columns.Clear();
@@ -713,11 +719,53 @@ namespace RoesleinAddIn
         #endregion
 
         #region Shipping Label Extraction
+        /// <summary>
+        /// Fast loading method that only scans the current sheet (for initial form load)
+        /// </summary>
+        private void LoadShippingLabelsCurrentSheetOnly()
+        {
+            try
+            {
+                UpdateStatus("Loading shipping labels from current sheet...");
+                ShowProgress(true);
+
+                // Clear existing data
+                shippingData.Clear();
+
+                // Get the drawing document
+                swDraw = swModel as DrawingDoc;
+                if (swDraw == null)
+                {
+                    UpdateStatus("Failed to get drawing document");
+                    ShowProgress(false);
+                    return;
+                }
+
+                // STEP 1: Extract shipping labels from current sheet only (fast)
+                Logger.Info("Step 1: Reading blocks from current sheet only (fast mode)...");
+                var drawingBlocks = ExtractShippingLabelsFromCurrentSheetOnly();
+                Logger.Info($"Found {drawingBlocks.Count} blocks on current sheet");
+
+                LoadShippingLabelsInternal(drawingBlocks, "current sheet");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading shipping labels from current sheet: {ex.Message}", ex);
+                MessageBox.Show($"Error loading shipping labels from current sheet: {ex.Message}", "Load Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("Error loading data");
+                ShowProgress(false);
+            }
+        }
+
+        /// <summary>
+        /// Full loading method that scans ALL sheets (for comprehensive refresh)
+        /// </summary>
         private void LoadShippingLabels()
         {
             try
             {
-                UpdateStatus("Loading shipping labels...");
+                UpdateStatus("Loading shipping labels from ALL sheets...");
                 ShowProgress(true);
 
                 // Clear existing data
@@ -733,10 +781,29 @@ namespace RoesleinAddIn
                 }
 
                 // STEP 1: Extract all shipping labels from drawing (source of truth for positions and block existence)
-                Logger.Info("Step 1: Reading all blocks from drawing...");
+                Logger.Info("Step 1: Reading all blocks from ALL sheets...");
                 var drawingBlocks = ExtractAllShippingLabels();
                 Logger.Info($"Found {drawingBlocks.Count} blocks in drawing");
 
+                LoadShippingLabelsInternal(drawingBlocks, "all sheets");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error loading shipping labels: {ex.Message}", ex);
+                MessageBox.Show($"Error loading shipping labels: {ex.Message}", "Load Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("Error loading data");
+                ShowProgress(false);
+            }
+        }
+
+        /// <summary>
+        /// Internal method that processes the loaded blocks (shared by both loading methods)
+        /// </summary>
+        private void LoadShippingLabelsInternal(List<ShippingLabelData> drawingBlocks, string source)
+        {
+            try
+            {
                 // STEP 2: Load saved XML data for attribute values (source of truth for user-edited data)
                 Logger.Info("Step 2: Loading saved XML data for attribute values...");
                 var savedData = new DataTable();
@@ -811,6 +878,7 @@ namespace RoesleinAddIn
                         row["Quantity"] = savedRow["Quantity"] ?? drawingBlock.Quantity ?? "";
                         row["CompanyNumber"] = savedRow["CompanyNumber"] ?? drawingBlock.CompanyNumber ?? "";
                         row["CompanyLetter"] = savedRow["CompanyLetter"] ?? drawingBlock.CompanyLetter ?? "";
+                        row["BlockScale"] = savedRow["BlockScale"] ?? drawingBlock.BlockScale;
                         Logger.Info($"Merged saved data for block: {drawingBlock.InstanceName}");
                     }
                     else
@@ -824,6 +892,7 @@ namespace RoesleinAddIn
                         row["Quantity"] = drawingBlock.Quantity ?? "";
                         row["CompanyNumber"] = drawingBlock.CompanyNumber ?? "";
                         row["CompanyLetter"] = drawingBlock.CompanyLetter ?? "";
+                        row["BlockScale"] = drawingBlock.BlockScale;
                         Logger.Info($"Using block attributes for: {drawingBlock.InstanceName}");
                     }
                     
@@ -834,21 +903,20 @@ namespace RoesleinAddIn
                 Logger.Info("Step 4: Saving merged data to XML...");
                 SaveDataToFile();
 
-                UpdateStatus($"Loaded {shippingData.Rows.Count} shipping labels");
+                UpdateStatus($"Loaded {shippingData.Rows.Count} shipping labels from {source}");
                 ShowProgress(false);
                 
-                Logger.Info($"LoadShippingLabels completed successfully with {shippingData.Rows.Count} labels");
+                Logger.Info($"LoadShippingLabelsInternal completed successfully with {shippingData.Rows.Count} labels from {source}");
                 
                 // Force DataGridView refresh to show updated data
                 RefreshDataGridView();
             }
             catch (Exception ex)
             {
-                Logger.Error($"Error loading shipping labels: {ex.Message}", ex);
-                MessageBox.Show($"Error loading shipping labels: {ex.Message}", "Load Error", 
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.Error($"Error in LoadShippingLabelsInternal: {ex.Message}", ex);
                 UpdateStatus("Error loading data");
                 ShowProgress(false);
+                throw; // Re-throw to be handled by calling method
             }
         }
 
@@ -896,13 +964,62 @@ namespace RoesleinAddIn
                 Logger.Error($"Error extracting shipping labels: {ex.Message}", ex);
             }
 
+            // FINAL DEDUPLICATION ACROSS SHEETS BY UID
+            var uniqueByUid = new Dictionary<string, ShippingLabelData>(StringComparer.OrdinalIgnoreCase);
+            foreach (var lbl in labels)
+            {
+                var uid = lbl.InstanceName;
+                if (!uniqueByUid.ContainsKey(uid))
+                {
+                    uniqueByUid[uid] = lbl;
+                }
+                else
+                {
+                    Logger.Info($"Skipping duplicate UID found on another sheet: {uid}");
+                }
+            }
+
+            return uniqueByUid.Values.ToList();
+        }
+
+        /// <summary>
+        /// Fast extraction that only scans the current sheet (no sheet switching)
+        /// </summary>
+        private List<ShippingLabelData> ExtractShippingLabelsFromCurrentSheetOnly()
+        {
+            var labels = new List<ShippingLabelData>();
+
+            try
+            {
+                // Get current sheet info without switching
+                Sheet currentSheet = swDraw.GetCurrentSheet() as Sheet;
+                if (currentSheet == null)
+                {
+                    Logger.Warning("Could not get current sheet");
+                    return labels;
+                }
+
+                string currentSheetName = currentSheet.GetName();
+                Logger.Info($"Scanning current sheet only: {currentSheetName}");
+
+                // Extract labels from current sheet (no activation needed)
+                var sheetLabels = ExtractShippingLabelsFromCurrentSheet(currentSheetName);
+                labels.AddRange(sheetLabels);
+
+                Logger.Info($"Found {labels.Count} labels on current sheet: {currentSheetName}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error extracting shipping labels from current sheet: {ex.Message}", ex);
+            }
+
             return labels;
         }
 
         private List<ShippingLabelData> ExtractShippingLabelsFromCurrentSheet(string sheetName)
         {
             var labels = new List<ShippingLabelData>();
-            var processedBlocks = new HashSet<string>(); // Track processed blocks to avoid duplicates
+            var processedBlocks = new HashSet<string>(StringComparer.OrdinalIgnoreCase); // Track processed UIDs to avoid duplicates
 
             try
             {
@@ -999,8 +1116,15 @@ namespace RoesleinAddIn
                                     var label = ExtractShippingLabelFromSketchBlock(feature, sheetName);
                                     if (label != null)
                                     {
+                                        // Use the stable InstanceName (UID_Sheet) for deduplication across features
+                                        if (processedBlocks.Contains(label.InstanceName))
+                                        {
+                                            Logger.Info($"Skipping duplicate UID on same sheet: {label.InstanceName}");
+                                            continue;
+                                        }
+
                                         labels.Add(label);
-                                        processedBlocks.Add(featureName);
+                                        processedBlocks.Add(label.InstanceName);
                                         Logger.Info($"Extracted block: {featureName} -> {label.InstanceName}");
                                     }
                                 }
@@ -1204,6 +1328,7 @@ namespace RoesleinAddIn
                     uidValue = blockInstance.GetAttributeValue("UID");
                     if (!string.IsNullOrEmpty(uidValue) && uidValue.StartsWith("SW"))
                     {
+                        // Use pure UID as the stable key – avoids cross-sheet duplicates
                         instanceName = uidValue;
                         Logger.Info($"Found UID attribute: {uidValue}");
                     }
@@ -1411,6 +1536,11 @@ namespace RoesleinAddIn
                                     Logger.Info($"Read System: {currentValue}");
                                     break;
                                 case "uid":
+                                    // UID uniquely identifies the label across sessions
+                                    if (!string.IsNullOrWhiteSpace(currentValue))
+                                    {
+                                        label.InstanceName = currentValue.Trim();
+                                    }
                                     // UID is already handled above, but log it
                                     Logger.Info($"Read UID: {currentValue}");
                                     break;
@@ -1590,177 +1720,65 @@ namespace RoesleinAddIn
         {
             try
             {
-                Logger.Info("=== REFRESH BUTTON CLICKED ===");
-                Logger.Info("Starting TRUE REFRESH: Clear DataGrid -> Read Drawing -> Save to XML");
+                Logger.Info("=== REFRESH CURRENT SHEET BUTTON CLICKED ===");
+                Logger.Info("Fast refresh: Current sheet only");
                 
-                UpdateStatus("Refreshing shipping labels from drawing...");
-                ShowProgress(true);
-                
-                // Clear the smart copy cache to start fresh
+                // Clear caches
                 ShippingLabelBlockCreator.ClearSmartCopyCache();
-                Logger.Info("Cleared smart copy cache during refresh");
-                
-                // Clear deletion blacklist to allow fresh detection
                 ClearDeletionBlacklist();
-                Logger.Info("Cleared deletion blacklist during refresh");
-
-                // STEP 1: SAFELY CLEAR THE DATAGRID
-                Logger.Info("STEP 1: Safely clearing DataGrid");
-                try
-                {
-                    // First, end any current edit operations to prevent binding conflicts
-                    if (dgvShippingLabels.IsCurrentCellInEditMode)
-                    {
-                        dgvShippingLabels.EndEdit();
-                        Logger.Info("Ended current cell edit mode");
+                
+                // Fast refresh current sheet only
+                LoadShippingLabelsCurrentSheetOnly();
                     }
-                    
-                    // Clear selection to prevent index errors
-                    dgvShippingLabels.ClearSelection();
-                    
-                    // Safely unbind and clear
-                    dgvShippingLabels.DataSource = null;
-                    Logger.Info("Unbound DataGridView safely");
-                    
-                    if (shippingData != null)
-                    {
-                        shippingData.Rows.Clear();
-                        Logger.Info("Cleared all rows from DataTable");
-                    }
-                    
-                    // Force immediate UI update
-                    dgvShippingLabels.Refresh();
-                    Application.DoEvents();
-                }
-                catch (Exception clearEx)
-                {
-                    Logger.Warning($"Error during DataGrid clearing: {clearEx.Message}");
-                    // Continue with refresh even if clearing had issues
-                }
-                
-                // STEP 2: FORCE SOLIDWORKS TO UPDATE AND READ ALL BLOCKS FRESH FROM THE DRAWING
-                Logger.Info("STEP 2: Forcing SolidWorks update and reading all blocks fresh from drawing (ignoring XML)");
-                
-                // Force SolidWorks to fully update the drawing and clear any cached data
-                if (swApp != null && swApp.ActiveDoc != null)
-                {
-                    var swModel = swApp.ActiveDoc as ModelDoc2;
-                    if (swModel != null)
-                    {
-                        Logger.Info("Forcing SolidWorks rebuild and graphics redraw before scanning");
-                        swModel.ForceRebuild3(true);  // Force complete rebuild
-                        swModel.GraphicsRedraw2();    // Force graphics redraw
-                        System.Threading.Thread.Sleep(200); // Give SolidWorks time to process
-                        Application.DoEvents();
-                    }
-                }
-                
-                List<ShippingLabelData> freshDrawingData = ExtractAllShippingLabels();
-                Logger.Info($"Extracted {freshDrawingData.Count} blocks fresh from drawing");
-                
-                // STEP 3: RECREATE DATATABLE WITH FRESH DATA ONLY
-                Logger.Info("STEP 3: Recreating DataTable with fresh drawing data");
-                shippingData = new DataTable();
-                SetupDataTableStructure(shippingData);
-                
-                // Add each fresh block to the table
-                foreach (var labelData in freshDrawingData)
-                {
-                    // Skip duplicates based on InstanceName (PrimaryKey)
-                    if (shippingData.Rows.Contains(labelData.InstanceName))
-                    {
-                        Logger.Info($"Skipping duplicate InstanceName when rebuilding DataTable: {labelData.InstanceName}");
-                        continue;
-                    }
-
-                    var row = shippingData.NewRow();
-                    row["InstanceName"] = labelData.InstanceName ?? "";
-                    row["ArrowType"] = labelData.ArrowType.ToString();
-                    row["ProjectNumber"] = labelData.ProjectNumber ?? "";
-                    row["JobNumber"] = labelData.JobNumber ?? "";
-                    row["SystemNumber"] = labelData.SystemNumber ?? "";
-                    row["IDNumber"] = labelData.IDNumber ?? "";
-                    row["Description"] = labelData.Description ?? "";
-                    row["Quantity"] = labelData.Quantity ?? "";
-                    row["XPosition"] = labelData.XPosition;
-                    row["YPosition"] = labelData.YPosition;
-                    row["SheetName"] = labelData.SheetName ?? "";
-                    row["DrawingName"] = labelData.DrawingName ?? "";
-                    row["HasLeader"] = labelData.HasLeader;
-                    row["ComponentName"] = labelData.ComponentName ?? "";
-                    row["PartFileName"] = labelData.PartFileName ?? "";
-                    row["MaterialName"] = labelData.MaterialName ?? "";
-                    row["PartNumber"] = labelData.PartNumber ?? "";
-                    row["PartDescription"] = labelData.PartDescription ?? "";
-                    row["Mass"] = labelData.Mass ?? "";
-                    row["Volume"] = labelData.Volume ?? "";
-                    row["ConfigurationName"] = labelData.ConfigurationName ?? "";
-                    row["CompanyNumber"] = labelData.CompanyNumber ?? "";
-                    row["CompanyLetter"] = labelData.CompanyLetter ?? "";
-                    
-                    shippingData.Rows.Add(row);
-                    Logger.Info($"Added fresh block to DataTable: {labelData.InstanceName}");
-                }
-                
-                // STEP 4: PROPERLY REBUILD DATAGRID WITH FRESH DATA
-                Logger.Info("STEP 4: Rebuilding DataGrid structure and binding to fresh data");
-                
-                // CRITICAL: Re-establish the DataGridView column structure for the new DataTable
-                // This prevents the "Column named InstanceName cannot be found" error
-                dgvShippingLabels.Columns.Clear();
-                
-                // Recreate all columns with proper bindings
-                dgvShippingLabels.Columns.Add(CreateTextColumn("InstanceName", "Instance ID", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("ArrowType", "Arrow Type", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("ProjectNumber", "Project Number", false));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("JobNumber", "Job Number", false));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("SystemNumber", "System Number", false));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("IDNumber", "ID Number", false));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("Description", "Description", false));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("Quantity", "Quantity", false));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("XPosition", "X Position", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("YPosition", "Y Position", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("SheetName", "Sheet", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("DrawingName", "Drawing", true));
-                dgvShippingLabels.Columns.Add(CreateCheckBoxColumn("HasLeader", "Has Leader", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("ComponentName", "Component", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("PartFileName", "Part File", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("MaterialName", "Material", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("PartNumber", "Part Number", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("PartDescription", "Part Description", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("Mass", "Mass", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("Volume", "Volume", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("ConfigurationName", "Configuration", true));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("CompanyNumber", "Company Number", false));
-                dgvShippingLabels.Columns.Add(CreateTextColumn("CompanyLetter", "Company Letter", false));
-                
-                // Now bind the new data source
-                dgvShippingLabels.DataSource = shippingData;
-                
-                // Auto-resize columns for new data
-                dgvShippingLabels.AutoResizeColumns(DataGridViewAutoSizeColumnsMode.AllCells);
-                
-                // Force complete DataGrid refresh
-                dgvShippingLabels.Refresh();
-                dgvShippingLabels.Update();
-                Application.DoEvents();
-                
-                // STEP 5: SAVE FRESH DATA TO XML (OVERWRITE COMPLETELY)
-                Logger.Info("STEP 5: Saving fresh data to XML file (complete overwrite)");
-                SaveDataToFile();
-                
-                UpdateStatus($"Refreshed {shippingData.Rows.Count} shipping labels from drawing");
-                ShowProgress(false);
-                
-                Logger.Info($"TRUE REFRESH COMPLETED: Found {shippingData.Rows.Count} labels from drawing, saved to XML");
-                Logger.Info("DataGrid now shows current attribute values from SolidWorks blocks");
-            }
             catch (Exception ex)
             {
                 Logger.Error($"Error refreshing shipping labels: {ex.Message}", ex);
                 MessageBox.Show($"Error refreshing shipping labels: {ex.Message}", "Refresh Error", 
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
                 UpdateStatus("Error refreshing data");
+                ShowProgress(false);
+            }
+        }
+
+        private void BtnRefreshAllSheets_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                Logger.Info("=== REFRESH ALL SHEETS BUTTON CLICKED ===");
+                Logger.Info("Comprehensive refresh: ALL sheets (slower but thorough)");
+                
+                // Show confirmation dialog since this is a more intensive operation
+                var result = MessageBox.Show(
+                    "Refresh All Sheets will scan ALL drawing sheets for shipping labels.\n\n" +
+                    "This takes longer (especially with many sheets) because each sheet must be activated.\n\n" +
+                    "Use this when:\n" +
+                    "• You need to see labels from all sheets\n" +
+                    "• You've added labels to other sheets\n" +
+                    "• Current sheet refresh doesn't show everything\n\n" +
+                    "Continue with All Sheets refresh?",
+                    "Confirm All Sheets Refresh",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+                
+                if (result != DialogResult.Yes)
+                {
+                    Logger.Info("User cancelled All Sheets Refresh operation");
+                    return;
+                }
+                
+                // Clear caches
+                ShippingLabelBlockCreator.ClearSmartCopyCache();
+                ClearDeletionBlacklist();
+                
+                // Full comprehensive refresh all sheets
+                LoadShippingLabels();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error refreshing all sheets: {ex.Message}", ex);
+                MessageBox.Show($"Error refreshing all sheets: {ex.Message}", "Refresh All Sheets Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("Error refreshing all sheets");
                 ShowProgress(false);
             }
         }
@@ -1822,23 +1840,34 @@ namespace RoesleinAddIn
                         Logger.Info("CreateShippingLabelForm was closed");
                         activeCreateForm = null; // Clear tracking
                         
-                        // Automatically refresh using the new TRUE REFRESH functionality
-                        Logger.Info("Auto-refreshing after create/edit to show current values");
-                        SafeAutoRefresh("create operation");
+                        // DELAY auto-refresh to allow interactive placement to complete
+                        Logger.Info("Scheduling delayed auto-refresh to avoid interfering with interactive placement");
                         
-                        int finalCount = shippingData.Rows.Count;
-                        int newLabelsCreated = finalCount - startingLabelCount;
+                        // Use a timer to delay the refresh by 3 seconds
+                        var refreshTimer = new System.Windows.Forms.Timer();
+                        refreshTimer.Interval = 3000; // 3 second delay
+                        refreshTimer.Tick += (timerSender, timerArgs) => {
+                            refreshTimer.Stop();
+                            refreshTimer.Dispose();
+                            
+                            Logger.Info("Executing delayed auto-refresh after create/edit");
+                            SafeAutoRefresh("create operation");
+                            
+                            int finalCount = shippingData.Rows.Count;
+                            int newLabelsCreated = finalCount - startingLabelCount;
+                            
+                            if (newLabelsCreated > 0)
+                            {
+                                UpdateStatus($"Create label session completed. {newLabelsCreated} new label(s) created. Total labels: {finalCount}");
+                            }
+                            else
+                            {
+                                UpdateStatus($"Create label session cancelled. Total labels: {finalCount}");
+                            }
+                        };
+                        refreshTimer.Start();
                         
-                        if (newLabelsCreated > 0)
-                        {
-                            UpdateStatus($"Create label session completed. {newLabelsCreated} new label(s) created. Total labels: {finalCount}");
-                        }
-                        else
-                        {
-                            UpdateStatus($"Create label session cancelled. Total labels: {finalCount}");
-                        }
-                        
-                        // Re-enable the button
+                        // Re-enable the button immediately
                         btnCreateNew.Enabled = true;
                         Logger.Info("Re-enabled Create New button");
                         
@@ -1925,6 +1954,7 @@ namespace RoesleinAddIn
                 row["ArrowType"] = labelData.ArrowType.ToString();
                 row["CompanyNumber"] = labelData.CompanyNumber ?? "";
                 row["CompanyLetter"] = labelData.CompanyLetter ?? "";
+                row["BlockScale"] = labelData.BlockScale;
                 
                 shippingData.Rows.Add(row);
                 
@@ -2390,6 +2420,17 @@ namespace RoesleinAddIn
                 labelData.CompanyNumber = GetCellValueSafe(row, "CompanyNumber");
                 labelData.CompanyLetter = GetCellValueSafe(row, "CompanyLetter");
                 
+                // Parse BlockScale safely
+                string scaleValue = GetCellValueSafe(row, "BlockScale");
+                if (double.TryParse(scaleValue, out double scale))
+                {
+                    labelData.BlockScale = scale;
+                }
+                else
+                {
+                    labelData.BlockScale = 1.0; // Default scale
+                }
+                
                 // Parse numeric values
                 if (double.TryParse(GetCellValueSafe(row, "XPosition"), out double x))
                     labelData.XPosition = x;
@@ -2452,6 +2493,9 @@ namespace RoesleinAddIn
         {
             try
             {
+                // Support instance keys that have UID_SheetName format – strip sheet suffix for matching
+                string searchUidOnly = instanceName;
+
                 Logger.Info($"Attempting to delete block from drawing: {instanceName}");
                 
                 // Get the active drawing
@@ -2497,7 +2541,8 @@ namespace RoesleinAddIn
                     Logger.Info($"Checking block: {blockName}");
                     
                     // Check if this is our target block by name
-                    if (string.Equals(blockName, instanceName, StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(blockName, instanceName, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(blockName, searchUidOnly, StringComparison.OrdinalIgnoreCase))
                     {
                         Logger.Info($"Found matching block by name: {blockName}");
                         return DeleteBlockInstance(blockInstance, swModel);
@@ -2519,7 +2564,8 @@ namespace RoesleinAddIn
                                     if (!string.IsNullOrEmpty(attrName) && attrName.ToLower().Contains("uid") || attrName.ToLower().Contains("instance"))
                                 {
                                         string attrValue = GetAttributeValue(attr);
-                                        if (string.Equals(attrValue, instanceName, StringComparison.OrdinalIgnoreCase))
+                                        if (string.Equals(attrValue, instanceName, StringComparison.OrdinalIgnoreCase) ||
+                                            string.Equals(attrValue, searchUidOnly, StringComparison.OrdinalIgnoreCase))
                                         {
                                             Logger.Info($"Found matching block by UID attribute: {attrValue}");
                                             return DeleteBlockInstance(blockInstance, swModel);
@@ -3060,6 +3106,84 @@ namespace RoesleinAddIn
         private CreateShippingLabelForm activeCreateForm;
 
         /// <summary>
+        /// Gets the current instance of the ShippingLabelManagerForm
+        /// </summary>
+        public static ShippingLabelManagerForm GetInstance()
+        {
+            return _instance;
+        }
+
+        /// <summary>
+        /// Gets all shipping labels currently loaded in the manager
+        /// </summary>
+        public List<ShippingLabelData> GetAllShippingLabels()
+        {
+            try
+            {
+                var labels = new List<ShippingLabelData>();
+                
+                if (shippingData?.Rows == null)
+                {
+                    Logger.Info("No shipping data available");
+                    return labels;
+                }
+
+                foreach (DataRow row in shippingData.Rows)
+                {
+                    try
+                    {
+                        var labelData = new ShippingLabelData
+                        {
+                            InstanceName = row["InstanceName"]?.ToString() ?? "",
+                            ProjectNumber = row["ProjectNumber"]?.ToString() ?? "",
+                            JobNumber = row["JobNumber"]?.ToString() ?? "",
+                            SystemNumber = row["SystemNumber"]?.ToString() ?? "",
+                            IDNumber = row["IDNumber"]?.ToString() ?? "",
+                            Description = row["Description"]?.ToString() ?? "",
+                            Quantity = row["Quantity"]?.ToString() ?? "",
+                            XPosition = Convert.ToDouble(row["XPosition"] ?? 0),
+                            YPosition = Convert.ToDouble(row["YPosition"] ?? 0),
+                            SheetName = row["SheetName"]?.ToString() ?? "",
+                            DrawingName = row["DrawingName"]?.ToString() ?? "",
+                            HasLeader = Convert.ToBoolean(row["HasLeader"] ?? false),
+                            ComponentName = row["ComponentName"]?.ToString() ?? "",
+                            PartFileName = row["PartFileName"]?.ToString() ?? "",
+                            MaterialName = row["MaterialName"]?.ToString() ?? "",
+                            PartNumber = row["PartNumber"]?.ToString() ?? "",
+                            PartDescription = row["PartDescription"]?.ToString() ?? "",
+                            Mass = row["Mass"]?.ToString() ?? "",
+                            Volume = row["Volume"]?.ToString() ?? "",
+                            ConfigurationName = row["ConfigurationName"]?.ToString() ?? "",
+                            CompanyNumber = row["CompanyNumber"]?.ToString() ?? "",
+                            CompanyLetter = row["CompanyLetter"]?.ToString() ?? "",
+                            BlockScale = Convert.ToDouble(row["BlockScale"] ?? 1.0)
+                        };
+
+                        // Parse arrow type
+                        if (Enum.TryParse<ShippingLabelArrowType>(row["ArrowType"]?.ToString(), out var arrowType))
+                        {
+                            labelData.ArrowType = arrowType;
+                        }
+
+                        labels.Add(labelData);
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning($"Error converting data row to ShippingLabelData: {ex.Message}");
+                    }
+                }
+
+                Logger.Info($"Retrieved {labels.Count} shipping labels from manager");
+                return labels;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error getting all shipping labels: {ex.Message}");
+                return new List<ShippingLabelData>();
+            }
+        }
+
+        /// <summary>
         /// Static method to create and show the shipping label manager (singleton pattern)
         /// </summary>
         /// <param name="swApp">SolidWorks application instance</param>
@@ -3398,6 +3522,7 @@ namespace RoesleinAddIn
         public ShippingLabelArrowType ArrowType { get; set; }  // Arrow configuration type
         public string CompanyNumber { get; set; }              // Company number (2, 5, 10, 11, 12)
         public string CompanyLetter { get; set; }              // Company letter (R, C, H, P, B)
+        public double BlockScale { get; set; }                 // Block scale factor (1.0 = 100%, 0.5 = 50%, etc.)
         
         public ShippingLabelData()
         {
@@ -3424,6 +3549,7 @@ namespace RoesleinAddIn
             ArrowType = ShippingLabelArrowType.Slot;  // Default to slot
             CompanyNumber = "10";  // Default to Pride Conveyance
             CompanyLetter = "H";   // Default letter for Pride Conveyance
+            BlockScale = 1.0;      // Default to 100% scale
         }
 
         /// <summary>
@@ -3455,7 +3581,8 @@ namespace RoesleinAddIn
                 ConfigurationName = this.ConfigurationName,
                 ArrowType = this.ArrowType,
                 CompanyNumber = this.CompanyNumber,
-                CompanyLetter = this.CompanyLetter
+                CompanyLetter = this.CompanyLetter,
+                BlockScale = this.BlockScale
             };
         }
     }
