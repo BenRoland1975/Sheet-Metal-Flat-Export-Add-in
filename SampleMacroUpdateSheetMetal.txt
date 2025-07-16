@@ -1,0 +1,344 @@
+Dim swApp As SldWorks.SldWorks
+Dim swModel As SldWorks.ModelDoc2
+Dim swCustProp As CustomPropertyManager
+Dim bool As Boolean
+Dim fileName As String
+Dim loopCounter As Integer
+Dim k As Integer
+Dim j As Integer
+Dim q As Integer
+Dim totalComps As Integer
+Dim configName As Variant
+Dim UserName As String
+Dim propNameArr As Variant
+Dim Propname As Variant
+Dim varComps As Variant
+Dim rev As String
+Dim swConfig As SldWorks.Configuration
+Dim swModelDraw As SldWorks.ModelDoc2
+Dim swDraw As SldWorks.DrawingDoc
+Dim swView As SldWorks.View
+Dim swComp As SldWorks.Component2
+Dim swAssy As SldWorks.AssemblyDoc
+Dim swPart As SldWorks.PartDoc
+Dim swFeat As SldWorks.Feature
+Dim swBody As SldWorks.Body2
+Dim swSelMgr As SldWorks.SelectionMgr
+Dim swBodyFolder As SldWorks.BodyFolder
+Dim swSheetMetal As SldWorks.SheetMetalFeatureData
+Dim swEntity As Entity
+Dim swConf As SldWorks.Configuration
+Dim sTime As Long
+Dim fTime As Long
+Dim tTime As Long
+Dim activeDocs As Integer
+Dim NewNumber As String
+Dim colComps As Collection
+Dim swComps As Variant
+Dim swCPDescrip As String
+Dim swLErrors As Long
+Dim swLWarnings As Long
+Dim Body As Variant
+Dim bendTableFile As String
+Dim matThickness As Double
+Dim MatlError As Boolean
+Dim useGaugeTableBool As Boolean
+Dim accessBool As Boolean
+Dim gaugeTable As String
+Dim setGaugeTable As Integer
+Const matPropFile As String = "C:\PCSVAULT\SolidWorks Settings\Material Databases 1\Roeslein Standard Materials.sldmat"
+Const MildSteelGaugeTable As String = "C:\PCSVAULT\SolidWorks Settings\Sheet Metal Bend Table\Mild Steel - english units.xls"
+Const StainlessGaugeTable As String = "C:\PCSVAULT\SolidWorks Settings\Sheet Metal Bend Table\Stainless Steel - english units.xls"
+Const ColdRolledMS As String = "ASTM A1008 Steel- Cold Rolled Sheet"
+Const HotRolledMS As String = "ASTM A572 Steel- Hot Rolled plate"
+Const SSTSheet As String = "AISI 304 Stainless Steel Sheet"
+
+Function initVars()
+    Set swApp = Application.SldWorks
+    Set swModel = swApp.ActiveDoc
+    Set swModelDocExt = swModel.Extension
+    Set colComps = New Collection
+    rev = "01"
+    loopCounter = 1
+    MatlError = False
+    
+End Function
+
+Sub main()
+'    sTime = Timer
+    Call initVars
+    If swModel.IsOpenedReadOnly Then
+        MsgBox "Current document is Read-Only, exiting macro", vbCritical
+        Exit Sub
+    Else
+        Select Case swModel.GetType
+            Case swDocPART
+'                Call SheetMetalSettings
+                Call TraverseConfigs
+            Case Else
+                MsgBox "This macro only runs with .sldprt files", vbCritical
+                Exit Sub
+        End Select
+    End If
+'    fTime = Timer
+'    MsgBox "Elapsed time: " & (fTime - sTime) & "s"
+
+    
+End Sub
+
+Function storeSWComps()
+    Set swAssy = swModel
+    totalComps = swAssy.GetComponentCount(0)
+    varComps = swAssy.GetComponents(False)
+    For j = LBound(varComps) To UBound(varComps)
+        Set swComp = varComps(j)
+        If Not swModel.IsOpenedReadOnly Then
+            On Error Resume Next
+            colComps.Add swComp.GetPathName, CStr(swComp.GetPathName)
+        End If
+    Next j
+
+    On Error GoTo 0
+    Call openSWComps
+End Function
+
+Function openSWComps()
+    
+    For Each swComps In colComps
+        swApp.ActivateDoc2 colComps.Item(swComps), True, 0
+        Set swModel = swApp.ActiveDoc
+        If swModel.IsOpenedReadOnly Then
+            swApp.QuitDoc (swModel.GetPathName)
+        Else
+            If swModel.GetType = swDocPART Then
+                Call TraverseConfigs
+            ElseIf swModel.GetType = swDocASSEMBLY Then
+                Call TraverseConfigs
+            Else
+                MsgBox "INVALID DOCUMENT", vbCritical
+                Exit Function
+            End If
+        Call IsoRebSaveClose
+        End If
+        loopCounter = loopCounter + 1
+        If loopCounter > totalComps Then
+            Exit Function
+        End If
+    Next
+End Function
+
+Function TraverseConfigs()
+    If swModel.GetType = swDocPART Then
+        Call SheetMetalSettings
+    Else
+        Exit Function
+    End If
+    
+    If MatlError Then
+        Exit Function
+    End If
+    configName = swModel.GetConfigurationNames
+    
+    ReDim Preserve configName(UBound(configName) + 1)
+    For i = 0 To (UBound(configName))
+        q = i
+        bool = swModel.ShowConfiguration2(configName(i))
+        Set swCustProp = swModel.Extension.CustomPropertyManager(configName(i))
+        Set swConfig = swModel.GetActiveConfiguration
+        Call addPropNames
+        Call custPropNamesModel
+    Next i
+    swModel.ShowConfiguration2 configName(0)
+End Function
+
+Function addPropNames()
+'    Add custom properties if they do not exist
+    With swCustProp
+        .Add3 "Shop Route", swCustomInfoText, "", swCustomPropertyOnlyIfNew
+        .Add3 "Sheet Metal Thickness", swCustomInfoText, "", swCustomPropertyOnlyIfNew
+        .Add3 "Part is Laser Cut", swCustomInfoText, "", swCustomPropertyOnlyIfNew
+        .Add3 "Part is NC Punched", swCustomInfoText, "", swCustomPropertyOnlyIfNew
+        .Add3 "Material", swCustomInfoText, "", swCustomPropertyOnlyIfNew
+    End With
+
+End Function
+
+Function custPropNamesModel()
+'    file name with extension
+    fileName = Left(swModel.GetTitle, InStrRev(swModel.GetTitle, ".") - 1)
+
+'    escape clause
+    propNameArr = swCustProp.GetNames: If IsEmpty(propNameArr) Then Exit Function
+    
+    Dim shopRouteValOut As String, shopRouteResValOut As String
+
+
+'    Step thru each EXISTING property
+    For Each Propname In propNameArr
+        If q > (UBound(configName) - 1) Then
+            Select Case LCase(Propname)
+                Case "shop route"
+'                    get old value for "Shop Route"
+                    swCustProp.Get2 "Shop Route", shopRouteValOut, shopRouteResValOut
+'                    retrieve Description from user
+                    If shopRouteResValOut = "" Then
+                        swCPDescrip = InputBox("Please Enter a Shop Route for: " & Chr(13) & Left(swModel.GetTitle, InStrRev(swModel.GetTitle, ".") - 1) & "-" & swConfig.Name & Chr(13) & "Previous Shop Route:" & Chr(13) & shopRouteResValOut, "Shop Route Custom Property", shopRouteResValOut)
+                        swCustProp.Add3 "Shop Route", swCustomInfoText, swCPDescrip, swCustomPropertyReplaceValue
+                    End If
+                Case "sheet metal thickness"
+                    swCustProp.Add3 "Sheet Metal Thickness", swCustomInfoText, Chr(34) & "Thickness@" & swModel.GetTitle & Chr(34), swCustomPropertyReplaceValue
+                Case "material"
+                    swCustProp.Add3 "Material", swCustomInfoText, Chr(34) & "SW-Material@" & swModel.GetTitle & Chr(34), swCustomPropertyReplaceValue
+                Case "part is laser cut"
+                    swCustProp.Get2 "Shop Route", shopRouteValOut, shopRouteResValOut
+                    If (InStr(1, shopRouteResValOut, "Laser", vbTextCompare) <> 0) Then
+                        swCustProp.Add3 "Part is Laser Cut", swCustomInfoText, "1", swCustomPropertyReplaceValue
+                    Else
+                        swCustProp.Add3 "Part is Laser Cut", swCustomInfoText, "0", swCustomPropertyReplaceValue
+                    End If
+                Case "part is nc punched"
+                    swCustProp.Get2 "Shop Route", shopRouteValOut, shopRouteResValOut
+                    If (InStr(1, shopRouteResValOut, "NC Punching", vbTextCompare) <> 0) Then
+                        swCustProp.Add3 "Part is NC Punched", swCustomInfoText, "1", swCustomPropertyReplaceValue
+                    Else
+                        swCustProp.Add3 "Part is NC Punched", swCustomInfoText, "0", swCustomPropertyReplaceValue
+                    End If
+            End Select
+        Else
+            Select Case LCase(Propname)
+                Case "shop route"
+'                    get old value for "Shop Route"
+                    swCustProp.Get2 "Shop Route", shopRouteValOut, shopRouteResValOut
+'                    retrieve Description from user
+                    If shopRouteResValOut = "" Then
+                        swCPDescrip = InputBox("Please Enter a Shop Route for: " & Chr(13) & Left(swModel.GetTitle, InStrRev(swModel.GetTitle, ".") - 1) & "-" & swConfig.Name & Chr(13) & "Previous Shop Route:" & Chr(13) & shopRouteResValOut, "Shop Route Custom Property", shopRouteResValOut)
+                        swCustProp.Add3 "Shop Route", swCustomInfoText, swCPDescrip, swCustomPropertyReplaceValue
+                    End If
+                Case "sheet metal thickness"
+                    swCustProp.Add3 "Sheet Metal Thickness", swCustomInfoText, Chr(34) & "Thickness@" & swConfig.Name & "@" & swModel.GetTitle & Chr(34), swCustomPropertyReplaceValue
+                Case "material"
+                    swCustProp.Add3 "Material", swCustomInfoText, Chr(34) & "SW-Material@@" & swConfig.Name & "@" & swModel.GetTitle & Chr(34), swCustomPropertyReplaceValue
+                Case "part is laser cut"
+                    swCustProp.Get2 "Shop Route", shopRouteValOut, shopRouteResValOut
+                    If (InStr(1, shopRouteResValOut, "Laser", vbTextCompare) <> 0) Then
+                        swCustProp.Add3 "Part is Laser Cut", swCustomInfoText, "1", swCustomPropertyReplaceValue
+                    Else
+                        swCustProp.Add3 "Part is Laser Cut", swCustomInfoText, "0", swCustomPropertyReplaceValue
+                    End If
+                Case "part is nc punched"
+                    swCustProp.Get2 "Shop Route", shopRouteValOut, shopRouteResValOut
+                    If (InStr(1, shopRouteResValOut, "NC Punching", vbTextCompare) <> 0) Then
+                        swCustProp.Add3 "Part is NC Punched", swCustomInfoText, "1", swCustomPropertyReplaceValue
+                    Else
+                        swCustProp.Add3 "Part is NC Punched", swCustomInfoText, "0", swCustomPropertyReplaceValue
+                    End If
+            End Select
+        End If
+    Next
+End Function
+
+Function IsoRebSaveClose()
+
+    Dim qualityNum  As Integer
+    Set swModel = swApp.ActiveDoc
+    swModel.ShowNamedView2 "*Isometric", 7
+    swModel.ViewZoomtofit2
+'    qualityNum has a range from 0 to 106
+    qualityNum = 11
+    
+    If swModel.GetType = swDocASSEMBLY Then
+        swModel.Extension.SetUserPreferenceToggle swUserPreferenceToggle_e.swImageQualityApplyToAllReferencedPartDoc, 0, True
+        swModel.Extension.SetUserPreferenceInteger swUserPreferenceIntegerValue_e.swImageQualityWireframeValue, 0, qualityNum
+    End If
+    swModel.SetTessellationQuality qualityNum
+    boolstatus = swModel.EditRebuild3()
+    boolstatus = swModel.Save2(True)
+    swApp.CloseDoc (swModel.GetPathName)
+End Function
+
+Function SheetMetalSettings()
+    Set swPart = swModel
+    Set swFeat = swModel.FirstFeature
+    
+    
+    Body = swPart.GetBodies2(0, True)
+    For k = LBound(Body) To UBound(Body)
+        Set swBody = Body(k)
+        If swBody.IsSheetMetal Then
+            Do While Not swFeat Is Nothing
+                Select Case swFeat.GetTypeName2
+                    Case "SolidBodyFolder"
+                        Set swBodyFolder = swFeat.GetSpecificFeature2
+                        swBodyFolder.SetAutomaticCutList True
+                        swBodyFolder.SetAutomaticUpdate True
+                    Case "SheetMetal"
+                        Set swSheetMetal = swFeat.GetDefinition
+                        matThickness = Round(swSheetMetal.Thickness * 39.37, 4)
+'                        MsgBox "Sheet Metal Thickness: " & matThickness
+                        bendTableFile = swSheetMetal.bendTableFile
+                        swSheetMetal.GetUseGaugeTable useGaugeTableBool, gaugeTable
+'                        MsgBox "Use Gauge Table: " & useGaugeTableBool & Chr(10) & "Gauge Table File: " & gaugeTable & Chr(10) & "Bend Table File: " & bendTableFile
+                        If Not (Left(LCase(gaugeTable), 11) = "c:\pcsvault") Then
+                            MsgBox "Please update the sheet metal material in this part then run the macro again, if you need help contact Jesse Rice or Jamie Hartshorn", vbCritical
+                            MatlError = True
+                            Exit Function
+                        End If
+'            This block may be able to allow editing the sheetmetal thickness in SW2022 using method SetThickness() _
+                which is a member of ISheetMetalGaugeTableParameters _
+                which is returned from CreateDefinition Method in the feature manager
+'            End of Block for SW2022 VBA
+'                        accessBool = swSheetMetal.AccessSelections(swModel, Nothing)
+                        If (InStr(1, gaugeTable, "Mild", vbTextCompare)) <> 0 Then
+                            gaugeTable = Mid(gaugeTable, InStr(1, gaugeTable, "Mild", vbTextCompare), 4)
+                            Select Case matThickness
+                                Case 1
+                                    swPart.SetMaterialPropertyName matPropFile, HotRolledMS
+                                Case 0.75
+                                    swPart.SetMaterialPropertyName matPropFile, HotRolledMS
+                                Case 0.625
+                                    swPart.SetMaterialPropertyName matPropFile, HotRolledMS
+                                Case 0.5
+                                    swPart.SetMaterialPropertyName matPropFile, HotRolledMS
+                                Case 0.375
+                                    swPart.SetMaterialPropertyName matPropFile, HotRolledMS
+                                Case 0.3125
+                                    swPart.SetMaterialPropertyName matPropFile, HotRolledMS
+                                Case 0.25
+                                    swPart.SetMaterialPropertyName matPropFile, HotRolledMS
+                                Case 0.1875
+                                    swPart.SetMaterialPropertyName matPropFile, HotRolledMS
+                                Case 0.1345
+                                    swPart.SetMaterialPropertyName matPropFile, ColdRolledMS
+                                Case 0.1196
+                                    swPart.SetMaterialPropertyName matPropFile, ColdRolledMS
+                                Case 0.1046
+                                    swPart.SetMaterialPropertyName matPropFile, ColdRolledMS
+                                Case 0.0747
+                                    swPart.SetMaterialPropertyName matPropFile, ColdRolledMS
+                                Case 0.0598
+                                    swPart.SetMaterialPropertyName matPropFile, ColdRolledMS
+                                Case 0.0478
+                                    swPart.SetMaterialPropertyName matPropFile, ColdRolledMS
+                                Case Else
+                                    MsgBox "Incorrect material thickness", vbCritical
+                                    MatlError = True
+                                    Exit Function
+                            End Select
+                        ElseIf (InStr(1, gaugeTable, "Stainless", vbTextCompare)) <> 0 Then
+                            gaugeTable = Mid(gaugeTable, InStr(1, gaugeTable, "Stainless", vbTextCompare), 9)
+                            swPart.SetMaterialPropertyName matPropFile, SSTSheet
+                        ElseIf (InStr(1, gaugeTable, "Aluminum", vbTextCompare)) <> 0 Then
+                            gaugeTable = Mid(gaugeTable, InStr(1, gaugeTable, "Aluminum", vbTextCompare), 9)
+                            swPart.SetMaterialPropertyName matPropFile, "5052 Alloy Sheet"
+                        Else
+                            MatlError = True
+                            MsgBox "Invalid material, please verify sheet metal properties and try again"
+                            Exit Function
+                        End If
+                        Exit Do
+                End Select
+                Set swFeat = swFeat.GetNextFeature
+            Loop
+        End If
+    Next
+End Function

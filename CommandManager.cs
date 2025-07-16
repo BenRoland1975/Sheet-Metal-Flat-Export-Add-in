@@ -5,6 +5,8 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
+using SolidWorks.Interop.swpublished;
+using System.Windows.Forms;
 
 namespace RoesleinAddIn
 {
@@ -14,8 +16,10 @@ namespace RoesleinAddIn
     public class CommandManager
     {
         private readonly ISldWorks _swApp;
-        private readonly RoesleinAddIn _addIn;
-        private int _cmdGroupId;
+        private readonly ICommandManager _cmdMgr;
+        private readonly int _cmdGroupId;
+        private readonly int _cmdTabId;
+        private readonly SheetMetalProcessor _processor;
         
         // Define command IDs
         private const int CMD_ExportDXF = 0;
@@ -25,103 +29,66 @@ namespace RoesleinAddIn
         /// <summary>
         /// Constructor
         /// </summary>
-        public CommandManager(ISldWorks swApp, RoesleinAddIn addIn)
+        public CommandManager(ISldWorks swApp, SheetMetalProcessor processor)
         {
             _swApp = swApp;
-            _addIn = addIn;
-            _cmdGroupId = 1;  // Unique ID for the command group
+            _processor = processor;
+            _cmdMgr = _swApp.GetCommandManager(0);
+            _cmdGroupId = _cmdMgr.CreateCommandGroup2(0, "Roeslein Tools", "Roeslein Tools", "", -1, true, ref _cmdTabId);
+            
+            if (_cmdGroupId > 0)
+            {
+                AddCommands();
+                _cmdMgr.ActivateTab(_cmdTabId, _cmdGroupId);
+            }
         }
         
-        /// <summary>
-        /// Initialize the command manager
-        /// </summary>
-        public bool Initialize()
+        private void AddCommands()
         {
-            try
+            // Add Process Assembly button
+            _cmdMgr.AddCommandItem2("Process Assembly", -1, "Process Assembly", "Process Assembly", -1, 
+                "Process all sheet metal parts in the assembly", "Process all sheet metal parts in the assembly", 
+                _cmdGroupId, (int)swCommandItemType_e.swToolbarButton, _cmdGroupId, ref _cmdTabId);
+
+            // Add Process Part button
+            _cmdMgr.AddCommandItem2("Process Part", -1, "Process Part", "Process Part", -1, 
+                "Process the current sheet metal part", "Process the current sheet metal part", 
+                _cmdGroupId, (int)swCommandItemType_e.swToolbarButton, _cmdGroupId, ref _cmdTabId);
+
+            // Add Settings button
+            _cmdMgr.AddCommandItem2("Settings", -1, "Settings", "Settings", -1, 
+                "Configure add-in settings", "Configure add-in settings", 
+                _cmdGroupId, (int)swCommandItemType_e.swToolbarButton, _cmdGroupId, ref _cmdTabId);
+
+            // Set up command callbacks
+            _cmdMgr.AddCallback(_cmdGroupId, "Process Assembly", ProcessAssemblyCallback);
+            _cmdMgr.AddCallback(_cmdGroupId, "Process Part", ProcessPartCallback);
+            _cmdMgr.AddCallback(_cmdGroupId, "Settings", SettingsCallback);
+        }
+
+        private void ProcessAssemblyCallback()
+        {
+            _processor.ProcessAssemblySheetMetal();
+        }
+
+        private void ProcessPartCallback()
+        {
+            _processor.ProcessSinglePartSheetMetal();
+        }
+
+        private void SettingsCallback()
+        {
+            using (var settingsForm = new SettingsFormV2())
             {
-                // Create unique command group ID
-                string addInTitle = "Roeslein";
-                _cmdGroupId = addInTitle.GetHashCode();
-                
-                // Ensure positive ID
-                if (_cmdGroupId < 0)
-                    _cmdGroupId = _cmdGroupId * -1;
-                
-                // For SolidWorks, we'll use a more direct approach with older APIs
-                // Create a simple menu instead of command group for older versions
-                try
-                {
-                    // Check if menu exists
-                    string menuToolbarKey = "Roeslein Add-in";
-                    
-                    // Remove existing menu if it exists
-                    object menuState = _swApp.GetToolbarState(menuToolbarKey, 0, 1);
-                    int menuStateInt = 0;
-                    if (menuState != null)
-                    {
-                        try
-                        {
-                            menuStateInt = Convert.ToInt32(menuState);
-                            if (menuStateInt != 0)
-                            {
-                                _swApp.RemoveMenu((int)swDocumentTypes_e.swDocNONE, menuToolbarKey, "");
-                            }
-                        }
-                        catch
-                        {
-                            // Ignore conversion errors
-                        }
-                    }
-                    
-                    // Add menu items with callback registration for older SolidWorks versions
-                    // Register the callback using SetAddinCallbackFunction
-                    // (Not needed in this version, the method name matching is sufficient)
-                    
-                    // Add our menu items to the main menu using older API methods with compatible signature
-                    // In this version, AddMenuItem takes 4 arguments 
-                    // (docType, itemName, position, menuID)
-                    _swApp.AddMenuItem(
-                        (int)swDocumentTypes_e.swDocPART, 
-                        "ExportDXF", 
-                        0, 
-                        menuToolbarKey);
-                        
-                    _swApp.AddMenuItem(
-                        (int)swDocumentTypes_e.swDocPART, 
-                        "ShowSettings", 
-                        0, 
-                        menuToolbarKey);
-                        
-                    _swApp.AddMenuItem(
-                        (int)swDocumentTypes_e.swDocPART, 
-                        "ShowAbout", 
-                        0, 
-                        menuToolbarKey);
-                    
-                    // Try to add to assembly menus too
-                    try {
-                        _swApp.AddMenuItem(
-                            (int)swDocumentTypes_e.swDocASSEMBLY, 
-                            "ExportDXF", 
-                            0, 
-                            menuToolbarKey);
-                    } catch (Exception) {
-                        // Silently ignore errors adding to assembly menu
-                    }
-                    
-                    Logger.Info("Menu items created successfully using older API");
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"Error creating menu items: {ex.Message}", ex);
-                    return false;
-                }
+                settingsForm.ShowDialog();
             }
-            catch (Exception ex)
+        }
+
+        public void Remove()
+        {
+            if (_cmdMgr != null && _cmdGroupId > 0)
             {
-                Logger.Error($"Error initializing command manager: {ex.Message}", ex);
-                return false;
+                _cmdMgr.RemoveCommandGroup(_cmdGroupId);
             }
         }
         

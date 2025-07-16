@@ -1,19 +1,34 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 16
-VisualStudioVersion = 16.0.31911.196
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35931.197
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RoesleinAddIn", "RoesleinAddIn.csproj", "{F83F4E5B-0E9A-45C3-9279-C27C9C4E2E29}"
+EndProject
+Project("{54435603-DBB4-11D2-8724-00A0C9A8B90C}") = "Roeslein SW Add-In Installer", "..\Installer\Installer.vdproj", "{B3724FF1-63B2-8EB6-790C-41E05982363C}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
+		Debug|Default = Debug|Default
 		Release|Any CPU = Release|Any CPU
+		Release|Default = Release|Default
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
 		{F83F4E5B-0E9A-45C3-9279-C27C9C4E2E29}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{F83F4E5B-0E9A-45C3-9279-C27C9C4E2E29}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F83F4E5B-0E9A-45C3-9279-C27C9C4E2E29}.Debug|Default.ActiveCfg = Debug|Any CPU
+		{F83F4E5B-0E9A-45C3-9279-C27C9C4E2E29}.Debug|Default.Build.0 = Debug|Any CPU
 		{F83F4E5B-0E9A-45C3-9279-C27C9C4E2E29}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{F83F4E5B-0E9A-45C3-9279-C27C9C4E2E29}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F83F4E5B-0E9A-45C3-9279-C27C9C4E2E29}.Release|Default.ActiveCfg = Release|Any CPU
+		{F83F4E5B-0E9A-45C3-9279-C27C9C4E2E29}.Release|Default.Build.0 = Release|Any CPU
+		{B3724FF1-63B2-8EB6-790C-41E05982363C}.Debug|Any CPU.ActiveCfg = Debug
+		{B3724FF1-63B2-8EB6-790C-41E05982363C}.Debug|Default.ActiveCfg = Debug
+		{B3724FF1-63B2-8EB6-790C-41E05982363C}.Debug|Default.Build.0 = Debug
+		{B3724FF1-63B2-8EB6-790C-41E05982363C}.Release|Any CPU.ActiveCfg = Release
+		{B3724FF1-63B2-8EB6-790C-41E05982363C}.Release|Any CPU.Build.0 = Release
+		{B3724FF1-63B2-8EB6-790C-41E05982363C}.Release|Default.ActiveCfg = Release
+		{B3724FF1-63B2-8EB6-790C-41E05982363C}.Release|Default.Build.0 = Release
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -21,4 +36,16 @@ Global
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {E7F94CB0-1D43-4F64-B3E8-A9B0DB61A08A}
 	EndGlobalSection
-EndGlobal 
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|Default = Debug|Default
+		Release|Any CPU = Release|Any CPU
+		Release|Default = Release|Default
+	EndGlobalSection
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|Default = Debug|Default
+		Release|Any CPU = Release|Any CPU
+		Release|Default = Release|Default
+	EndGlobalSection
+EndGlobal

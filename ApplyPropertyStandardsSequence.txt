@@ -1,0 +1,89 @@
+# Apply Property Standards - Method Sequence & Documentation
+
+## Overview
+This document outlines the sequence of method calls, responsibilities, and helper methods involved in the "Apply Property Standards" workflow in the Roeslein Add-in. Use this as a reference for maintenance and future development.
+
+---
+
+## Main Entry Point
+
+### `ApplyStandardsToActiveDocument(ModelDoc2 swModel, string currentStandardsVersion, bool silentMode = false, Settings settings = null, bool deferCheckIn = false)`
+- **Purpose:** Main method to apply property standards to the active SolidWorks document.
+- **Responsibilities:**
+  - Checks if the document is valid and saved.
+  - Handles PDM check-out if needed.
+  - Calls the core property standards application logic.
+  - Handles PDM check-in if needed.
+  - Returns a `StandardsApplicationResult` with status and checkout info.
+- **Key Steps:**
+  1. Validate document and file path.
+  2. (If PDM) Check out file if not already checked out.
+  3. Call `ApplyAllPropertyStandards`.
+  4. (If PDM) Check in file if standards were applied.
+
+---
+
+## Core Application Logic
+
+### `ApplyAllPropertyStandards(ModelDoc2 swModel, string currentStandardsVersion, bool silentMode, Settings settings)`
+- **Purpose:** Applies all relevant property standards to the given document.
+- **Responsibilities:**
+  - Loads all property standards from settings.
+  - Filters standards by document type (part, assembly, drawing).
+  - For parts, calls `CheckAndMapMaterial`.
+  - Calls `ApplyFilteredStandards` to apply each property.
+- **Key Steps:**
+  1. Load and filter standards.
+  2. For parts, run material mapping.
+  3. Apply all filtered standards.
+
+### `FilterStandardsByDocType(List<PropertyStandardSetting> allStandards, swDocumentTypes_e docType)`
+- **Purpose:** Returns only the standards relevant to the current document type.
+
+### `CheckAndMapMaterial(ModelDoc2 swModel, Settings settings)`
+- **Purpose:** For sheet metal parts, ensures the correct material mapping is applied before property standards.
+
+### `ApplyFilteredStandards(ModelDoc2 swModel, List<PropertyStandardSetting> standardsToApply, string currentStandardsVersion, Settings settings)`
+- **Purpose:** Applies each property standard to the document.
+- **Responsibilities:**
+  - For each standard:
+    - Skips "Roeslein Standards Version" until the end.
+    - Applies to Custom tab if needed.
+    - Applies to all Config tabs if needed.
+  - For parts, may run cut list and raw material logic.
+
+### `ApplyOrUpdateProperty(CustomPropertyManager propMgr, PropertyStandardSetting standard, string valueToAdd, string tabName, Settings settings)`
+- **Purpose:** Adds or updates a single custom property in the specified property manager (Custom or Config tab).
+
+---
+
+## Helper Methods
+
+- `FormatPropertyExpression(string propertyName, string defaultExpr, swDocumentTypes_e docType)`
+  - Formats property expressions for insertion.
+- `IsLockedByCurrentUser(IEdmFile5 file)`
+  - Checks if the file is locked by the current PDM user.
+- `LogMessage(string message)`
+  - Writes to the add-in log for diagnostics.
+
+---
+
+## Sequence Summary
+
+1. **User triggers Apply Property Standards** (e.g., via UI or batch process)
+2. `ApplyStandardsToActiveDocument` is called
+3. If needed, file is checked out from PDM
+4. `ApplyAllPropertyStandards` is called
+    - Loads and filters standards
+    - For parts, runs material mapping
+    - Calls `ApplyFilteredStandards`
+        - Applies each property via `ApplyOrUpdateProperty`
+5. If needed, file is checked in to PDM
+6. Result is returned and user is notified
+
+---
+
+## Notes
+- The workflow is PDM-aware and will check out/check in files as needed.
+- The standards list is loaded from settings and can be customized per document type.
+- This document should be updated as the workflow evolves. 

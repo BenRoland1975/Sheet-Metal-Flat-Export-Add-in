@@ -11,6 +11,8 @@ using System.Reflection;
 using System.Collections.Generic;
 using System.Linq;
 using System.Drawing;
+using RoesleinAddIn;
+using EPDM.Interop.epdm;
 
 namespace RoesleinAddIn
 {
@@ -31,6 +33,10 @@ namespace RoesleinAddIn
         private const int CMD_EXPORT_ID = 0;
         private const int CMD_SETTINGS_ID = 1;
         private const int CMD_PROCESS_ID = 2;
+        private const int CMD_BOM_ID = 3;
+        private const int CMD_ID_TAG_ID = 4;
+        private const int CMD_APPLY_PROPS_ID = 5;
+        private const int CMD_CREATE_EDRAWING_ID = 6;
 
         // Resources
         private string addinPath;
@@ -38,7 +44,13 @@ namespace RoesleinAddIn
         // Main objects
         private ICommandGroup cmdGroup;
         private SheetMetalProcessor processor;
-        private SettingsForm settingsForm;
+        private BomProcessor bomProcessor;
+        private SettingsFormV2 settingsForm;
+
+        // PDM Vault Object
+        private EPDM.Interop.epdm.IEdmVault5 pdmVault;
+
+        private PropertyStandardManager propertyStandardManager;
         #endregion
 
         #region COM Registration
@@ -128,60 +140,17 @@ namespace RoesleinAddIn
                 WriteToLog($"Add-in path: {addinPath}");
                 WriteToLog($"Add-in path exists: {Directory.Exists(addinPath)}");
 
+                // Create processors
+                processor = new SheetMetalProcessor(swApp);
+                bomProcessor = new BomProcessor(swApp);
+                propertyStandardManager = new PropertyStandardManager(pdmVault, swApp, null);
+
+                // Attempt to connect to PDM Vault for the active document
+                TryConnectToPdmVaultForActiveDoc();
+
                 // Add the CommandManager
                 AddCommandMgr();
-
-                // Create the sheet metal processor
-                WriteToLog("Attempting to create SheetMetalProcessor...");
-                try
-                {
-                    processor = new SheetMetalProcessor(swApp);
-                    WriteToLog("SheetMetalProcessor created successfully.");
-                }
-                catch (Exception ex)
-                {
-                    WriteToLog($"CRITICAL ERROR Creating SheetMetalProcessor: {ex.Message}");
-                    WriteToLog($"StackTrace: {ex.StackTrace}");
-                    MessageBox.Show($"Failed to initialize core processing component: {ex.Message}", 
-                                    "Roeslein Add-in Critical Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    processor = null;
-                }
-
-                // ---- Configure Logger AFTER processor creation ----
-                try
-                {
-                    WriteToLog("Attempting to configure global logger...");
-                    var settings = Settings.LoadSettings(); // Load current settings
-
-                    if (settings != null)
-                    {
-                         Logger.Instance.SetSettingsEnabled(settings.LoggingEnabled);
-                         if (!string.IsNullOrWhiteSpace(settings.LogFilePath))
-                         {
-                              Logger.Instance.SetLogFilePath(settings.LogFilePath);
-                              WriteToLog($"Logger configured: Enabled={settings.LoggingEnabled}, Path={settings.LogFilePath}");
-                         }
-                         else
-                         {
-                             Logger.Instance.SetSettingsEnabled(false); // Disable if path is invalid
-                             WriteToLog("Logger disabled due to empty/invalid log file path in settings.");
-                         }
-                    }
-                    else
-                    {
-                         WriteToLog("Could not load settings to configure logger. Using defaults or previous state.");
-                         // Optional: Disable logger if settings are crucial
-                         // Logger.Instance.SetSettingsEnabled(false);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    WriteToLog($"ERROR configuring logger: {ex.Message}");
-                    // Attempt to disable logger if configuration failed
-                    try { Logger.Instance.SetSettingsEnabled(false); } catch { }
-                }
-                // -----------------------------------------------------
-
+                
                 WriteToLog("=== ConnectToSW Completed ===");
                 return true;
             }
@@ -189,6 +158,10 @@ namespace RoesleinAddIn
             {
                 WriteToLog($"ERROR in ConnectToSW: {ex.Message}");
                 WriteToLog($"StackTrace: {ex.StackTrace}");
+                Debug.WriteLine($"FATAL ERROR in ConnectToSW: {ex.Message}");
+                Debug.WriteLine($"StackTrace: {ex.StackTrace}");
+                // Consider a user message if ConnectToSW fails catastrophically
+                // swApp.SendMsgToUser2($"Critical Add-in Initialization Failed: {ex.Message}", (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
                 return false;
             }
         }
@@ -199,7 +172,7 @@ namespace RoesleinAddIn
         public bool DisconnectFromSW()
         {
             Debug.WriteLine("DisconnectFromSW called");
-
+            
             // Remove the CommandManager commands
             try
             {
@@ -218,6 +191,8 @@ namespace RoesleinAddIn
             cmdMgr = null;
             swApp = null;
             processor = null;
+            bomProcessor = null;
+            propertyStandardManager = null;
 
             // Force garbage collection
             GC.Collect();
@@ -265,27 +240,38 @@ namespace RoesleinAddIn
                 {
                     WriteToLog("Command group created successfully");
 
-                    // Get paths to icon files
-                    string iconPath = Path.Combine(addinPath, "Resources");
-                    WriteToLog($"Icon path directory: {iconPath}");
-                    WriteToLog($"Icon directory exists: {Directory.Exists(iconPath)}");
+                    // Path to the INSTALLED individual source icons (e.g., C:\Program Files\...\Resources)
+                    string sourceIconPath = Path.Combine(addinPath, "Resources");
+                    WriteToLog($"Source Icon path directory: {sourceIconPath}");
+                    WriteToLog($"Source Icon directory exists: {Directory.Exists(sourceIconPath)}");
 
-                    // Ensure Resources directory exists
-                    if (!Directory.Exists(iconPath))
+                    // Define a user-writable path for the GENERATED icon strips
+                    string userGeneratedResourcesPath = Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), "RoesleinAddIn", "GeneratedIconStrips");
+                    try
                     {
-                        Directory.CreateDirectory(iconPath);
-                        WriteToLog("Created Resources directory");
+                        // Ensure the directory for generated strips exists
+                        if (!Directory.Exists(userGeneratedResourcesPath))
+                        {
+                            Directory.CreateDirectory(userGeneratedResourcesPath);
+                            WriteToLog($"Created user-writable directory for generated icon strips: {userGeneratedResourcesPath}");
+                        }
                     }
+                    catch (Exception ex)
+                    {
+                        WriteToLog($"Error creating user-writable directory {userGeneratedResourcesPath}: {ex.Message}");
+                        // Handle error appropriately, maybe disable custom icons or show a message
+                    }
+                    
 
-                    // Check if individual icon files exist
-                    CheckIconsExist(iconPath);
+                    // Check if individual source icon files exist in the installation directory
+                    CheckIconsExist(sourceIconPath);
 
                     // Create magenta-background image strips for SolidWorks
                     try
                     {
                         WriteToLog("Creating magenta-background image strips...");
-                        MagentaImageStripCreator.CreateAllStrips(iconPath);
-                        WriteToLog("Image strips created successfully");
+                        MagentaImageStripCreator.CreateAllStrips(sourceIconPath, userGeneratedResourcesPath);
+                        WriteToLog("Image strips created successfully in user-writable directory.");
                     }
                     catch (Exception ex)
                     {
@@ -293,73 +279,112 @@ namespace RoesleinAddIn
                         WriteToLog($"StackTrace: {ex.StackTrace}");
                     }
 
-                    // Define strip icon paths
+                    // Define strip icon paths FROM THE USER-WRITABLE LOCATION
                     string[] iconList = new string[] {
-                Path.Combine(iconPath, "ConnexIcons_20x20.bmp"), // Small icons
-                Path.Combine(iconPath, "ConnexIcons_32x32.bmp"), // Medium icons 
-                Path.Combine(iconPath, "ConnexIcons_40x40.bmp")  // Large icons
-            };
+                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_20x20.bmp"),
+                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_32x32.bmp"),
+                        Path.Combine(userGeneratedResourcesPath, "ConnexIcons_40x40.bmp")
+                    };
 
                     // Verify image strips were created
-                    foreach (string stripPath in iconList)
+                    foreach (string stripPathInUserDir in iconList)
                     {
-                        WriteToLog($"Image strip exists: {Path.GetFileName(stripPath)} = {File.Exists(stripPath)}");
+                        WriteToLog($"Image strip exists in user dir: {Path.GetFileName(stripPathInUserDir)} = {File.Exists(stripPathInUserDir)}");
                     }
 
-                    // Set the main icon list for the command group
-                    WriteToLog("Setting icon lists...");
                     cmdGroup.IconList = iconList;
                     cmdGroup.MainIconList = iconList;
 
                     const int cmdItemType = (int)(swCommandItemType_e.swMenuItem | swCommandItemType_e.swToolbarItem);
 
-                    // Create commands in the DESIRED order
-                    WriteToLog("Creating commands in desired order...");
+                    // Create commands in the correct order
+                    // 1. Assembly Export DXF (position 1)
+                    cmdGroup.AddCommandItem2(
+                        "Export Assembly Sheet Metal",
+                        -1,
+                        "Produce Sheet Metal Flat Patterns from an Assembly",
+                        "Export sheet metal parts from assembly to DXF",
+                        0,
+                        "Export_DXF",
+                        "Enable_Export_DXF",
+                        CMD_EXPORT_ID,
+                        cmdItemType);
 
-                    // 1. Assembly Export DXF (leftmost in toolbar)
-                    bool item1Added = cmdGroup.AddCommandItem2(
-    "Export Assembly Sheet Metal",
-    -1,
-    "Produce Sheet Metal Flat Patterns from an Assembly",
-    "Export sheet metal parts from assembly to DXF",
-    0,  // Index in the icon strip (0 = leftmost image)
-    "Export_DXF",
-    "Enable_Export_DXF",
-    CMD_EXPORT_ID,
-    cmdItemType) == 0; // Fix: Changed comparison to check for equality with 0 instead of null
-                    WriteToLog($"Added Export DXF command item: {item1Added}");
+                    // 2. Single Part Export (position 2)
+                    cmdGroup.AddCommandItem2(
+                        "Export Single Part",
+                        -1,
+                        "Produce Sheet Metal Flat Pattern from a single part file",
+                        "Export single sheet metal part to DXF",
+                        1,
+                        "Process_Part",
+                        "Enable_Process_Part",
+                        CMD_PROCESS_ID,
+                        cmdItemType);
 
-                    // 2. Single Part Export (middle in toolbar)
-                    bool item2Added = cmdGroup.AddCommandItem2(
-    "Export Single Part",
-    -1,
-    "Produce Sheet Metal Flat Pattern from a single part file",
-    "Export single sheet metal part to DXF",
-    1,  // Index in the icon strip (1 = second image from left)
-    "Process_Part",
-    "Enable_Process_Part",
-    CMD_PROCESS_ID,
-    cmdItemType) == 0; // Fix: Changed comparison to check for equality with 0 instead of null
-                    WriteToLog($"Added Process Single Part command item: {item2Added}");
+                    // 3. Export BOM (position 3)
+                    cmdGroup.AddCommandItem2(
+                        "Export BOM",
+                        -1,
+                        "Export Bill of Materials from Assembly",
+                        "Export BOM to Excel",
+                        2,
+                        "Export_BOM",
+                        "Enable_BOM",
+                        CMD_BOM_ID,
+                        cmdItemType);
 
-                    // 3. Settings (rightmost in toolbar)
-                    bool item3Added = cmdGroup.AddCommandItem2(
-    "Settings",
-    -1,
-    "Connex Add-in Settings",
-    "Configure Connex add-in settings",
-    2,  // Index in the icon strip (2 = third image from left)
-    "Show_Settings",
-    "Enable_Settings",
-    CMD_SETTINGS_ID,
-    cmdItemType) == 0; // Fix: Changed comparison to check for equality with 0 instead of null
-                    WriteToLog($"Added Settings command item: {item3Added}");
+                    // 4. ID Tag (position 4)
+                    cmdGroup.AddCommandItem2(
+                        "ID Tag",
+                        -1,
+                        "Generate ID Tag for the active drawing",
+                        "Generate ID Tag for the active drawing",
+                        3,
+                        "ID_Tag",
+                        "Enable_ID_Tag",
+                        CMD_ID_TAG_ID,
+                        cmdItemType);
+
+                    // 5. Apply Property Standards (position 5)
+                    cmdGroup.AddCommandItem2(
+                        "Apply Property Standards",
+                        -1,
+                        "Apply defined file property standards to the active document",
+                        "Apply Property Standards",
+                        4,
+                        "ApplyPropertyStandards",
+                        "EnableApplyPropertyStandards",
+                        CMD_APPLY_PROPS_ID,
+                        cmdItemType);
+
+                    // 6. Create eDrawings (position 6)
+                    cmdGroup.AddCommandItem2(
+                        "Create eDrawings",
+                        -1,
+                        "Create eDrawings from the active document",
+                        "Create eDrawings from the active document",
+                        5,
+                        "Create_eDrawings",
+                        "Enable_Create_eDrawings",
+                        CMD_CREATE_EDRAWING_ID,
+                        cmdItemType);
+
+                    // 7. Settings (position 7 - last)
+                    cmdGroup.AddCommandItem2(
+                        "Settings",
+                        -1,
+                        "Connex Add-in Settings",
+                        "Configure Connex add-in settings",
+                        6,
+                        "Show_Settings",
+                        "Enable_Settings",
+                        CMD_SETTINGS_ID,
+                        cmdItemType);
 
                     cmdGroup.HasToolbar = true;
                     cmdGroup.HasMenu = true;
-
-                    bool activateResult = cmdGroup.Activate();
-                    WriteToLog($"Command group activation result: {activateResult}");
+                    cmdGroup.Activate();
 
                     WriteToLog("=== AddCommandMgr Completed Successfully ===");
                 }
@@ -404,21 +429,41 @@ namespace RoesleinAddIn
             try
             {
                 string[] iconFiles = {
-            // Produce Assembly icons
-            "Produce Assy 20x20.bmp",
-            "Produce Assy 32x32.bmp",
-            "Produce Assy 40x40.bmp",
-            
-            // Produce Single Part icons
-            "Produce Single Part 20x20.bmp",
-            "Produce Single Part 32x32.bmp",
-            "Produce Single Part 40x40.bmp",
-            
-            // Settings icons
-            "Settings 20x20.bmp",
-            "Settings 32x32.bmp",
-            "Settings 40x40.bmp"
-        };
+                    // 1. Assembly Export icons
+                    "Produce Assy 20x20.bmp",
+                    "Produce Assy 32x32.bmp",
+                    "Produce Assy 40x40.bmp",
+                    
+                    // 2. Single Part Export icons
+                    "Produce Single Part 20x20.bmp",
+                    "Produce Single Part 32x32.bmp",
+                    "Produce Single Part 40x40.bmp",
+                    
+                    // 3. Export BOM icons
+                    "Export BOM 20x20.bmp",
+                    "Export BOM 32x32.bmp",
+                    "Export BOM 40x40.bmp",
+
+                    // 4. ID Tag icons
+                    "ID_Tag 20X20.bmp",
+                    "ID_Tag 32X32.bmp",
+                    "ID_Tag 40X40.bmp",
+
+                    // 5. Property Standards icons
+                    "FileProp 20x20.bmp",
+                    "FileProp 32x32.bmp",
+                    "FileProp 40x40.bmp",
+
+                    // 6. Create eDrawings icons
+                    "Create_eDrawing 20x20.bmp",
+                    "Create_eDrawing 32x32.bmp",
+                    "Create_eDrawing 40x40.bmp",
+                    
+                    // 7. Settings icons (last)
+                    "Settings 20x20.bmp",
+                    "Settings 32x32.bmp",
+                    "Settings 40x40.bmp"
+                };
 
                 WriteToLog("Checking icon files:");
                 foreach (string file in iconFiles)
@@ -445,6 +490,10 @@ namespace RoesleinAddIn
                 string[] smallIconFiles = {
                     Path.Combine(iconPath, "Produce Assy 20x20.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 20x20.bmp"),
+                    Path.Combine(iconPath, "Export BOM 20x20.bmp"),
+                    Path.Combine(iconPath, "ID_Tag 20X20.bmp"),
+                    Path.Combine(iconPath, "FileProp 20x20.bmp"),
+                    Path.Combine(iconPath, "Create_eDrawing 20x20.bmp"),
                     Path.Combine(iconPath, "Settings 20x20.bmp")
                 };
 
@@ -452,6 +501,10 @@ namespace RoesleinAddIn
                 string[] mediumIconFiles = {
                     Path.Combine(iconPath, "Produce Assy 32x32.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 32x32.bmp"),
+                    Path.Combine(iconPath, "Export BOM 32x32.bmp"),
+                    Path.Combine(iconPath, "ID_Tag 32X32.bmp"),
+                    Path.Combine(iconPath, "FileProp 32x32.bmp"),
+                    Path.Combine(iconPath, "Create_eDrawing 32x32.bmp"),
                     Path.Combine(iconPath, "Settings 32x32.bmp")
                 };
 
@@ -459,6 +512,10 @@ namespace RoesleinAddIn
                 string[] largeIconFiles = {
                     Path.Combine(iconPath, "Produce Assy 40x40.bmp"),
                     Path.Combine(iconPath, "Produce Single Part 40x40.bmp"),
+                    Path.Combine(iconPath, "Export BOM 40x40.bmp"),
+                    Path.Combine(iconPath, "ID_Tag 40X40.bmp"),
+                    Path.Combine(iconPath, "FileProp 40x40.bmp"),
+                    Path.Combine(iconPath, "Create_eDrawing 40x40.bmp"),
                     Path.Combine(iconPath, "Settings 40x40.bmp")
                 };
 
@@ -592,38 +649,96 @@ namespace RoesleinAddIn
             }
             catch (Exception ex)
             {
-                Debug.WriteLine("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-                Debug.WriteLine($"[DEBUG] ERROR in Export_DXF: {ex.GetType().Name} - {ex.Message}");
-                Debug.WriteLine($"[DEBUG] StackTrace: {ex.StackTrace}");
-                Debug.WriteLine("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-                WriteToLog($"Error in Export_DXF: {ex.Message}"); // Keep existing simple log for now
-                MessageBox.Show($"Error exporting DXF: {ex.Message}", "Roeslein Add-in",
-                               MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Debug.WriteLine($"[DEBUG] Export_DXF: Error: {ex.Message}\n{ex.StackTrace}"); // DEBUG
+                WriteToLog($"Export_DXF: Error: {ex.Message}\n{ex.StackTrace}");
+                MessageBox.Show($"Error processing assembly: {ex.Message}", "Roeslein Add-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-            Debug.WriteLine("[DEBUG] Export_DXF END"); // DEBUG
         }
 
         /// <summary>
-        /// Show Settings command
+        /// Export BOM command
         /// </summary>
-        public void Show_Settings()
+        public void Export_BOM()
         {
-            WriteToLog("Show_Settings called");
+            WriteToLog("Export_BOM called");
+            Debug.WriteLine("[DEBUG] Export_BOM called");
 
             try
             {
-                if (settingsForm == null || settingsForm.IsDisposed)
+                // Check if bomProcessor is initialized
+                if (bomProcessor == null)
                 {
-                    settingsForm = new SettingsForm();
+                    Debug.WriteLine("[DEBUG] Export_BOM: ERROR - BomProcessor instance is null!");
+                    WriteToLog("Export_BOM: ERROR - BomProcessor instance is null!");
+                    MessageBox.Show("BomProcessor failed to initialize. Please check logs.",
+                                   "Roeslein Add-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
                 }
 
-                settingsForm.Show();
+                // Show BOM options dialog
+                if (swApp != null)
+                {
+                    BomExportForm bomDialog = new BomExportForm(swApp);
+                    DialogResult dialogResult = bomDialog.ShowDialog();
+
+                    if (dialogResult == DialogResult.OK)
+                    {
+                        System.Diagnostics.Debug.WriteLine("BOM Export process initiated via BomExportForm.");
+                    }
+                    else if (dialogResult == DialogResult.Cancel)
+                    {
+                        System.Diagnostics.Debug.WriteLine("BOM Export was cancelled by the user in the BomExportForm.");
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"BOM Export form closed with result: {dialogResult}");
+                    }
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("ISldWorks _swApp instance is null. Cannot show BOM Export form.");
+                }
             }
             catch (Exception ex)
             {
-                WriteToLog($"Error in Show_Settings: {ex.Message}");
-                MessageBox.Show($"Error showing settings: {ex.Message}", "Roeslein Add-in",
-                               MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Debug.WriteLine($"[DEBUG] Export_BOM: Error: {ex.Message}\n{ex.StackTrace}");
+                WriteToLog($"Export_BOM: Error: {ex.Message}\n{ex.StackTrace}");
+                MessageBox.Show($"Error exporting BOM: {ex.Message}", 
+                               "Roeslein Add-in Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Callback for the Settings command.
+        /// </summary>
+        public void Show_Settings()
+        {
+            try
+            {
+                WriteToLog("Settings command invoked.");
+                // Always ensure vault is connected before opening settings
+                EnsurePdmVaultConnected("PCSVAULT");
+
+                if (settingsForm == null || settingsForm.IsDisposed)
+                {
+                    Settings.SetGlobalVaultForSettings(this.pdmVault);
+                    settingsForm = new SettingsFormV2(this.swApp, this.pdmVault);
+                }
+                settingsForm.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error displaying settings form: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                if (swApp != null)
+                {
+                    swApp.SendMsgToUser2($"An error occurred while opening settings: {ex.Message}", 
+                        (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
+                }
+                else
+                {
+                    System.Windows.Forms.MessageBox.Show($"An error occurred while opening settings: {ex.Message}", "Error", 
+                        System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Error);
+                }
             }
         }
 
@@ -632,8 +747,14 @@ namespace RoesleinAddIn
         /// </summary>
         public int Enable_Export_DXF()
         {
-            // Enable if there's an active document
-            return (swApp?.ActiveDoc != null) ? 1 : 0;
+            // Enable if there's an active document AND it's an assembly
+            ModelDoc2 swModel = swApp?.ActiveDoc as ModelDoc2;
+            if (swModel == null) return 0;
+
+            if (swModel.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY)
+                return 0;
+            
+            return 1;
         }
 
         /// <summary>
@@ -656,7 +777,7 @@ namespace RoesleinAddIn
             try
             {
                 Debug.WriteLine("[DEBUG] Process_Part: Checking processor instance..."); // DEBUG
-                                                                                         // Processor should have been created in ConnectToSW
+                // Processor should have been created in ConnectToSW
                 if (processor == null)
                 {
                     Debug.WriteLine("[DEBUG] Process_Part: ERROR - Processor instance is null!"); // DEBUG
@@ -684,56 +805,386 @@ namespace RoesleinAddIn
         }
 
         /// <summary>
-        /// Enable callback for Process Single Part command
+        /// Enable the Process Part button if a sheet metal part is active
         /// </summary>
         public int Enable_Process_Part()
         {
-            // Enable if there's an active document
-            return (swApp?.ActiveDoc != null) ? 1 : 0;
+            try
+            {
+                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+                if (swModel == null) return 0;
+                
+                if (swModel.GetType() != (int)swDocumentTypes_e.swDocPART)
+                    return 0;
+                
+                return 1;
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Enable_Process_Part: {ex.Message}\n{ex.StackTrace}");
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Enable the BOM button if an assembly is active
+        /// </summary>
+        public int Enable_BOM()
+        {
+            try
+            {
+                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+                if (swModel == null) return 0;
+                
+                if (swModel.GetType() != (int)swDocumentTypes_e.swDocASSEMBLY)
+                    return 0;
+                
+                return 1;
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Enable_BOM: {ex.Message}\n{ex.StackTrace}");
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Callback for the Apply Property Standards command.
+        /// </summary>
+        public void ApplyPropertyStandards()
+        {
+            try
+            {
+                WriteToLog("ApplyPropertyStandards command invoked.");
+                ModelDoc2 activeDoc = swApp.ActiveDoc as ModelDoc2;
+                if (activeDoc == null)
+                {
+                    swApp.SendMsgToUser2("No active document to apply standards to.", (int)swMessageBoxIcon_e.swMbWarning, (int)swMessageBoxBtn_e.swMbOk);
+                    WriteToLog("ApplyPropertyStandards: No active document.");
+                    return;
+                }
+
+                // Ensure PDM connection FIRST
+                WriteToLog("Ensuring PDM connection is established for the active document.");
+                TryConnectToPdmVaultForActiveDoc();
+
+                // Only set global vault if logged in
+                if (this.pdmVault != null && this.pdmVault.IsLoggedIn)
+                {
+                    Settings.SetGlobalVaultForSettings(this.pdmVault);
+                }
+                else
+                {
+                    WriteToLog("PDM vault is not logged in. Cannot proceed with property standards.");
+                    swApp.SendMsgToUser2("Could not connect to PDM vault. Property standards cannot be applied.", (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
+                    return;
+                }
+
+                // Now load settings (vault is set and logged in)
+                var loadedSettings = Settings.LoadSettings();
+                Logger.SetMainLogFilePath(loadedSettings.LogFilePath);
+                Logger.Instance.SetDebugLogPath(loadedSettings.DebugLogFilePath);
+                string currentStandardsVersion = !string.IsNullOrEmpty(loadedSettings.SettingsVersion)
+                    ? loadedSettings.SettingsVersion
+                    : "1.0.0";
+
+                if (propertyStandardManager == null)
+                {
+                    propertyStandardManager = new PropertyStandardManager(this.pdmVault, swApp, null);
+                }
+                else
+                {
+                    propertyStandardManager = new PropertyStandardManager(this.pdmVault, swApp, null);
+                }
+
+                if (activeDoc.GetType() == (int)SolidWorks.Interop.swconst.swDocumentTypes_e.swDocASSEMBLY)
+                {
+                    propertyStandardManager.ProcessAssemblyForStandards(activeDoc, currentStandardsVersion, false);
+                }
+                else if (activeDoc.GetType() == (int)SolidWorks.Interop.swconst.swDocumentTypes_e.swDocDRAWING)
+                {
+                    propertyStandardManager.ProcessDrawingForStandards(activeDoc, currentStandardsVersion, false);
+                }
+                else
+                {
+                    propertyStandardManager.ApplyStandardsToActiveDocument(activeDoc, currentStandardsVersion, false, loadedSettings);
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in ApplyPropertyStandards: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                swApp.SendMsgToUser2($"An unexpected error occurred: {ex.Message}", (int)swMessageBoxIcon_e.swMbStop, (int)swMessageBoxBtn_e.swMbOk);
+            }
+        }
+
+        /// <summary>
+        /// Enable method for the Apply Property Standards command.
+        /// </summary>
+        public int EnableApplyPropertyStandards()
+        {
+            ModelDoc2 activeDoc = swApp.ActiveDoc as ModelDoc2;
+            if (activeDoc != null)
+            {
+                swDocumentTypes_e docType = (swDocumentTypes_e)activeDoc.GetType();
+                return (docType == swDocumentTypes_e.swDocPART || 
+                        docType == swDocumentTypes_e.swDocASSEMBLY || 
+                        docType == swDocumentTypes_e.swDocDRAWING) ? 1 : 0;
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// Create eDrawings command callback
+        /// </summary>
+        public void Create_eDrawings()
+        {
+            WriteToLog("Create_eDrawings called");
+            Debug.WriteLine("[DEBUG] Create_eDrawings called");
+
+            try
+            {
+                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+                
+                if (swModel == null)
+                {
+                    MessageBox.Show("No active document.", "Roeslein Add-in", 
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Ensure PDM vault is connected before creating eDrawings
+                TryConnectToPdmVaultForActiveDoc();
+                
+                // Create eDrawingsCreator instance and process the active document
+                var creator = new eDrawingsCreator(swApp, pdmVault);
+                creator.CreateeDrawingsFromActiveDocument();
+                
+                WriteToLog("Create_eDrawings completed successfully");
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Create_eDrawings: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show($"Error creating eDrawings: {ex.Message}", "Roeslein Add-in Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Enable callback for Create eDrawings command
+        /// </summary>
+        public int Enable_Create_eDrawings()
+        {
+            try
+            {
+                ModelDoc2 swModel = swApp?.ActiveDoc as ModelDoc2;
+                if (swModel == null) return 0;
+
+                // Enable for parts, assemblies, and drawings
+                int docType = swModel.GetType();
+                if (docType == (int)swDocumentTypes_e.swDocPART ||
+                    docType == (int)swDocumentTypes_e.swDocASSEMBLY ||
+                    docType == (int)swDocumentTypes_e.swDocDRAWING)
+                {
+                    return 1;
+                }
+                
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Enable_Create_eDrawings: {ex.Message}");
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// ID Tag command callback
+        /// </summary>
+        public void ID_Tag()
+        {
+            WriteToLog("ID_Tag called");
+            Debug.WriteLine("[DEBUG] ID_Tag called");
+
+            try
+            {
+                ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+                
+                if (swModel == null)
+                {
+                    MessageBox.Show("No active document.", "Roeslein Add-in", 
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Check document type - must be a drawing
+                int docType = swModel.GetType();
+                if (docType != (int)swDocumentTypes_e.swDocDRAWING)
+                {
+                    MessageBox.Show("ID Tag can only be used on drawing documents.", "Roeslein Add-in", 
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Show the shipping label manager
+                ShippingLabelManagerForm.ShowShippingLabelManager(swApp);
+                
+                WriteToLog("ID_Tag completed successfully");
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in ID_Tag: {ex.Message}\nStackTrace: {ex.StackTrace}");
+                MessageBox.Show($"Error with ID Tag: {ex.Message}", "Roeslein Add-in Error", 
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Enable callback for ID Tag command - only enabled for drawing documents
+        /// </summary>
+        public int Enable_ID_Tag()
+        {
+            try
+            {
+                ModelDoc2 swModel = swApp?.ActiveDoc as ModelDoc2;
+                if (swModel == null) return 0;
+
+                // Only enable for drawing documents
+                int docType = swModel.GetType();
+                if (docType == (int)swDocumentTypes_e.swDocDRAWING)
+                {
+                    return 1;
+                }
+                
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                WriteToLog($"Error in Enable_ID_Tag: {ex.Message}");
+                return 0;
+            }
         }
         #endregion
 
-        #region Helpers
-        /// <summary>
-        /// Write to log file for debugging
-        /// </summary>
+        #region Logging
         private void WriteToLog(string message)
         {
             try
             {
-                string logDir = @"C:\Temp";
-                string logFilePath = Path.Combine(logDir, "RoesleinAddIn_Debug.log");
-
-                // Create directory if it doesn't exist
-                if (!Directory.Exists(logDir))
+                // Output to Visual Studio's debug console unconditionally for development
+                Debug.WriteLine($"[RoesleinAddIn DEBUG] {message}");
+                
+                // Use the Logger class for all persistent logging
+                if (Logger.Instance != null)
                 {
-                    Directory.CreateDirectory(logDir);
+                    // Logger.DebugLog will internally check if debug logging is enabled.
+                    // If paths are not set, it might log to a default location or not at all,
+                    // depending on Logger's internal implementation.
+                    Logger.DebugLog(message); 
                 }
+            }
+            catch
+            {
+                // Silent fail - we don't want logging errors to cause crashes
+            }
+        }
+        #endregion
 
-                // Write to log with timestamp
-                using (StreamWriter writer = new StreamWriter(logFilePath, true))
+        #region PDM Integration
+        private void TryConnectToPdmVaultForActiveDoc()
+        {
+            if (swApp == null)
+            {
+                // Use Logger.Warning for conditions that prevent operation but aren't necessarily critical errors.
+                Logger.Warning("PDM: SolidWorks application not available. Cannot connect to PDM vault.");
+                return;
+            }
+
+            ModelDoc2 swModel = swApp.ActiveDoc as ModelDoc2;
+            if (swModel == null)
+            {
+                Logger.Info("PDM: No active SolidWorks document. PDM connection not attempted for a specific file at this time.");
+                // It's not an error if no doc is open, PDM might be connected later or not needed.
+                return;
+            }
+
+            string filePath = swModel.GetPathName();
+            if (string.IsNullOrEmpty(filePath))
+            {
+                Logger.Info("PDM: Active SolidWorks document is not saved. PDM connection not attempted for this file.");
+                return;
+            }
+
+            Logger.Info($"PDM: Attempting to connect to vault for file: '{filePath}'");
+            try
+            {
+                if (this.pdmVault == null || !this.pdmVault.IsLoggedIn)
                 {
-                    writer.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: {message}");
+                    this.pdmVault = new EPDM.Interop.epdm.EdmVault5();
+                    string vaultNameForFile = this.pdmVault.GetVaultNameFromPath(filePath);
+                    if (!string.IsNullOrEmpty(vaultNameForFile))
+                    {
+                        WriteToLog($"PDM: File '{filePath}' is in vault view for vault: '{vaultNameForFile}'. Attempting to log in.");
+                        this.pdmVault.LoginAuto(vaultNameForFile, 0);
+                        if (this.pdmVault.IsLoggedIn)
+                        {
+                            WriteToLog($"PDM: Successfully connected to vault: {this.pdmVault.Name} (Root Path: {this.pdmVault.RootFolderPath})");
+                            if (this.pdmVault != null && this.pdmVault.IsLoggedIn)
+                            {
+                                Settings.SetGlobalVaultForSettings(this.pdmVault);
+                            }
+                        }
+                        else
+                        {
+                            WriteToLog($"PDM: Failed to auto-login to vault '{vaultNameForFile}'. Ensure PDM client is logged in.");
+                            this.pdmVault = null;
+                        }
+                    }
+                    else
+                    {
+                        WriteToLog($"PDM: File '{filePath}' does not appear to be in a PDM vault view.");
+                        this.pdmVault = null;
+                    }
                 }
-                Debug.WriteLine(message);  // Also write to Debug output
+            }
+            catch (System.Runtime.InteropServices.COMException comEx)
+            {
+                // Use Logger.Error for actual errors.
+                Logger.Error($"PDM: COM Exception during PDM connection for '{filePath}'. HRESULT: {comEx.ErrorCode:X}, Message: {comEx.Message}. Ensure PDM interops are correctly registered and version compatible.");
+                this.pdmVault = null;
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Error writing to log: {ex.Message}");
+                Logger.Error($"PDM: General exception during PDM connection for '{filePath}': {ex.Message}");
+                this.pdmVault = null;
+            }
+        }
+
+        // Robust version: Ensure a persistent PDM vault connection and only set global vault if logged in
+        private void EnsurePdmVaultConnected(string vaultName)
+        {
+            if (this.pdmVault == null)
+                this.pdmVault = new EPDM.Interop.epdm.EdmVault5();
+
+            if (!this.pdmVault.IsLoggedIn)
+            {
                 try
                 {
-                    // Attempt to write error to desktop as fallback
-                    string fallbackPath = Path.Combine(
-                        System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop),
-                        "RoesleinAddIn_Error.log");
-                    File.AppendAllText(fallbackPath,
-                        $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}: Error writing to main log: {ex.Message}\n");
+                    this.pdmVault.LoginAuto(vaultName, 0);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // If even the fallback fails, we can only write to debug
-                    Debug.WriteLine("Failed to write to both main and fallback logs");
+                    WriteToLog($"PDM LoginAuto failed: {ex.Message}");
                 }
+            }
+
+            if (this.pdmVault.IsLoggedIn)
+            {
+                Settings.SetGlobalVaultForSettings(this.pdmVault);
+            }
+            else
+            {
+                WriteToLog("PDM vault is not logged in after LoginAuto. Not setting global vault for settings.");
+                MessageBox.Show($"Could not connect to PDM vault '{vaultName}'. Please ensure PDM is running and you are logged in.", "PDM Connection Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
         #endregion
